@@ -1,0 +1,1656 @@
+from flask import Flask, jsonify, send_from_directory, request
+from flask_cors import CORS
+from flask_socketio import SocketIO, emit
+import os
+import requests
+import threading
+import uuid
+import zipfile
+import json
+import shutil
+import subprocess
+import docker
+import csv
+import sys
+import socket
+import tempfile
+import traceback
+from datetime import datetime
+
+app = Flask(__name__)
+CORS(app)
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+# Initialize Docker client
+try:
+    docker_client = docker.from_env()
+    docker_available = True
+except Exception as e:
+    print(f"Warning: Could not connect to Docker: {e}")
+    docker_client = None
+    docker_available = False
+
+# Base data directory path (relative to project root)
+# Check if running in Docker container
+if os.path.exists('/app/data'):
+    # Running in Docker container - use the mounted volume
+    DATA_DIR = '/app/data'
+else:
+    # Running locally - use relative path
+    DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'data'))
+
+def create_datapackage_json(case_study_path, case_study_name, case_study_description, created_by, csv_files=None):
+    """Create a datapackage.json file with case study metadata and CSV file references"""
+    csv_files = csv_files or []
+    
+    # Create datapackage metadata
+    datapackage = {
+        "name": case_study_name.lower().replace(" ", "-").replace("_", "-"),
+        "title": case_study_name,
+        "description": case_study_description,
+        "version": "1.0.0",
+        "created": datetime.now().isoformat(),
+        "created_by": created_by,
+        "resources": []
+    }
+    
+    # Add CSV files as resources
+    for csv_file in csv_files:
+        resource = {
+            "name": os.path.splitext(csv_file)[0],
+            "path": f"input/baseline/{csv_file}",
+            "title": csv_file,
+            "description": f"Data file: {csv_file}",
+            "format": "csv",
+            "mediatype": "text/csv"
+        }
+        datapackage["resources"].append(resource)
+    
+    # Save datapackage.json
+    datapackage_path = os.path.join(case_study_path, 'datapackage.json')
+    with open(datapackage_path, 'w', encoding='utf-8') as f:
+        json.dump(datapackage, f, indent=2, ensure_ascii=False)
+    
+    return datapackage_path
+
+def create_case_study_folders(case_study_id, case_study_name):
+    """Create the folder structure for a case study"""
+    # Create a safe folder name from the case study name and ID
+    safe_name = "".join(c for c in case_study_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+    folder_name = f"{safe_name}_{case_study_id[:8]}"
+    
+    case_study_path = os.path.join(DATA_DIR, folder_name)
+    
+    # Create the main case study folder and subdirectories
+    os.makedirs(os.path.join(case_study_path, 'input'), exist_ok=True)
+    os.makedirs(os.path.join(case_study_path, 'output'), exist_ok=True)
+    os.makedirs(os.path.join(case_study_path, 'config'), exist_ok=True)
+    os.makedirs(os.path.join(case_study_path, 'input', 'baseline'), exist_ok=True)  # Baseline subfolder inside input
+    
+    return case_study_path, folder_name
+
+def create_scenarios_metadata_csv(case_study_path, scenarios_list):
+    """Create scenarios_metadata.csv file in the config folder"""
+    import csv
+    
+    metadata_path = os.path.join(case_study_path, 'config', 'scenarios_metadata.csv')
+    
+    with open(metadata_path, 'w', newline='', encoding='utf-8') as csvfile:
+        fieldnames = ['id', 'name', 'case_study_id', 'file_path', 'is_baseline', 'description', 'created_at', 'updated_at']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        
+        writer.writeheader()
+        for scenario in scenarios_list:
+            writer.writerow({
+                'id': scenario['id'],
+                'name': scenario['name'],
+                'case_study_id': scenario['case_study_id'],
+                'file_path': scenario['file_path'],
+                'is_baseline': scenario.get('is_baseline', False),
+                'description': scenario.get('description', ''),
+                'created_at': scenario['created_at'],
+                'updated_at': scenario['updated_at']
+            })
+    
+    return metadata_path
+
+def create_baseline_scenario_in_csv(case_study, csv_files):
+    """Add baseline scenario entries to the existing scenario_metadata.csv"""
+    import csv
+    
+    if not csv_files:
+        return
+    
+    config_dir = os.path.join(case_study['folder_path'], 'config')
+    os.makedirs(config_dir, exist_ok=True)
+    metadata_csv_path = os.path.join(config_dir, 'scenario_metadata.csv')
+    
+    # Read existing metadata
+    metadata_rows = []
+    if os.path.exists(metadata_csv_path):
+        with open(metadata_csv_path, 'r', newline='', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            metadata_rows = list(reader)
+    
+    # Add only ONE overall baseline scenario for isodata.csv file
+    overall_baseline = {
+        'scenario_id': str(uuid.uuid4()),
+        'name': "Baseline",
+        'description': f"Baseline scenario for isodata.csv file",
+        'ssp': '',
+        'year': '',
+        'additional_notes': f'Baseline scenario created from isodata.csv file',
+        'csv_file': 'baseline',  # Special indicator for overall baseline
+        'original_filename': 'isodata.csv',  # Store the original filename
+        'created_at': datetime.now().isoformat(),
+        'updated_at': datetime.now().isoformat()
+    }
+    metadata_rows.append(overall_baseline)
+    
+    # Write updated metadata back to CSV
+    fieldnames = ['scenario_id', 'name', 'description', 'ssp', 'year', 'additional_notes', 'csv_file', 'original_filename', 'created_at', 'updated_at']
+    with open(metadata_csv_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(metadata_rows)
+    
+    print(f"[DEBUG] Added 1 baseline scenario to {metadata_csv_path}")
+    return metadata_csv_path
+
+def load_csv_data_for_scenario(case_study_path, csv_file):
+    """Load CSV data for a scenario"""
+    import csv
+    
+    if not csv_file:
+        return []
+    
+    # CSV files are stored in the input/[csv_file] folder
+    csv_path = os.path.join(case_study_path, 'input', csv_file, f'{csv_file}.csv')
+    print(f"[DEBUG] Loading CSV data from: {csv_path}")
+    
+    if not os.path.exists(csv_path):
+        print(f"[DEBUG] CSV file not found: {csv_path}")
+        return []
+    
+    data = []
+    try:
+        with open(csv_path, 'r', newline='', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            fieldnames = reader.fieldnames  # Preserve column order
+            data = []
+            for row in reader:
+                data.append(dict(row))
+        print(f"[DEBUG] Loaded {len(data)} rows from CSV")
+    except Exception as e:
+        print(f"[DEBUG] Error loading CSV data: {e}")
+        fieldnames = []
+        data = []
+    # Return both data and fieldnames for column order
+    return {"data": data, "fieldnames": fieldnames}
+
+def load_scenarios_from_metadata_csv(case_study_path):
+    """Load scenarios from scenario_metadata.csv file"""
+    import csv
+    
+    metadata_path = os.path.join(case_study_path, 'config', 'scenario_metadata.csv')
+    scenarios_list = []
+    
+    print(f"[DEBUG] Loading scenarios from: {metadata_path}")
+    print(f"[DEBUG] Path exists: {os.path.exists(metadata_path)}")
+    
+    if os.path.exists(metadata_path):
+        with open(metadata_path, 'r', newline='', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                print(f"[DEBUG] Loading scenario row: {row}")
+                # Map from scenario_metadata.csv format to expected format
+                scenario = {
+                    'id': row['scenario_id'],  # Note: using scenario_id from the CSV
+                    'name': row['name'],
+                    'case_study_id': '',  # Will be filled by the API endpoint based on request
+                    'file_path': row.get('csv_file', ''),
+                    'is_baseline': row.get('csv_file', '') == 'baseline',  # Mark as baseline if csv_file is 'baseline'
+                    'description': row['description'],
+                    'created_at': row['created_at'],
+                    'updated_at': row['updated_at'],
+                    'ssp': row.get('ssp', ''),
+                    'year': row.get('year', ''),
+                    'value': row.get('value', ''),
+                    'additional_notes': row.get('additional_notes', ''),
+                    'pathogen': row.get('pathogen', ''),
+                    'projectionMethod': row.get('projection_method', ''),
+                    'csv_file': row.get('csv_file', ''),  # Keep original field for compatibility
+                    'original_filename': row.get('original_filename', row.get('csv_file', '') + '.csv'),  # Original filename or derived
+                    'data': load_csv_data_for_scenario(case_study_path, row.get('csv_file', ''))  # Load CSV data
+                }
+                scenarios_list.append(scenario)
+                print(f"[DEBUG] Added scenario: {scenario['name']} with {len(scenario.get('data', []))} data rows")
+    
+    print(f"[DEBUG] Total scenarios loaded: {len(scenarios_list)}")
+    return scenarios_list
+
+# In-memory storage for case studies and scenarios (in production, use a database)
+case_studies = []
+scenarios = []
+glowpa_running = False
+
+# Create a second Flask app for serving React on port 3000
+frontend_app = Flask(__name__, static_folder='/app/frontend/build', static_url_path='')
+CORS(frontend_app)
+
+@frontend_app.route('/')
+def serve_react_app():
+    return send_from_directory(frontend_app.static_folder, 'index.html')
+
+@frontend_app.route('/test-route')
+def test_route():
+    return jsonify({"message": "Frontend app is working", "route": "/test-route"})
+
+# Add API endpoints to frontend app as well
+@frontend_app.route('/api/health')
+def frontend_health_check():
+    return jsonify({"status": "healthy", "message": "Frontend server is running"})
+
+@frontend_app.route('/api/case-studies')
+def frontend_get_case_studies():
+    print(f"[DEBUG] frontend_get_case_studies called, case_studies type: {type(case_studies)}")
+    print(f"[DEBUG] case_studies content: {case_studies}")
+    print(f"[DEBUG] case_studies keys: {list(case_studies.keys()) if isinstance(case_studies, dict) else 'Not a dict'}")
+    return jsonify({"case_studies": case_studies})
+
+@frontend_app.route('/api/case-studies', methods=['POST'])
+def frontend_create_case_study():
+    data = request.get_json()
+    case_study_id = str(uuid.uuid4())
+    case_study_name = data.get("name", "Untitled Case Study")
+    case_study_description = data.get("description", "")
+    created_by = data.get("created_by", "Anonymous")
+    
+    # Create folder structure for the case study
+    try:
+        case_study_path, folder_name = create_case_study_folders(case_study_id, case_study_name)
+        
+        # Create datapackage.json metadata file
+        datapackage_path = create_datapackage_json(
+            case_study_path, 
+            case_study_name, 
+            case_study_description,
+            created_by
+        )
+        
+        case_study = {
+            "id": case_study_id,
+            "name": case_study_name,
+            "description": case_study_description,
+            "created_by": created_by,
+            "created_at": datetime.now().isoformat(),
+            "scenario_count": 0,
+            "folder_name": folder_name,
+            "folder_path": case_study_path,
+            "datapackage_path": datapackage_path
+        }
+        case_studies.append(case_study)
+        return jsonify({"case_study": case_study}), 201
+    except Exception as e:
+        return jsonify({"error": f"Failed to create case study folders: {str(e)}"}), 500
+
+@frontend_app.route('/api/case-studies/<case_study_id>', methods=['DELETE'])
+def frontend_delete_case_study(case_study_id):
+    """Delete a case study and all its associated files"""
+    print(f"[DEBUG] DELETE request received for case study ID: {case_study_id}")
+    print(f"[DEBUG] Request method: {request.method}")
+    print(f"[DEBUG] Request headers: {dict(request.headers)}")
+    
+    try:
+        # Find the case study
+        case_study = next((cs for cs in case_studies if cs['id'] == case_study_id), None)
+        if not case_study:
+            print(f"[DEBUG] Case study not found: {case_study_id}")
+            return jsonify({"error": "Case study not found"}), 404
+        
+        print(f"[DEBUG] Found case study: {case_study.get('name', 'Unknown')}")
+        
+        # Remove the case study folder and all its contents
+        import shutil
+        folder_path = case_study.get('folder_path')
+        if folder_path and os.path.exists(folder_path):
+            print(f"[DEBUG] Removing folder: {folder_path}")
+            shutil.rmtree(folder_path)
+        
+        # Remove the case study from the list
+        case_studies[:] = [cs for cs in case_studies if cs['id'] != case_study_id]
+        
+        # Remove associated scenarios
+        global scenarios
+        scenarios = [s for s in scenarios if s.get('case_study_id') != case_study_id]
+        
+        print(f"[DEBUG] Case study deleted successfully")
+        return jsonify({"message": "Case study deleted successfully"}), 200
+    except Exception as e:
+        print(f"[DEBUG] Error deleting case study: {str(e)}")
+        return jsonify({"error": f"Failed to delete case study: {str(e)}"}), 500
+
+@frontend_app.route('/api/case-studies/upload', methods=['POST'])
+def frontend_upload_case_study():
+    global scenarios  # Need to declare global to modify the list
+    if 'file' not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No file selected"}), 400
+    
+    if not file.filename.endswith('.zip'):
+        return jsonify({"error": "File must be a ZIP archive"}), 400
+    
+    try:
+        # Create a temporary directory to extract ZIP contents
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp_dir:
+            zip_path = os.path.join(temp_dir, file.filename)
+            file.save(zip_path)
+            
+            # Extract ZIP file
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_dir)
+            
+            # Create case study from ZIP file
+            case_study_id = str(uuid.uuid4())
+            case_study_name = os.path.splitext(file.filename)[0]
+            
+            # Create folder structure for the case study
+            case_study_path, folder_name = create_case_study_folders(case_study_id, case_study_name)
+            
+            # Copy extracted files to appropriate directories with special handling
+            files_copied = []
+            geodata_files = []
+            baseline_csv_files = []  # Only isodata.csv for baseline scenarios
+            resource_files = []      # All CSV files for datapackage resources
+            
+            for root, dirs, files in os.walk(temp_dir):
+                # Check if we're in a geodata folder
+                is_geodata_folder = 'geodata' in os.path.relpath(root, temp_dir).lower()
+                    
+                for f in files:
+                    if f.endswith('.zip'):  # Skip the original ZIP file
+                        continue
+                        
+                    src_file = os.path.join(root, f)
+                    
+                    # Special handling for specific CSV files
+                    if f.lower() == 'isodata.csv':
+                        dest_dir = os.path.join(case_study_path, 'input', 'baseline')
+                        dest_filename = 'baseline.csv'
+                        baseline_csv_files.append('baseline.csv')  # Only isodata creates baseline scenario
+                        resource_files.append('baseline.csv')     # Also add to resources
+                    elif f.lower() == 'treatment.csv':
+                        dest_dir = os.path.join(case_study_path, 'input', 'baseline')
+                        dest_filename = 'baseline-treatment.csv'
+                        resource_files.append('baseline-treatment.csv')  # Add to resources but not baseline scenarios
+                    elif is_geodata_folder:
+                        # Files in geodata folder go to config
+                        dest_dir = os.path.join(case_study_path, 'config')
+                        dest_filename = f
+                        geodata_files.append(f)
+                    else:
+                        # Standard file handling
+                        dest_filename = f
+                        if f.endswith(('.csv', '.txt', '.dat', '.R', '.py')):
+                            dest_dir = os.path.join(case_study_path, 'input', 'baseline')
+                            if f.endswith('.csv'):
+                                resource_files.append(f)  # Add all CSV files to resources
+                                # Don't add to baseline_csv_files - only isodata.csv creates baseline scenarios
+                        elif f.endswith(('.json', '.yaml', '.yml', '.xml', '.conf')):
+                            dest_dir = os.path.join(case_study_path, 'config')
+                        else:
+                            dest_dir = os.path.join(case_study_path, 'input')  # Default to input
+                    
+                    dest_file = os.path.join(dest_dir, dest_filename)
+                    shutil.copy2(src_file, dest_file)
+                    files_copied.append(dest_filename)
+            
+            # Create datapackage.json with ALL CSV files as resources
+            datapackage_path = create_datapackage_json(
+                case_study_path, 
+                case_study_name, 
+                f"Uploaded from {file.filename} - Contains {len(files_copied)} files",
+                created_by="Upload User",
+                csv_files=resource_files  # Include all CSV files in datapackage resources
+            )
+            
+            case_study = {
+                "id": case_study_id,
+                "name": case_study_name,
+                "description": f"Uploaded from {file.filename} - Contains {len(files_copied)} files ({len(resource_files)} CSV files)",
+                "created_at": datetime.now().isoformat(),
+                "scenario_count": len(resource_files),
+                "files": files_copied,
+                "folder_name": folder_name,
+                "folder_path": case_study_path
+            }
+            case_studies.append(case_study)
+            
+            # Create scenarios from ALL CSV files (for in-memory scenarios list)
+            for csv_file in resource_files:
+                scenario = {
+                    "id": str(uuid.uuid4()),
+                    "name": os.path.splitext(csv_file)[0],
+                    "case_study_id": case_study["id"],
+                    "file_path": csv_file,
+                    "created_at": datetime.now().isoformat(),
+                    "updated_at": datetime.now().isoformat()
+                }
+                scenarios.append(scenario)
+            
+            # Create baseline scenario ONLY if isodata.csv was found (now baseline.csv)
+            if baseline_csv_files:
+                baseline_scenario = {
+                    "id": str(uuid.uuid4()),
+                    "name": "Baseline",
+                    "case_study_id": case_study["id"],
+                    "file_path": "baseline",  # Special path indicating this is the baseline folder
+                    "is_baseline": True,
+                    "description": f"Baseline scenario for isodata.csv file",
+                    "created_at": datetime.now().isoformat(),
+                    "updated_at": datetime.now().isoformat()
+                }
+                scenarios.append(baseline_scenario)
+                
+                # Create baseline scenario CSV file for persistence (only with isodata/baseline.csv)
+                create_baseline_scenario_in_csv(case_study, baseline_csv_files)
+            
+            # Update case study description with better information
+            case_study["description"] = f"Uploaded from {file.filename} - Contains {len(files_copied)} files ({len(resource_files)} scenario files, {len(geodata_files)} geodata files)"
+            case_study["datapackage_path"] = datapackage_path
+            
+            return jsonify({"case_study": case_study, "scenarios_created": len(resource_files)}), 201
+            
+    except Exception as e:
+        return jsonify({"error": f"Failed to process ZIP file: {str(e)}"}), 500
+
+@frontend_app.route('/api/scenarios')
+def frontend_get_scenarios():
+    print("=== SCENARIOS ENDPOINT CALLED ===")
+    import sys
+    sys.stdout.flush()
+    case_study_id = request.args.get('case_study_id')
+    all_scenarios = []
+    
+    print(f"[DEBUG] GET scenarios request for case_study_id: {case_study_id}")
+    print(f"[DEBUG] Available case studies: {len(case_studies)}")
+    sys.stdout.flush()
+    
+    # Load scenarios from scenarios_metadata.csv files for all case studies
+    for case_study in case_studies:
+        print(f"[DEBUG] Processing case study: {case_study}")
+        sys.stdout.flush()
+        case_study_path = case_study.get('folder_path')
+        if case_study_path:
+            print(f"[DEBUG] Loading scenarios from path: {case_study_path}")
+            sys.stdout.flush()
+            case_study_scenarios = load_scenarios_from_metadata_csv(case_study_path)
+            print(f"[DEBUG] Loaded {len(case_study_scenarios)} scenarios")
+            sys.stdout.flush()
+            all_scenarios.extend(case_study_scenarios)
+        else:
+            print(f"[DEBUG] No folder_path for case study: {case_study}")
+            sys.stdout.flush()
+    
+    print(f"[DEBUG] Total scenarios loaded: {len(all_scenarios)}")
+    sys.stdout.flush()
+    
+    if case_study_id:
+        # For specific case study, load from that case study only
+        case_study = next((cs for cs in case_studies if cs['id'] == case_study_id), None)
+        if case_study and case_study.get('folder_path'):
+            print(f"[DEBUG] Loading scenarios for specific case study: {case_study_id}")
+            case_study_scenarios = load_scenarios_from_metadata_csv(case_study['folder_path'])
+            # Set the case_study_id for all loaded scenarios
+            for scenario in case_study_scenarios:
+                scenario['case_study_id'] = case_study_id
+            print(f"[DEBUG] Loaded {len(case_study_scenarios)} scenarios for case study")
+            return jsonify({"scenarios": case_study_scenarios})
+        else:
+            print(f"[DEBUG] Case study not found or no folder path: {case_study_id}")
+            return jsonify({"scenarios": []})
+    else:
+        # For all case studies
+        for case_study in case_studies:
+            print(f"[DEBUG] Processing case study: {case_study}")
+            sys.stdout.flush()
+            case_study_path = case_study.get('folder_path')
+            if case_study_path:
+                print(f"[DEBUG] Loading scenarios from path: {case_study_path}")
+                sys.stdout.flush()
+                case_study_scenarios = load_scenarios_from_metadata_csv(case_study_path)
+                # Set the case_study_id for all loaded scenarios
+                for scenario in case_study_scenarios:
+                    scenario['case_study_id'] = case_study['id']
+                print(f"[DEBUG] Loaded {len(case_study_scenarios)} scenarios")
+                sys.stdout.flush()
+                all_scenarios.extend(case_study_scenarios)
+            else:
+                print(f"[DEBUG] No folder_path for case study: {case_study}")
+                sys.stdout.flush()
+        
+        print(f"[DEBUG] Total scenarios loaded: {len(all_scenarios)}")
+        sys.stdout.flush()
+        return jsonify({"scenarios": all_scenarios})
+
+@frontend_app.route('/api/scenarios', methods=['POST'])
+def frontend_create_scenario():
+    """Create a new scenario and save it as CSV file (frontend endpoint)"""
+    return create_scenario()  # Delegate to the main implementation
+
+@frontend_app.route('/api/scenarios/<scenario_id>', methods=['DELETE'])
+def frontend_delete_scenario(scenario_id):
+    """Delete a scenario (frontend endpoint)"""
+    return delete_scenario(scenario_id)  # Delegate to the main implementation
+
+@frontend_app.route('/api/glowpa/start', methods=['POST'])
+def frontend_start_glowpa():
+    global glowpa_running
+    try:
+        import subprocess
+        data = request.get_json() or {}
+        case_study_id = data.get('case_study_id')
+        
+        # First check if container is already running
+        check_result = subprocess.run(['docker', 'ps', '--filter', 'name=glowpa-container', '--format', '{{.Status}}'], 
+                                    capture_output=True, text=True, timeout=10)
+        
+        if check_result.returncode == 0 and check_result.stdout.strip() and 'Up' in check_result.stdout:
+            glowpa_running = True
+            return jsonify({"status": "success", "message": "GloWPa container is already running"})
+        
+        # Try to start the container
+        result = subprocess.run(['docker', 'start', 'glowpa-container'], 
+                              capture_output=True, text=True, timeout=30)
+        
+        if result.returncode == 0:
+            glowpa_running = True
+            if case_study_id:
+                case_study = next((cs for cs in case_studies if cs['id'] == case_study_id), None)
+                if case_study:
+                    message = f"GloWPa started for case study: {case_study['name']}"
+                else:
+                    message = "GloWPa started (case study not found)"
+            else:
+                message = "GloWPa container started successfully"
+            return jsonify({"status": "success", "message": message})
+        else:
+            error_msg = result.stderr.strip() if result.stderr else "Failed to start container"
+            return jsonify({"status": "error", "message": f"Failed to start GloWPa: {error_msg}"}), 500
+            
+    except subprocess.TimeoutExpired:
+        return jsonify({"status": "error", "message": "Timeout while starting GloWPa container"}), 500
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@frontend_app.route('/api/glowpa/stop', methods=['POST'])
+def frontend_stop_glowpa():
+    global glowpa_running
+    try:
+        import subprocess
+        # Stop the actual Docker container
+        result = subprocess.run(['docker', 'stop', 'glowpa-container'], 
+                              capture_output=True, text=True, timeout=30)
+        
+        if result.returncode == 0:
+            glowpa_running = False
+            return jsonify({"status": "success", "message": "GloWPa container stopped successfully"})
+        else:
+            error_msg = result.stderr.strip() if result.stderr else "Failed to stop container"
+            return jsonify({"status": "error", "message": f"Failed to stop GloWPa: {error_msg}"}), 500
+            
+    except subprocess.TimeoutExpired:
+        return jsonify({"status": "error", "message": "Timeout while stopping GloWPa container"}), 500
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@frontend_app.route('/api/glowpa-status')
+def frontend_glowpa_status():
+    try:
+        import socket
+        # Since Glowpa runs R and doesn't listen on HTTP, we just check if we can resolve the hostname
+        # If the container is running and on the same network, the hostname should resolve
+        socket.gethostbyname('glowpa-container')
+        return jsonify({"glowpa_status": "connected", "message": "Container hostname resolves"})
+    except socket.gaierror:
+        return jsonify({"glowpa_status": "disconnected", "message": "Container hostname not found"})
+    except Exception as e:
+        return jsonify({"glowpa_status": "disconnected", "error": str(e)})
+
+@app.route('/api/health')
+def health_check():
+    return jsonify({"status": "healthy", "message": "Backend is running"})
+
+@app.route('/api/case-studies')
+def get_case_studies():
+    return jsonify({"case_studies": case_studies})
+
+@app.route('/api/case-studies', methods=['POST'])
+def create_case_study():
+    data = request.get_json()
+    case_study_id = str(uuid.uuid4())
+    case_study_name = data.get("name", "Untitled Case Study")
+    case_study_description = data.get("description", "")
+    created_by = data.get("created_by", "Anonymous")
+    
+    # Create folder structure for the case study
+    try:
+        case_study_path, folder_name = create_case_study_folders(case_study_id, case_study_name)
+        
+        # Create datapackage.json metadata file
+        datapackage_path = create_datapackage_json(
+            case_study_path,
+            case_study_name,
+            case_study_description,
+            created_by
+        )
+        
+        case_study = {
+            "id": case_study_id,
+            "name": case_study_name,
+            "description": case_study_description,
+            "created_by": created_by,
+            "created_at": datetime.now().isoformat(),
+            "scenario_count": 0,
+            "folder_name": folder_name,
+            "folder_path": case_study_path,
+            "datapackage_path": datapackage_path
+        }
+        case_studies.append(case_study)
+        return jsonify({"case_study": case_study}), 201
+    except Exception as e:
+        return jsonify({"error": f"Failed to create case study folders: {str(e)}"}), 500
+
+@app.route('/api/case-studies/<case_study_id>', methods=['DELETE'])
+def delete_case_study(case_study_id):
+    """Delete a case study and all its associated files"""
+    try:
+        # Find the case study
+        case_study = next((cs for cs in case_studies if cs['id'] == case_study_id), None)
+        if not case_study:
+            return jsonify({"error": "Case study not found"}), 404
+        
+        # Remove the case study folder and all its contents
+        import shutil
+        folder_path = case_study.get('folder_path')
+        if folder_path and os.path.exists(folder_path):
+            shutil.rmtree(folder_path)
+        
+        # Remove the case study from the list
+        case_studies[:] = [cs for cs in case_studies if cs['id'] != case_study_id]
+        
+        # Remove associated scenarios
+        global scenarios
+        scenarios = [s for s in scenarios if s.get('case_study_id') != case_study_id]
+        
+        return jsonify({"message": "Case study deleted successfully"}), 200
+    except Exception as e:
+        return jsonify({"error": f"Failed to delete case study: {str(e)}"}), 500
+
+@app.route('/api/case-studies/upload', methods=['POST'])
+def upload_case_study():
+    global scenarios  # Need to declare global to modify the list
+    if 'file' not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No file selected"}), 400
+    
+    if not file.filename.endswith('.zip'):
+        return jsonify({"error": "File must be a ZIP archive"}), 400
+    
+    try:
+        # Create a temporary directory to extract ZIP contents
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp_dir:
+            zip_path = os.path.join(temp_dir, file.filename)
+            file.save(zip_path)
+            
+            # Extract ZIP file
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_dir)
+            
+            # Create case study from ZIP file
+            case_study_id = str(uuid.uuid4())
+            case_study_name = os.path.splitext(file.filename)[0]
+            
+            # Create folder structure for the case study
+            case_study_path, folder_name = create_case_study_folders(case_study_id, case_study_name)
+            
+            # Copy extracted files to appropriate directories with special handling
+            files_copied = []
+            geodata_files = []
+            scenario_files = []
+            
+            for root, dirs, files in os.walk(temp_dir):
+                # Check if we're in a geodata folder
+                is_geodata_folder = 'geodata' in os.path.relpath(root, temp_dir).lower()
+                    
+                for f in files:
+                    if f.endswith('.zip'):  # Skip the original ZIP file
+                        continue
+                        
+                    src_file = os.path.join(root, f)
+                    
+                    # Special handling for specific CSV files
+                    if f.lower() == 'isodata.csv':
+                        dest_dir = os.path.join(case_study_path, 'input', 'baseline')
+                        dest_filename = 'baseline.csv'
+                        scenario_files.append('baseline.csv')
+                    elif f.lower() == 'treatment.csv':
+                        dest_dir = os.path.join(case_study_path, 'input', 'baseline')
+                        dest_filename = 'baseline-treatment.csv'
+                        scenario_files.append('baseline-treatment.csv')
+                    elif is_geodata_folder:
+                        # Files in geodata folder go to config
+                        dest_dir = os.path.join(case_study_path, 'config')
+                        dest_filename = f
+                        geodata_files.append(f)
+                    else:
+                        # Standard file handling
+                        dest_filename = f
+                        if f.endswith(('.csv', '.txt', '.dat', '.R', '.py')):
+                            dest_dir = os.path.join(case_study_path, 'input', 'baseline')
+                            if f.endswith('.csv'):
+                                scenario_files.append(f)
+                        elif f.endswith(('.json', '.yaml', '.yml', '.xml', '.conf')):
+                            dest_dir = os.path.join(case_study_path, 'config')
+                        else:
+                            dest_dir = os.path.join(case_study_path, 'input')  # Default to input
+                    
+                    dest_file = os.path.join(dest_dir, dest_filename)
+                    shutil.copy2(src_file, dest_file)
+                    files_copied.append(dest_filename)
+            
+            # Create datapackage.json with proper resource tracking
+            datapackage_path = create_datapackage_json(
+                case_study_path, 
+                case_study_name, 
+                f"Uploaded from {file.filename} - Contains {len(files_copied)} files",
+                created_by="Upload User"
+            )
+            
+            # Look for CSV files to create scenarios (only count scenario files, not geodata)
+            csv_files = scenario_files
+            
+            case_study = {
+                "id": case_study_id,
+                "name": case_study_name,
+                "description": f"Uploaded from {file.filename} - Contains {len(files_copied)} files ({len(csv_files)} CSV files)",
+                "created_at": datetime.now().isoformat(),
+                "scenario_count": len(csv_files),
+                "files": files_copied,
+                "folder_name": folder_name,
+                "folder_path": case_study_path
+            }
+            case_studies.append(case_study)
+            
+            # Create scenarios from CSV files
+            for csv_file in csv_files:
+                scenario = {
+                    "id": str(uuid.uuid4()),
+                    "name": os.path.splitext(csv_file)[0],
+                    "case_study_id": case_study["id"],
+                    "file_path": csv_file,
+                    "created_at": datetime.now().isoformat(),
+                    "updated_at": datetime.now().isoformat()
+                }
+                scenarios.append(scenario)
+            
+            # Create baseline scenario if there are CSV files in the baseline folder
+            if csv_files:
+                baseline_scenario = {
+                    "id": str(uuid.uuid4()),
+                    "name": "Baseline",
+                    "case_study_id": case_study["id"],
+                    "file_path": "baseline",  # Special path indicating this is the baseline folder
+                    "is_baseline": True,
+                    "description": f"Baseline scenario containing {len(csv_files)} CSV files in input/baseline folder",
+                    "created_at": datetime.now().isoformat(),
+                    "updated_at": datetime.now().isoformat()
+                }
+                scenarios.append(baseline_scenario)
+            
+            # Update case study description with better information
+            case_study["description"] = f"Uploaded from {file.filename} - Contains {len(files_copied)} files ({len(csv_files)} scenario files, {len(geodata_files)} geodata files)"
+            case_study["datapackage_path"] = datapackage_path
+            
+            return jsonify({"case_study": case_study, "scenarios_created": len(csv_files)}), 201
+            
+    except Exception as e:
+        return jsonify({"error": f"Failed to process ZIP file: {str(e)}"}), 500
+
+@app.route('/api/case-studies/upload-new', methods=['POST'])
+def upload_case_study_new():
+    """New upload function with baseline folder structure"""
+    if 'file' not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No file selected"}), 400
+    
+    if not file.filename.endswith('.zip'):
+        return jsonify({"error": "File must be a ZIP archive"}), 400
+    
+    try:
+        # Create a temporary directory to extract ZIP contents
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp_dir:
+            zip_path = os.path.join(temp_dir, file.filename)
+            file.save(zip_path)
+            
+            # Extract ZIP file
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_dir)
+            
+            # Create case study from ZIP file
+            case_study_id = str(uuid.uuid4())
+            case_study_name = os.path.splitext(file.filename)[0]
+            
+            # Create folder structure for the case study
+            case_study_path, folder_name = create_case_study_folders(case_study_id, case_study_name)
+            
+            # Copy extracted files to appropriate directories
+            files_copied = []
+            geodata_files = []
+            csv_files = []  # Track CSV files for datapackage.json
+            
+            for root, dirs, files in os.walk(temp_dir):
+                if root == temp_dir:  # Skip the root temp directory itself
+                    continue
+                    
+                # Check if we're in a geodata folder
+                is_geodata_folder = 'geodata' in os.path.relpath(root, temp_dir).lower()
+                    
+                for f in files:
+                    if f.endswith('.zip'):  # Skip the original ZIP file
+                        continue
+                        
+                    src_file = os.path.join(root, f)
+                    
+                    # Handle CSV files - move them to the input/baseline folder
+                    if f.endswith('.csv') and not is_geodata_folder:
+                        dest_dir = os.path.join(case_study_path, 'input', 'baseline')
+                        dest_filename = f
+                        csv_files.append(f)
+                    elif is_geodata_folder:
+                        # Files in geodata folder go to input but are tracked separately
+                        dest_dir = os.path.join(case_study_path, 'input')
+                        dest_filename = f
+                        geodata_files.append(f)
+                    else:
+                        # Standard file handling for non-CSV files
+                        dest_filename = f
+                        if f.endswith(('.txt', '.dat', '.R', '.py')):
+                            dest_dir = os.path.join(case_study_path, 'input')
+                        elif f.endswith(('.json', '.yaml', '.yml', '.xml', '.conf')):
+                            dest_dir = os.path.join(case_study_path, 'config')
+                        else:
+                            dest_dir = os.path.join(case_study_path, 'input')  # Default to input
+                    
+                    dest_file = os.path.join(dest_dir, dest_filename)
+                    shutil.copy2(src_file, dest_file)
+                    files_copied.append(dest_filename)
+            
+            # Create datapackage.json with CSV file references
+            datapackage_path = create_datapackage_json(
+                case_study_path, 
+                case_study_name, 
+                f"Uploaded from {file.filename} - Contains {len(csv_files)} CSV files and {len(geodata_files)} geodata files",
+                created_by="Upload User",
+                csv_files=csv_files
+            )
+            
+            case_study = {
+                "id": case_study_id,
+                "name": case_study_name,
+                "description": f"Uploaded from {file.filename} - Contains {len(csv_files)} CSV files and {len(geodata_files)} geodata files",
+                "created_at": datetime.now().isoformat(),
+                "scenario_count": len(csv_files),
+                "files": files_copied,
+                "folder_name": folder_name,
+                "folder_path": case_study_path,
+                "datapackage_path": datapackage_path
+            }
+            
+            # Create initial scenarios_metadata.csv with baseline scenario
+            if csv_files:
+                create_scenarios_metadata_csv(case_study, csv_files)
+            
+            case_studies.append(case_study)
+            
+            return jsonify({"case_study": case_study, "csv_files_created": len(csv_files)}), 201
+            
+    except Exception as e:
+        return jsonify({"error": f"Failed to process ZIP file: {str(e)}"}), 500
+
+@frontend_app.route('/api/case-studies/<case_study_id>/datapackage')
+def frontend_get_case_study_datapackage(case_study_id):
+    """Get the datapackage.json content for a case study"""
+    try:
+        print(f"[DEBUG] Looking for case study with ID: '{case_study_id}'")
+        print(f"[DEBUG] Available case studies: {[cs.get('id', 'no-id') for cs in case_studies]}")
+        
+        # Find the case study
+        case_study = next((cs for cs in case_studies if cs['id'] == case_study_id), None)
+        if not case_study:
+            print(f"[DEBUG] Case study not found for ID: '{case_study_id}'")
+            return jsonify({"error": "Case study not found"}), 404
+        
+        print(f"[DEBUG] Found case study: {case_study.get('name', 'unknown')}")
+        
+        # Read the datapackage.json file
+        datapackage_path = os.path.join(case_study['folder_path'], 'datapackage.json')
+        print(f"[DEBUG] Looking for datapackage at: {datapackage_path}")
+        
+        if os.path.exists(datapackage_path):
+            with open(datapackage_path, 'r', encoding='utf-8') as f:
+                datapackage = json.load(f)
+            return jsonify(datapackage)
+        else:
+            print(f"[DEBUG] Datapackage file not found at: {datapackage_path}")
+            return jsonify({"error": "Datapackage file not found"}), 404
+            
+    except Exception as e:
+        print(f"[DEBUG] Exception in datapackage endpoint: {str(e)}")
+        return jsonify({"error": f"Failed to read datapackage: {str(e)}"}), 500
+
+@frontend_app.route('/api/case-studies/<case_study_id>/datapackage', methods=['PUT'])
+def frontend_update_case_study_datapackage(case_study_id):
+    """Update the datapackage.json content for a case study"""
+    try:
+        # Find the case study
+        case_study = next((cs for cs in case_studies if cs['id'] == case_study_id), None)
+        if not case_study:
+            return jsonify({"error": "Case study not found"}), 404
+        
+        # Get the updated datapackage content
+        datapackage_data = request.get_json()
+        if not datapackage_data:
+            return jsonify({"error": "No datapackage data provided"}), 400
+        
+        # Write the updated datapackage.json file
+        datapackage_path = os.path.join(case_study['folder_path'], 'datapackage.json')
+        with open(datapackage_path, 'w', encoding='utf-8') as f:
+            json.dump(datapackage_data, f, indent=2, ensure_ascii=False)
+        
+        return jsonify({"status": "success", "message": "Datapackage updated successfully"})
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to update datapackage: {str(e)}"}), 500
+
+# Scenarios endpoints
+@app.route('/api/scenarios')
+def get_scenarios():
+    """Get all scenarios or scenarios for a specific case study"""
+    case_study_id = request.args.get('case_study_id')
+    scenarios = []
+    
+    if case_study_id:
+        # Get scenarios for specific case study
+        case_study = next((cs for cs in case_studies if cs['id'] == case_study_id), None)
+        if case_study:
+            scenarios = case_study.get('scenarios', [])
+    else:
+        # Get all scenarios across all case studies
+        for case_study in case_studies:
+            scenarios.extend(case_study.get('scenarios', []))
+    
+    return jsonify({"scenarios": scenarios})
+
+@app.route('/api/scenarios', methods=['POST'])
+def create_scenario():
+    """Create a new scenario and save it as CSV file"""
+    try:
+        print("[DEBUG] Starting scenario creation...")
+        data = request.get_json()
+        print(f"[DEBUG] Received data: {data}")
+        
+        scenario_name = data.get('name', 'New Scenario')
+        scenario_description = data.get('description', '')
+        scenario_ssp = data.get('ssp', '')
+        scenario_year = data.get('year', datetime.now().year)
+        case_study_id = data.get('case_study_id')
+        scenario_value = data.get('value', '')
+        scenario_data = data.get('data', [])
+        
+        print(f"[DEBUG] Scenario name: {scenario_name}, Case study ID: {case_study_id}")
+        
+        if not case_study_id:
+            return jsonify({"error": "Case study ID is required"}), 400
+        
+        # Find the case study
+        case_study = next((cs for cs in case_studies if cs['id'] == case_study_id), None)
+        if not case_study:
+            print(f"[DEBUG] Case study not found for ID: {case_study_id}")
+            return jsonify({"error": "Case study not found"}), 404
+        
+        print(f"[DEBUG] Found case study: {case_study['name']}")
+        
+        # Generate unique scenario ID
+        scenario_id = str(uuid.uuid4())
+        
+        # Create safe filename from scenario name
+        safe_name = "".join(c for c in scenario_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        csv_filename = f"{safe_name}_{scenario_id[:8]}.csv"
+        
+        # Create CSV file path
+        input_dir = os.path.join(case_study['folder_path'], 'input')
+        csv_path = os.path.join(input_dir, csv_filename)
+        
+        print(f"[DEBUG] Creating CSV file at: {csv_path}")
+        
+        # Write CSV file - replicate the test_data.csv format
+        import csv
+        with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+            if scenario_data:
+                # If data is provided, write it
+                if isinstance(scenario_data, list) and scenario_data:
+                    fieldnames = scenario_data[0].keys() if isinstance(scenario_data[0], dict) else ['value']
+                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                    writer.writeheader()
+                    if isinstance(scenario_data[0], dict):
+                        writer.writerows(scenario_data)
+                    else:
+                        for item in scenario_data:
+                            writer.writerow({'value': item})
+            else:
+                # Create CSV with test_data.csv format structure
+                writer = csv.writer(csvfile)
+                writer.writerow(['id', 'name', 'value', 'scenario'])
+                
+                # Generate sample data rows based on the scenario
+                scenario_key = scenario_name.lower().replace(' ', '_')
+                base_value = 100  # Default base value
+                
+                # Create 3 data rows similar to test_data.csv
+                for i in range(1, 4):
+                    row_id = i
+                    row_name = f"{scenario_name} - Entry {i}"
+                    row_value = base_value * i  # 100, 200, 300
+                    row_scenario = f"{scenario_key}_{i}"
+                    
+                    writer.writerow([row_id, row_name, row_value, row_scenario])
+        
+        print(f"[DEBUG] CSV file created successfully")
+        
+        # Create scenario object
+        new_scenario = {
+            'id': scenario_id,
+            'name': scenario_name,
+            'description': scenario_description,
+            'ssp': scenario_ssp,
+            'year': scenario_year,
+            'value': scenario_value,
+            'case_study_id': case_study_id,
+            'csv_file': csv_filename,
+            'created_at': datetime.now().isoformat(),
+            'updated_at': datetime.now().isoformat()
+        }
+        
+        # Add to case study's scenarios list
+        if 'scenarios' not in case_study:
+            case_study['scenarios'] = []
+        case_study['scenarios'].append(new_scenario)
+        
+        # Update scenario metadata CSV file
+        config_dir = os.path.join(case_study['folder_path'], 'config')
+        os.makedirs(config_dir, exist_ok=True)
+        metadata_csv_path = os.path.join(config_dir, 'scenario_metadata.csv')
+        
+        # Read existing metadata or create new file
+        metadata_rows = []
+        if os.path.exists(metadata_csv_path):
+            with open(metadata_csv_path, 'r', newline='', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                metadata_rows = list(reader)
+        
+        # Add new scenario metadata with SSP fields
+        metadata_rows.append({
+            'scenario_id': scenario_id,
+            'name': scenario_name,
+            'description': scenario_description,
+            'ssp': scenario_ssp,
+            'year': str(scenario_year),
+            'additional_notes': data.get('additional_notes', ''),
+            'pathogen': data.get('pathogen', ''),
+            'projection_method': data.get('projectionMethod', ''),
+            'csv_file': csv_filename,
+            'created_at': new_scenario['created_at'],
+            'updated_at': new_scenario['updated_at']
+        })
+        
+        # Write updated metadata CSV
+        with open(metadata_csv_path, 'w', newline='', encoding='utf-8') as f:
+            fieldnames = ['scenario_id', 'name', 'description', 'ssp', 'year', 'additional_notes', 'pathogen', 'projection_method', 'csv_file', 'created_at', 'updated_at']
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(metadata_rows)
+        
+        # Update datapackage.json to register the new scenario
+        datapackage_path = os.path.join(case_study['folder_path'], 'datapackage.json')
+        try:
+            with open(datapackage_path, 'r', encoding='utf-8') as f:
+                datapackage = json.load(f)
+        except FileNotFoundError:
+            datapackage = {"resources": []}
+        
+        # Add resource entry for the new scenario
+        resource_entry = {
+            "name": safe_name.lower().replace(' ', '_'),
+            "path": f"input/{csv_filename}",
+            "title": scenario_name,
+            "description": scenario_description,
+            "format": "csv",
+            "mediatype": "text/csv",
+            "scenario_id": scenario_id,
+            "ssp": scenario_ssp,
+            "year": scenario_year,
+            "created": new_scenario['created_at']
+        }
+        
+        datapackage["resources"].append(resource_entry)
+        
+        # Save updated datapackage
+        with open(datapackage_path, 'w', encoding='utf-8') as f:
+            json.dump(datapackage, f, indent=2, ensure_ascii=False)
+        
+        return jsonify(new_scenario), 201
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to create scenario: {str(e)}")
+        print(f"[ERROR] Exception type: {type(e)}")
+        import traceback
+        print(f"[ERROR] Traceback: {traceback.format_exc()}")
+        return jsonify({"error": f"Failed to create scenario: {str(e)}"}), 500
+
+@app.route('/api/scenarios/<scenario_id>', methods=['PUT'])
+def update_scenario(scenario_id):
+    """Update an existing scenario's metadata"""
+    try:
+        data = request.get_json()
+        
+        # Find the case study containing this scenario
+        target_case_study = None
+        target_scenario = None
+        
+        for case_study in case_studies:
+            for scenario in case_study.get('scenarios', []):
+                if scenario['id'] == scenario_id:
+                    target_case_study = case_study
+                    target_scenario = scenario
+                    break
+            if target_scenario:
+                break
+        
+        if not target_scenario:
+            return jsonify({"error": "Scenario not found"}), 404
+        
+        # Update scenario fields
+        target_scenario['name'] = data.get('name', target_scenario['name'])
+        target_scenario['description'] = data.get('description', target_scenario.get('description', ''))
+        target_scenario['ssp'] = data.get('ssp', target_scenario.get('ssp', ''))
+        target_scenario['year'] = data.get('year', target_scenario.get('year', ''))
+        target_scenario['additional_notes'] = data.get('additional_notes', target_scenario.get('additional_notes', ''))
+        target_scenario['updated_at'] = datetime.now().isoformat()
+        
+        # Update scenario metadata CSV file
+        config_dir = os.path.join(target_case_study['folder_path'], 'config')
+        metadata_csv_path = os.path.join(config_dir, 'scenario_metadata.csv')
+        
+        if os.path.exists(metadata_csv_path):
+            # Read existing metadata
+            metadata_rows = []
+            with open(metadata_csv_path, 'r', newline='', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                metadata_rows = list(reader)
+            
+            # Update the specific scenario row
+            for row in metadata_rows:
+                if row['scenario_id'] == scenario_id:
+                    row['name'] = target_scenario['name']
+                    row['description'] = target_scenario['description']
+                    row['ssp'] = target_scenario['ssp']
+                    row['year'] = str(target_scenario['year'])
+                    row['additional_notes'] = target_scenario.get('additional_notes', '')
+                    row['updated_at'] = target_scenario['updated_at']
+                    break
+            
+            # Write updated metadata CSV
+            with open(metadata_csv_path, 'w', newline='', encoding='utf-8') as f:
+                fieldnames = ['scenario_id', 'name', 'description', 'ssp', 'year', 'additional_notes', 'csv_file', 'created_at', 'updated_at']
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(metadata_rows)
+        
+        return jsonify(target_scenario), 200
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to update scenario: {str(e)}"}), 500
+
+@app.route('/api/scenarios/<scenario_id>', methods=['DELETE'])
+def delete_scenario(scenario_id):
+    """Delete an existing scenario and its files"""
+    try:
+        print(f"[DEBUG] Starting scenario deletion for ID: {scenario_id}")
+        
+        # Find the case study containing this scenario
+        target_case_study = None
+        target_scenario = None
+        scenario_index = None
+        
+        for case_study in case_studies:
+            for i, scenario in enumerate(case_study.get('scenarios', [])):
+                if scenario['id'] == scenario_id:
+                    target_case_study = case_study
+                    target_scenario = scenario
+                    scenario_index = i
+                    break
+            if target_scenario:
+                break
+        
+        if not target_scenario:
+            return jsonify({"error": "Scenario not found"}), 404
+        
+        print(f"[DEBUG] Found scenario: {target_scenario['name']} in case study: {target_case_study['name']}")
+        
+        # Remove CSV file
+        csv_filename = target_scenario.get('csv_file')
+        if csv_filename:
+            csv_path = os.path.join(target_case_study['folder_path'], 'input', csv_filename)
+            if os.path.exists(csv_path):
+                os.remove(csv_path)
+                print(f"[DEBUG] Deleted CSV file: {csv_path}")
+        
+        # Remove from case study's scenarios list
+        del target_case_study['scenarios'][scenario_index]
+        
+        # Update scenario metadata CSV file
+        config_dir = os.path.join(target_case_study['folder_path'], 'config')
+        metadata_csv_path = os.path.join(config_dir, 'scenario_metadata.csv')
+        
+        if os.path.exists(metadata_csv_path):
+            # Read existing metadata
+            metadata_rows = []
+            with open(metadata_csv_path, 'r', newline='', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                metadata_rows = list(reader)
+            
+            # Remove the scenario from metadata
+            metadata_rows = [row for row in metadata_rows if row['scenario_id'] != scenario_id]
+            
+            # Write updated metadata CSV
+            with open(metadata_csv_path, 'w', newline='', encoding='utf-8') as f:
+                fieldnames = ['scenario_id', 'name', 'description', 'ssp', 'year', 'additional_notes', 'csv_file', 'created_at', 'updated_at']
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(metadata_rows)
+        
+        # Update datapackage.json to remove the scenario resource
+        datapackage_path = os.path.join(target_case_study['folder_path'], 'datapackage.json')
+        try:
+            with open(datapackage_path, 'r', encoding='utf-8') as f:
+                datapackage = json.load(f)
+            
+            # Remove the resource entry for this scenario
+            if 'resources' in datapackage:
+                datapackage['resources'] = [
+                    resource for resource in datapackage['resources'] 
+                    if resource.get('scenario_id') != scenario_id
+                ]
+            
+            # Save updated datapackage
+            with open(datapackage_path, 'w', encoding='utf-8') as f:
+                json.dump(datapackage, f, indent=2, ensure_ascii=False)
+                
+            print(f"[DEBUG] Updated datapackage.json")
+        except Exception as e:
+            print(f"[DEBUG] Warning: Could not update datapackage.json: {str(e)}")
+        
+        print(f"[DEBUG] Scenario deletion completed successfully")
+        return jsonify({"message": f"Scenario '{target_scenario['name']}' deleted successfully"}), 200
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to delete scenario: {str(e)}")
+        import traceback
+        print(f"[ERROR] Traceback: {traceback.format_exc()}")
+        return jsonify({"error": f"Failed to delete scenario: {str(e)}"}), 500
+
+# Serve React app (fallback for production)
+def load_existing_case_studies():
+    """Load existing case studies from the filesystem into memory"""
+    global case_studies
+    case_studies = []
+    
+    print(f"Loading case studies from: {DATA_DIR}")
+    
+    if not os.path.exists(DATA_DIR):
+        print(f"Data directory does not exist: {DATA_DIR}")
+        return
+    
+    print(f"Scanning directory: {DATA_DIR}")
+    for item in os.listdir(DATA_DIR):
+        item_path = os.path.join(DATA_DIR, item)
+        print(f"Found item: {item} (is_dir: {os.path.isdir(item_path)})")
+        if os.path.isdir(item_path) and '_' in item and item not in ['input', 'output', 'config']:
+            print(f"Processing potential case study folder: {item}")
+            # This looks like a case study folder
+            datapackage_path = os.path.join(item_path, 'datapackage.json')
+            
+            if os.path.exists(datapackage_path):
+                try:
+                    # Load metadata from datapackage.json
+                    with open(datapackage_path, 'r', encoding='utf-8') as f:
+                        datapackage = json.load(f)
+                    
+                    # Extract case study ID from folder name (last 8 characters after underscore)
+                    parts = item.rsplit('_', 1)
+                    if len(parts) == 2:
+                        folder_prefix, folder_id = parts
+                        
+                        # Count CSV files for scenarios
+                        input_dir = os.path.join(item_path, 'input')
+                        csv_count = 0
+                        files = []
+                        if os.path.exists(input_dir):
+                            files = os.listdir(input_dir)
+                            csv_count = len([f for f in files if f.endswith('.csv')])
+                        
+                        # Create case study object with deterministic ID based on folder name
+                        # Use a consistent method to generate the same ID for the same folder
+                        import hashlib
+                        folder_hash = hashlib.md5(item.encode()).hexdigest()
+                        case_study_id = folder_hash[:8] + '-' + folder_hash[8:12] + '-' + folder_hash[12:16] + '-' + folder_hash[16:20] + '-' + folder_hash[20:32]
+                        
+                        case_study = {
+                            "id": case_study_id,
+                            "name": datapackage.get('title', folder_prefix.replace('-', ' ').title()),
+                            "description": datapackage.get('description', 'Loaded from existing folder'),
+                            "created_by": datapackage.get('contributors', [{}])[0].get('title', 'Unknown') if datapackage.get('contributors') else 'Unknown',
+                            "created_at": datapackage.get('created', datetime.now().isoformat()),
+                            "scenario_count": csv_count,
+                            "files": files,
+                            "folder_name": item,
+                            "folder_path": item_path,
+                            "datapackage_path": datapackage_path,
+                            "scenarios": []  # Initialize scenarios list
+                        }
+                        
+                        # Load scenarios from scenario_metadata.csv if it exists
+                        metadata_csv_path = os.path.join(item_path, 'config', 'scenario_metadata.csv')
+                        if os.path.exists(metadata_csv_path):
+                            try:
+                                with open(metadata_csv_path, 'r', newline='', encoding='utf-8') as f:
+                                    reader = csv.DictReader(f)
+                                    for row in reader:
+                                        scenario = {
+                                            'id': row['scenario_id'],
+                                            'name': row['name'],
+                                            'description': row.get('description', ''),
+                                            'ssp': row.get('ssp', ''),
+                                            'year': row.get('year', ''),
+                                            'value': row.get('description', ''),  # Use description as value for now
+                                            'case_study_id': case_study_id,
+                                            'csv_file': row.get('csv_file', ''),
+                                            'created_at': row.get('created_at', case_study['created_at']),
+                                            'updated_at': row.get('updated_at', row.get('created_at', case_study['created_at']))
+                                        }
+                                        case_study['scenarios'].append(scenario)
+                            except Exception as e:
+                                print(f"Error loading scenario metadata from {metadata_csv_path}: {str(e)}")
+                        else:
+                            # Fallback: Load scenarios from datapackage resources
+                            for resource in datapackage.get('resources', []):
+                                if resource.get('format') == 'csv' and 'scenario_id' in resource:
+                                    scenario = {
+                                        'id': resource['scenario_id'],
+                                        'name': resource.get('title', resource.get('name', 'Unknown Scenario')),
+                                        'description': resource.get('description', ''),
+                                        'ssp': resource.get('ssp', ''),
+                                        'year': resource.get('year', ''),
+                                        'value': resource.get('description', ''),
+                                        'case_study_id': case_study_id,
+                                        'csv_file': os.path.basename(resource['path']),
+                                        'created_at': resource.get('created', case_study['created_at']),
+                                        'updated_at': resource.get('updated', resource.get('created', case_study['created_at']))
+                                    }
+                                    case_study['scenarios'].append(scenario)
+                        
+                        case_studies.append(case_study)
+                        print(f"Loaded case study: {case_study['name']} from {item}")
+                        
+                except Exception as e:
+                    print(f"Error loading case study from {item}: {str(e)}")
+                    # Create a basic case study entry even if datapackage.json is corrupted
+                    parts = item.rsplit('_', 1)
+                    if len(parts) == 2:
+                        folder_prefix, folder_id = parts
+                        case_study_id = folder_id.ljust(8, '0')[:8] + str(uuid.uuid4())[:24]
+                        case_study = {
+                            "id": case_study_id,
+                            "name": folder_prefix.replace('-', ' ').title(),
+                            "description": "Case study loaded from filesystem (metadata unavailable)",
+                            "created_by": "Unknown",
+                            "created_at": datetime.now().isoformat(),
+                            "scenario_count": 0,
+                            "files": [],
+                            "folder_name": item,
+                            "folder_path": item_path,
+                            "datapackage_path": datapackage_path,
+                            "scenarios": []  # Initialize empty scenarios list
+                        }
+                        case_studies.append(case_study)
+
+# Load existing case studies when the app starts
+load_existing_case_studies()
+
+@frontend_app.route('/api/case-studies/reload', methods=['GET', 'POST'])
+def frontend_reload_case_studies():
+    """Reload case studies from filesystem"""
+    try:
+        print(f"Frontend reload endpoint called with method: {request.method}")  # Debug log
+        load_existing_case_studies()
+        print(f"Loaded {len(case_studies)} case studies")  # Debug log
+        return jsonify({
+            "status": "success", 
+            "message": f"Reloaded {len(case_studies)} case studies",
+            "case_studies_count": len(case_studies),
+            "method_used": request.method
+        })
+    except Exception as e:
+        print(f"Error in reload: {str(e)}")  # Debug log
+        return jsonify({"error": f"Failed to reload case studies: {str(e)}"}), 500
+
+# CATCH-ALL ROUTE FOR SPA ROUTING - MUST BE LAST!
+@frontend_app.route('/<path:path>')
+def serve_static_files(path):
+    print(f"[DEBUG] Catch-all route hit with path: '{path}'")
+    print(f"[DEBUG] Static folder: '{frontend_app.static_folder}'")
+    full_path = os.path.join(frontend_app.static_folder, path)
+    print(f"[DEBUG] Checking if file exists: '{full_path}'")
+    if os.path.exists(full_path):
+        print(f"[DEBUG] File exists, serving: '{path}'")
+        return send_from_directory(frontend_app.static_folder, path)
+    else:
+        print(f"[DEBUG] File doesn't exist, serving index.html for SPA routing")
+        return send_from_directory(frontend_app.static_folder, 'index.html')
+
+# Also add the reload endpoint to the regular app
+@app.route('/api/case-studies/reload', methods=['POST'])
+def reload_case_studies():
+    """Reload case studies from filesystem"""
+    try:
+        load_existing_case_studies()
+        return jsonify({
+            "status": "success", 
+            "message": f"Reloaded {len(case_studies)} case studies",
+            "case_studies_count": len(case_studies)
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to reload case studies: {str(e)}"}), 500
+
+@app.route('/api/case-studies/<case_study_id>/datapackage')
+def get_case_study_datapackage(case_study_id):
+    """Get the datapackage.json content for a case study"""
+    try:
+        print(f"[DEBUG] (main app) Looking for case study with ID: '{case_study_id}'")
+        print(f"[DEBUG] (main app) Available case studies: {[cs.get('id', 'no-id') for cs in case_studies]}")
+        
+        # Find the case study
+        case_study = next((cs for cs in case_studies if cs['id'] == case_study_id), None)
+        if not case_study:
+            print(f"[DEBUG] (main app) Case study not found for ID: '{case_study_id}'")
+            return jsonify({"error": "Case study not found"}), 404
+        
+        print(f"[DEBUG] (main app) Found case study: {case_study.get('name', 'unknown')}")
+        
+        # Read the datapackage.json file
+        datapackage_path = os.path.join(case_study['folder_path'], 'datapackage.json')
+        print(f"[DEBUG] (main app) Looking for datapackage at: {datapackage_path}")
+        
+        if os.path.exists(datapackage_path):
+            with open(datapackage_path, 'r', encoding='utf-8') as f:
+                datapackage = json.load(f)
+            return jsonify(datapackage)
+        else:
+            print(f"[DEBUG] (main app) Datapackage file not found at: {datapackage_path}")
+            return jsonify({"error": "Datapackage file not found"}), 404
+            
+    except Exception as e:
+        print(f"[DEBUG] (main app) Exception in datapackage endpoint: {str(e)}")
+        return jsonify({"error": f"Failed to read datapackage: {str(e)}"}), 500
+
+@app.route('/api/case-studies/<case_study_id>/datapackage', methods=['PUT'])
+def update_case_study_datapackage(case_study_id):
+    """Update the datapackage.json content for a case study"""
+    try:
+        # Find the case study
+        case_study = next((cs for cs in case_studies if cs['id'] == case_study_id), None)
+        if not case_study:
+            return jsonify({"error": "Case study not found"}), 404
+        
+        # Get the updated datapackage content
+        datapackage_data = request.get_json()
+        if not datapackage_data:
+            return jsonify({"error": "No datapackage data provided"}), 400
+        
+        # Write the updated datapackage.json file
+        datapackage_path = os.path.join(case_study['folder_path'], 'datapackage.json')
+        with open(datapackage_path, 'w', encoding='utf-8') as f:
+            json.dump(datapackage_data, f, indent=2, ensure_ascii=False)
+        
+        return jsonify({"status": "success", "message": "Datapackage updated successfully"})
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to update datapackage: {str(e)}"}), 500
+
+@app.route('/api/test', methods=['GET', 'POST'])
+def frontend_test():
+    """Test endpoint for debugging"""
+    return jsonify({
+        "status": "ok", 
+        "message": "Frontend app is working", 
+        "method": request.method,
+        "case_studies_count": len(case_studies),
+        "case_studies": [{"id": cs.get("id", "no-id"), "name": cs.get("name", "no-name")} for cs in case_studies]
+    })
+
+@app.route('/api/glowpa-status')
+def main_glowpa_status():
+    try:
+        import socket
+        # Since Glowpa runs R and doesn't listen on HTTP, we just check if we can resolve the hostname
+        # If the container is running and on the same network, the hostname should resolve
+        socket.gethostbyname('glowpa-container')
+        return jsonify({"glowpa_status": "connected", "message": "Container hostname resolves"})
+    except socket.gaierror:
+        return jsonify({"glowpa_status": "disconnected", "message": "Container hostname not found"})
+    except Exception as e:
+        return jsonify({"glowpa_status": "disconnected", "error": str(e)})
+
+@app.route('/api/glowpa/start', methods=['POST'])
+def main_start_glowpa():
+    global glowpa_running
+    try:
+        import subprocess
+        data = request.get_json() or {}
+        case_study_id = data.get('case_study_id')
+        
+        # First check if container is already running
+        check_result = subprocess.run(['docker', 'ps', '--filter', 'name=glowpa-container', '--format', '{{.Status}}'], 
+                                    capture_output=True, text=True, timeout=10)
+        
+        if check_result.returncode == 0 and check_result.stdout.strip() and 'Up' in check_result.stdout:
+            glowpa_running = True
+            return jsonify({"status": "success", "message": "GloWPa container is already running"})
+        
+        # Try to start the container
+        result = subprocess.run(['docker', 'start', 'glowpa-container'], 
+                              capture_output=True, text=True, timeout=30)
+        
+        if result.returncode == 0:
+            glowpa_running = True
+            if case_study_id:
+                case_study = next((cs for cs in case_studies if cs['id'] == case_study_id), None)
+                if case_study:
+                    message = f"GloWPa started for case study: {case_study['name']}"
+                else:
+                    message = "GloWPa started (case study not found)"
+            else:
+                message = "GloWPa container started successfully"
+            return jsonify({"status": "success", "message": message})
+        else:
+            error_msg = result.stderr.strip() if result.stderr else "Failed to start container"
+            return jsonify({"status": "error", "message": f"Failed to start GloWPa: {error_msg}"}), 500
+            
+    except subprocess.TimeoutExpired:
+        return jsonify({"status": "error", "message": "Timeout while starting GloWPa container"}), 500
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/glowpa/stop', methods=['POST'])
+def main_stop_glowpa():
+    global glowpa_running
+    try:
+        # Write the Docker command to a file for manual execution
+        with open('/app/data/docker_commands.txt', 'a') as f:
+            f.write(f"# Stop command requested at {datetime.now()}\n")
+            f.write("docker stop glowpa-container\n\n")
+        
+        glowpa_running = False
+        return jsonify({
+            "status": "success", 
+            "message": "Stop command logged. Please run 'docker stop glowpa-container' manually to actually stop the container."
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+# Load existing case studies on startup
+load_existing_case_studies()
+
+def run_frontend_server():
+    """Run the frontend Flask app on port 3000"""
+    # Debug: Print all registered routes
+    print("[DEBUG] Frontend app registered routes:")
+    for rule in frontend_app.url_map.iter_rules():
+        print(f"  {rule.rule} -> {rule.endpoint} (methods: {rule.methods})")
+    
+    frontend_app.run(host='0.0.0.0', port=3000, debug=False)
+
+if __name__ == '__main__':
+    # Start frontend server in a separate thread
+    frontend_thread = threading.Thread(target=run_frontend_server, daemon=True)
+    frontend_thread.start()
+    
+    print("Starting Flask servers...")
+    print("Frontend server: http://localhost:3000")
+    print("Backend API server: http://localhost:5000")
+    
+    # Start backend server with SocketIO
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)

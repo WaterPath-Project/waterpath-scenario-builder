@@ -1,0 +1,34 @@
+services:
+  glowpa:
+    image: docker-registry.wur.nl/glowpa/glowpa-r/glowpa-main:0.2.1
+    container_name: glowpa-container
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data              # Mount entire data directory for case study access
+    networks:
+      - app-network
+    tty: true
+    stdin_open: true
+
+  webapp:
+    build: 
+      context: ./webapp
+      dockerfile: Dockerfile
+    container_name: webapp-container
+    ports:
+      - "3000:3000"  # React frontend
+      - "5000:5000"  # Flask backend
+    volumes:
+      - ./data:/app/data              # Mount entire data directory for case study access
+    environment:
+      - FLASK_ENV=development
+      - REACT_APP_API_URL=http://localhost:5000
+    networks:
+      - app-network
+    depends_on:
+      - glowpa
+
+networks:
+  app-network:
+    driver: bridge

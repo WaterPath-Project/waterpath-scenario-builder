@@ -1,0 +1,55 @@
+services:
+  glowpa:
+    image: docker-registry.wur.nl/glowpa/glowpa-r/glowpa-main:0.2.1
+    container_name: glowpa-container
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data              # Mount entire data directory for case study access
+    networks:
+      - app-network
+    tty: true
+    stdin_open: true
+
+  backend:
+    build: 
+      context: ./webapp
+      dockerfile: Dockerfile.dev.backend
+    container_name: backend-container
+    ports:
+      - "5000:5000"  # Flask backend
+    volumes:
+      - ./webapp/backend:/app/backend       # Mount backend source for hot reload
+      - ./data:/app/data                    # Mount entire data directory for case study access
+      - /var/run/docker.sock:/var/run/docker.sock  # Mount Docker socket for container access
+    environment:
+      - FLASK_ENV=development
+      - FLASK_DEBUG=1
+    networks:
+      - app-network
+    depends_on:
+      - glowpa
+
+  frontend:
+    build: 
+      context: ./webapp
+      dockerfile: Dockerfile.dev.frontend
+    container_name: frontend-container
+    ports:
+      - "3000:3000"  # React frontend
+    volumes:
+      - ./webapp/frontend:/app/frontend     # Mount frontend source for hot reload
+      - /app/frontend/node_modules          # Anonymous volume for node_modules
+    environment:
+      - CHOKIDAR_USEPOLLING=true           # Enable polling for file changes on Windows
+      - REACT_APP_API_URL=http://localhost:5000
+    networks:
+      - app-network
+    depends_on:
+      - backend
+    stdin_open: true
+    tty: true
+
+networks:
+  app-network:
+    driver: bridge
