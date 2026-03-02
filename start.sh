@@ -22,7 +22,7 @@ docker pull docker-registry.wur.nl/glowpa/glowpa-r/glowpa-main:0.2.1
 echo "Starting all containers..."
 echo
 
-docker-compose up --build
+docker compose up --build
 
 echo
 echo "Containers have stopped."

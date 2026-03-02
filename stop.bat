@@ -2,7 +2,7 @@
 echo Stopping Waterpath Scenario Builder containers...
 echo.
 
-docker-compose down
+docker compose down
 
 if errorlevel 0 (
     echo ✅ All containers stopped successfully!

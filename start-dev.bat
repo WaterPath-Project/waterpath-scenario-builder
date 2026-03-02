@@ -10,11 +10,11 @@ echo.
 
 REM Stop any existing containers
 echo Stopping existing containers...
-docker-compose -f docker-compose.development.yml down
+docker compose -f docker-compose.development.yml down
 
 REM Start development containers
 echo Starting development containers...
-docker-compose -f docker-compose.development.yml up --build -d
+docker compose -f docker-compose.development.yml up --build -d
 
 REM Wait for services to be ready
 echo.
@@ -24,7 +24,7 @@ timeout /t 10 /nobreak > nul
 REM Check if containers are running
 echo.
 echo Checking container status...
-docker-compose -f docker-compose.development.yml ps
+docker compose -f docker-compose.development.yml ps
 
 REM Open browser automatically after a short delay
 echo.
@@ -40,10 +40,10 @@ echo Frontend: http://localhost:3000
 echo Backend:  http://localhost:5000
 echo GloWPa:   http://localhost:8080
 echo.
-echo To view logs: docker-compose -f docker-compose.development.yml logs -f
-echo To stop:      docker-compose -f docker-compose.development.yml down
+echo To view logs: docker compose -f docker-compose.development.yml logs -f
+echo To stop:      docker compose -f docker-compose.development.yml down
 echo.
 echo Press Ctrl+C to stop watching logs...
 
 REM Follow logs
-docker-compose -f docker-compose.development.yml logs -f
+docker compose -f docker-compose.development.yml logs -f

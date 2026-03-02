@@ -23,7 +23,7 @@ echo Starting all containers...
 echo.
 
 REM Start containers in background first to check when they're ready
-docker-compose up --build -d
+docker compose up --build -d
 
 REM Wait for the webapp to be ready (check if port 3000 is responding)
 echo Waiting for webapp to be ready...
@@ -44,7 +44,7 @@ echo Press Ctrl+C to stop all containers.
 echo.
 
 REM Now show the logs in foreground
-docker-compose logs -f
+docker compose logs -f
 
 echo.
 echo Containers have stopped.
