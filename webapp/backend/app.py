@@ -1437,6 +1437,8 @@ def _exec_glowpa(cmd):
             if exit_code == 0:
                 return output.decode('utf-8')
             raise RuntimeError(output.decode('utf-8', errors='replace'))
+        except RuntimeError:
+            raise  # command ran but returned non-zero — don't mask with CLI fallback
         except Exception as sdk_err:
             print(f'[config] Docker SDK exec failed, falling back to CLI: {sdk_err}')
     result = subprocess.run(
