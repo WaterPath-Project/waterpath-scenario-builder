@@ -9,7 +9,7 @@ import useScenarioStore from './store/scenarioStore';
 import useConfigStore from './store/configStore';
 import useSettingsStore from './store/settingsStore';
 import { 
-  Home, 
+  Play, 
   ChartColumn, 
   TrendingUp, 
   Settings, 
