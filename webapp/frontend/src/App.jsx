@@ -6,6 +6,7 @@ import ScenarioCard from './components/ScenarioCard';
 import ScenarioTabBar from './components/ScenarioTabBar';
 import ScenarioDetailView from './components/ScenarioDetailView';
 import useScenarioStore from './store/scenarioStore';
+import useConfigStore from './store/configStore';
 import { 
   Home, 
   ChartColumn, 
@@ -32,12 +33,22 @@ import {
   Plus,
   Edit,
   Trash2,
-  X
+  BarChart2,
 } from 'lucide-react';
 import MetadataDialog from './components/MetadataDialog';
 import ConfirmDialog from './components/ConfirmDialog';
 import SSPScenarioDialog from './components/SSPScenarioDialog';
+import ScenarioMetadataDialog from './components/ScenarioMetadataDialog';
+import AnalyticsScenarioCard from './components/AnalyticsScenarioCard';
+import ResultsView from './components/ResultsView';
 import './index.css';
+
+// Bootstrap global config (pathogens, etc.) as early as possible.
+useConfigStore.getState().fetchConfig();
+
+// ─── URL slug helpers ───────────────────────────────────────────────────────
+const toCsSlug    = (cs)   => encodeURIComponent(cs?.folder_name || (cs?.name ?? ''));
+const toScenSlug  = (name) => encodeURIComponent(name ?? '');
 
 // Status Indicator Component
 const StatusIndicator = ({ status }) => {
@@ -58,12 +69,12 @@ const StatusIndicator = ({ status }) => {
 };
 
 const MetricCard = ({ title, value, subtitle, IconComponent, trend }) => (
-  <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
+  <div className="bg-wpWhite-100 shadow-sm p-6 rounded-xl hover:shadow-md transition-shadow">
     <div className="flex items-center justify-between">
       <div>
         <p className="text-sm font-medium text-gray-600">{title}</p>
-        <p className="text-3xl font-bold text-gray-900 mt-2">{value}</p>
-        {subtitle && <p className="text-sm text-gray-500 mt-1">{subtitle}</p>}
+        <p className="text-3xl font-bold text-wpBlue mt-2">{value}</p>
+        {subtitle && <p className="text-sm text-wpBlue-900 mt-1">{subtitle}</p>}
       </div>
       <div className="text-gray-300">
         <IconComponent size={40} />
@@ -82,8 +93,8 @@ const MetricCard = ({ title, value, subtitle, IconComponent, trend }) => (
 );
 
 const DashboardCard = ({ title, children, className = "" }) => (
-  <div className={`bg-white rounded-xl shadow-sm border border-gray-100 p-6 ${className}`}>
-    <h3 className="text-lg font-semibold text-gray-900 mb-4">{title}</h3>
+  <div className={`bg-wpWhite-100 rounded-xl p-6 mt-0 ${className}`}>
+    <h3 className="text-lg font-semibold text-wpBlue mb-4">{title}</h3>
     {children}
   </div>
 );
@@ -93,14 +104,11 @@ function Dashboard() {
   const navigate = useNavigate();
   const location = useLocation();
   
-  // Get active section from URL path
+  // Get active section from URL path (only first segment matters)
   const getActiveSectionFromPath = (pathname) => {
-    const path = pathname.replace('/', '') || 'service-status';
-    // Handle root path
-    if (pathname === '/') {
-      return 'service-status';
-    }
-    return path;
+    if (pathname === '/') return 'service-status';
+    const firstSeg = pathname.split('/').filter(Boolean)[0];
+    return firstSeg || 'service-status';
   };
   
   const [backendStatus, setBackendStatus] = useState('checking');
@@ -110,14 +118,18 @@ function Dashboard() {
   const [activeSection, setActiveSection] = useState(getActiveSectionFromPath(location.pathname));
   const [caseStudies, setCaseStudies] = useState([]);
   const [selectedCaseStudy, setSelectedCaseStudy] = useState(null);
+  const selectedCaseStudyRef = React.useRef(null);
+  // Keep ref in sync so effects can read the latest value without re-running
+  selectedCaseStudyRef.current = selectedCaseStudy;
   const [isGlowpaRunning, setIsGlowpaRunning] = useState(false);
   const [glowpaOperationLoading, setGlowpaOperationLoading] = useState(false);
   const [metrics, setMetrics] = useState({
     totalScenarios: 12,
     activeConnections: 3,
-    processingTime: 138,
+    processingTime: 0,
     lastUpdate: new Date().toLocaleTimeString()
   });
+  const [recentActivity, setRecentActivity] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isMetadataDialogOpen, setIsMetadataDialogOpen] = useState(false);
   const [selectedDatapackage, setSelectedDatapackage] = useState(null);
@@ -128,15 +140,28 @@ function Dashboard() {
   const [showTerminal, setShowTerminal] = useState(false);
   const [isSSPDialogOpen, setIsSSPDialogOpen] = useState(false);
 
+  // Baseline-missing-pathogen prompt
+  const [baselineWithoutPathogen, setBaselineWithoutPathogen] = useState(null);
+
+  // Analytics tab state
+  const [analyticsCaseStudy, setAnalyticsCaseStudy] = useState(null);
+  const [analyticsScenarios, setAnalyticsScenarios] = useState([]);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+
+  // Results viewer state (pre-populates scene from "View Results" click)
+  const [resultsState, setResultsState] = useState({ caseStudyId: null, scenarioId: null });
+
   // Zustand store hooks
   const { 
     scenarios,
     tempScenarios,
     tabs,
     activeTab,
+    setActiveTab,
     fetchScenarios: fetchScenariosFromStore,
     getAllScenarios,
     createTempScenario,
+    saveScenario,
     clearTempScenarios
   } = useScenarioStore();
 
@@ -146,10 +171,75 @@ function Dashboard() {
     setActiveSection(newActiveSection);
   }, [location.pathname]);
 
+  // Refresh analytics scenarios whenever the user navigates to the model screen;
+  // also auto-select the only case study when there is exactly one.
+  useEffect(() => {
+    if (activeSection !== 'model') return;
+    if (!analyticsCaseStudy && caseStudies.length === 1) {
+      setAnalyticsCaseStudy(caseStudies[0]);
+      loadAnalyticsScenarios(caseStudies[0].id);
+    } else if (analyticsCaseStudy?.id) {
+      loadAnalyticsScenarios(analyticsCaseStudy.id);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSection, caseStudies]);
+
+  // Effect 1: sync case-study selection from URL (no dependency on scenarios/tempScenarios)
+  useEffect(() => {
+    const parts = location.pathname.split('/').filter(Boolean);
+    if (parts[0] !== 'scenarios') return;
+    const csSlug = parts[1];
+
+    if (csSlug && caseStudies.length) {
+      const matchedCs = caseStudies.find(
+        (cs) => toCsSlug(cs) === csSlug
+      );
+      const current = selectedCaseStudyRef.current;
+      if (matchedCs && (!current || current.id !== matchedCs.id)) {
+        clearTempScenarios();
+        setSelectedCaseStudy(matchedCs);
+        setCurrentCaseStudyId(matchedCs.id);
+        setActiveTab('main');
+        fetchScenarios(matchedCs.id);
+        // Propagate to model and analytics screens
+        setAnalyticsCaseStudy(matchedCs);
+        setResultsState(prev => ({ ...prev, caseStudyId: matchedCs.id }));
+      }
+    } else if (!csSlug) {
+      if (selectedCaseStudyRef.current) {
+        setSelectedCaseStudy(null);
+        setAnalyticsCaseStudy(null);
+        clearTempScenarios();
+      }
+      // Auto-navigate when there is exactly one case study
+      if (caseStudies.length === 1) {
+        navigate(`/scenarios/${toCsSlug(caseStudies[0])}`);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname, caseStudies]);
+
+  // Effect 2: sync active scenario tab from URL (no dependency on caseStudies/selectedCaseStudy)
+  useEffect(() => {
+    const parts = location.pathname.split('/').filter(Boolean);
+    if (parts[0] !== 'scenarios') return;
+    const scenSlug = parts[2];
+    if (!scenSlug) { if (activeTab !== 'main') setActiveTab('main'); return; }
+    const allS = [...scenarios, ...tempScenarios];
+    const matched = allS.find((s) => toScenSlug(s.name) === scenSlug);
+    if (matched && activeTab !== matched.id) setActiveTab(matched.id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname, scenarios, tempScenarios]);
+
   // Navigation handler
   const handleNavigation = (sectionId) => {
     setActiveSection(sectionId);
-    navigate(`/${sectionId}`);
+    if (sectionId === 'scenarios') {
+      const cs = selectedCaseStudy || analyticsCaseStudy;
+      navigate(cs ? `/scenarios/${toCsSlug(cs)}` : '/scenarios');
+    } else {
+      navigate(`/${sectionId}`);
+    }
   };
 
   const checkBackendHealth = async () => {
@@ -172,15 +262,15 @@ function Dashboard() {
     }
   };
 
-  const fetchData = async () => {
+  const fetchServiceMetrics = async () => {
     try {
-      const response = await axios.get('/api/data');
-      setData(response.data.data);
-    } catch (error) {
-      console.error('Error fetching data:', error);
-    } finally {
-      setLoading(false);
-    }
+      const [metRes, actRes] = await Promise.all([
+        axios.get('/api/metrics/summary'),
+        axios.get('/api/activity'),
+      ]);
+      setMetrics(prev => ({ ...prev, processingTime: metRes.data.scenarios_with_outputs ?? prev.processingTime }));
+      setRecentActivity(actRes.data.events || []);
+    } catch (_) { /* non-critical */ }
   };
 
   const fetchCaseStudies = async () => {
@@ -194,6 +284,16 @@ function Dashboard() {
 
   const fetchScenarios = async (caseStudyId = null) => {
     await fetchScenariosFromStore(caseStudyId);
+    // After fetch, check whether the baseline is missing a pathogen
+    if (caseStudyId) {
+      const loaded = useScenarioStore.getState().scenarios;
+      const baseline = loaded.find(
+        (s) => s.case_study_id === caseStudyId && String(s.is_baseline).toLowerCase() === 'true'
+      );
+      if (baseline && !baseline.pathogen) {
+        setBaselineWithoutPathogen(baseline);
+      }
+    }
   };
 
   const handleCreateNewScenario = () => {
@@ -207,23 +307,34 @@ function Dashboard() {
     setIsSSPDialogOpen(true);
   };
 
-  const handleSSPScenarioSubmit = (formData) => {
+  const handleSSPScenarioSubmit = async (formData) => {
     console.log('SSP form submitted:', formData);
     // Create the scenario with SSP data
     const scenarioId = createTempScenario(selectedCaseStudy.id, formData);
     console.log('Created new SSP-based temp scenario:', scenarioId, 'with data:', formData);
     
+    // Save the scenario immediately
+    try {
+      await saveScenario(scenarioId);
+      console.log('Scenario saved successfully');
+    } catch (error) {
+      console.error('Error saving scenario:', error);
+      // Still close the dialog even if save fails - scenario will be temp
+    }
+    
     // Close the dialog
     setIsSSPDialogOpen(false);
   };
 
-  const handleCaseStudySelect = async (caseStudy) => {
-    // Clear any temp scenarios when changing case studies
-    clearTempScenarios();
-    
-    setSelectedCaseStudy(caseStudy);
-    setCurrentCaseStudyId(caseStudy.id);
-    await fetchScenarios(caseStudy.id);
+  const handleCaseStudySelect = (caseStudy) => {
+    // Just navigate — the URL-sync effect will update all state
+    navigate(`/scenarios/${toCsSlug(caseStudy)}`);
+  };
+
+  const handleBaselinePathozenSave = async (formData) => {
+    if (!baselineWithoutPathogen) return;
+    await useScenarioStore.getState().updateScenario(baselineWithoutPathogen.id, formData);
+    setBaselineWithoutPathogen(null);
   };
 
   const startGlowpa = async (caseStudyId = null) => {
@@ -337,9 +448,10 @@ function Dashboard() {
     const backendOk = await checkBackendHealth();
     if (backendOk) {
       await checkGlowpaStatus();
-      await fetchData();
       await fetchCaseStudies();
       await fetchScenarios();
+      await fetchServiceMetrics();
+      setLoading(false);
       // Update metrics
       setMetrics(prev => ({
         ...prev,
@@ -386,6 +498,20 @@ function Dashboard() {
     }
   };
 
+  const loadAnalyticsScenarios = async (caseStudyId) => {
+    if (!caseStudyId) { setAnalyticsScenarios([]); return; }
+    setAnalyticsLoading(true);
+    try {
+      const res = await axios.get(`/api/case-studies/${caseStudyId}/analytics`);
+      setAnalyticsScenarios(res.data.scenarios || []);
+    } catch (err) {
+      console.error('Error loading analytics scenarios:', err);
+      setAnalyticsScenarios([]);
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  };
+
   const reloadCaseStudies = async () => {
     try {
       setIsLoading(true);
@@ -405,6 +531,7 @@ function Dashboard() {
     const interval = setInterval(() => {
       checkBackendHealth();
       checkGlowpaStatus();
+      fetchServiceMetrics();
       setMetrics(prev => ({
         ...prev,
         lastUpdate: new Date().toLocaleTimeString()
@@ -420,7 +547,7 @@ function Dashboard() {
       id: 'service-status', 
       label: 'Service Status', 
       icon: Activity, 
-      description: 'Service status and key metrics' 
+      description: 'View builder status' 
     },
     { 
       id: 'case-studies', 
@@ -435,10 +562,16 @@ function Dashboard() {
       description: 'Manage scenario data' 
     },
     { 
+      id: 'model', 
+      label: 'Model Runs', 
+      icon: Play, 
+      description: 'Execute and monitor model' 
+    },
+    { 
       id: 'analytics', 
       label: 'Analytics', 
       icon: TrendingUp, 
-      description: 'Scenario outputs' 
+      description: 'Explore model results' 
     },
     { 
       id: 'settings', 
@@ -465,9 +598,8 @@ function Dashboard() {
               <MetricCard 
                 title="Model runs" 
                 value={metrics.processingTime} 
-                subtitle="Total number of model runs completed."
-                IconComponent={Zap}
-                // trend={12.5}
+                subtitle="Scenarios that have produced model output files."
+                IconComponent={Play}
               />
             </div>
 
@@ -475,7 +607,7 @@ function Dashboard() {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <DashboardCard title="Service Status">
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                  <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-lg">
                     <div className="flex items-center gap-3">
                       <div className="w-12 h-12 bg-wpBlue rounded-lg flex items-center justify-center">
                         <Database className="text-white" size={24} />
@@ -488,7 +620,7 @@ function Dashboard() {
                     <StatusIndicator status={backendStatus} />
                   </div>
                   
-                  <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                  <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-lg">
                     <div className="flex items-center gap-3">
                       <div className="w-12 h-12 bg-wpGreen rounded-lg flex items-center justify-center">
                         <Bot className="text-wpBlue-900" size={24} />
@@ -534,7 +666,7 @@ function Dashboard() {
               <DashboardCard title="Quick Actions">
                 <div className="space-y-3">
                   <button 
-                    className="w-full bg-wpGreen hover:bg-wpGreen-800 text-wpBlue-900 font-medium px-4 py-3 rounded-lg transition-colors duration-200 flex items-center justify-center gap-2"
+                    className="w-full bg-wpGreen hover:bg-wpGreen-800 text-wpBlue-900 font-medium px-4 py-3 rounded-xl transition-colors duration-200 flex items-center justify-center gap-2"
                     onClick={() => setShowTerminal(true)}
                   >
                     <ExternalLink size={18} /> Open GLOWPA Interface
@@ -557,23 +689,29 @@ function Dashboard() {
 
             {/* Activity Log */}
             <DashboardCard title="Recent Activity">
-              <div className="space-y-3">
-                <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
-                  <CheckCircle className="w-4 h-4 text-green-500" />
-                  <span className="text-sm text-gray-600">System health check completed</span>
-                  <span className="text-xs text-gray-400 ml-auto">{metrics.lastUpdate}</span>
+              {recentActivity.length === 0 ? (
+                <p className="text-sm text-gray-400 italic">No recent activity found.</p>
+              ) : (
+                <div className="space-y-2">
+                  {recentActivity.slice(0, 5).map((ev, i) => {
+                    const iconEl = ev.type === 'output'
+                      ? <CheckCircle className="w-4 h-4 text-wpGreen-800 flex-shrink-0" />
+                      : ev.type === 'scenario'
+                        ? <BarChart2 className="w-4 h-4 text-wpBlue-300 flex-shrink-0" />
+                        : <FolderOpen className="w-4 h-4 text-wpBlue flex-shrink-0" />;
+                    return (
+                      <div key={i} className="flex items-center gap-3 p-3 bg-wpGray-100 rounded-lg">
+                        {iconEl}
+                        <div className="min-w-0 flex-1">
+                          <span className="text-sm text-gray-700 block truncate">{ev.message}</span>
+                          {ev.detail && <span className="text-xs text-gray-400 truncate block">{ev.detail}</span>}
+                        </div>
+                        <span className="text-xs text-gray-400 flex-shrink-0">{ev.rel}</span>
+                      </div>
+                    );
+                  })}
                 </div>
-                <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
-                  <RefreshCw className="w-4 h-4 text-blue-500" />
-                  <span className="text-sm text-gray-600">Dashboard refreshed</span>
-                  <span className="text-xs text-gray-400 ml-auto">2 min ago</span>
-                </div>
-                <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
-                  <AlertCircle className="w-4 h-4 text-yellow-500" />
-                  <span className="text-sm text-gray-600">New scenario data processing</span>
-                  <span className="text-xs text-gray-400 ml-auto">5 min ago</span>
-                </div>
-              </div>
+              )}
             </DashboardCard>
           </div>
         );
@@ -670,87 +808,195 @@ function Dashboard() {
           </div>
         );
       
-      case 'scenarios':
+      case 'scenarios': {
+        /* Shared header: case study selector + New Scenario button */
+        const scenariosHeader = (
+          <div className="flex items-center gap-4 p-6 bg-wpWhite-100 flex-shrink-0">
+            <select
+              value={selectedCaseStudy?.id ?? ""}
+              onChange={(e) => {
+                if (!e.target.value) {
+                  navigate('/scenarios');
+                  return;
+                }
+                const cs = caseStudies.find(c => c.id === e.target.value);
+                if (cs) navigate(`/scenarios/${toCsSlug(cs)}`);
+              }}
+              className="px-3 py-3 border text-sm border-wpBrown bg-wpGray-200 text-wpBlue font-bold font-inter rounded-lg focus:ring-2 focus:ring-wpBlue focus:border-transparent"
+            >
+              <FileText size={16} className="text-gray-400" />
+              <option value="">Select a case study…</option>
+              {caseStudies.map(cs => (
+                <option key={cs.id} value={cs.id}>{cs.name}</option>
+              ))}
+            </select>
+            <button
+              onClick={handleCreateNewScenario}
+              disabled={!selectedCaseStudy}
+              className="flex items-center gap-2 px-4 py-2 bg-wpGreen text-sm rounded-lg hover:bg-wpGreen-600 text-wpBlue font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Plus size={16} />
+              New Scenario
+            </button>
+          </div>
+        );
+
+        if (activeTab !== 'main') {
+          /* Detail view: full-height, no card wrapper, no scroll wrapper */
+          const urlParts = location.pathname.split('/').filter(Boolean);
+          // parts: [scenarios, csSlug, scenSlug, category, subcategory]
+          const urlCategory    = urlParts[3] ?? null;
+          const urlSubcategory = urlParts[4] ?? null;
+          const caseStudySlug  = selectedCaseStudy ? toCsSlug(selectedCaseStudy) : (urlParts[1] ?? '');
+          return (
+            <div className="flex flex-col h-full overflow-hidden p-6 pt-0">
+              <div className="flex-1 overflow-hidden">
+                <ScenarioDetailView
+                  scenarioId={activeTab}
+                  selectedCaseStudy={selectedCaseStudy}
+                  caseStudySlug={caseStudySlug}
+                  initialCategory={urlCategory ?? undefined}
+                  initialSubcategory={urlSubcategory ?? undefined}
+                />
+              </div>
+            </div>
+          );
+        }
+
+        /* Main tab: scrollable card grid */
         return (
-          <div className="flex flex-col h-full">
-            {/* Main Content Area */}
-            <div className="flex-1 space-y-6 overflow-auto">
-              {/* Show message if no case study selected */}
-              {!selectedCaseStudy ? (
-                <DashboardCard>
+          <div className="flex flex-col h-full p-6 pt-0">
+            {scenariosHeader}
+            <div className="flex-1 overflow-auto">
+              <DashboardCard>
+                {!selectedCaseStudy ? (
                   <div className="text-center py-12 text-gray-500">
                     <FolderOpen className="mx-auto mb-4 text-gray-300" size={48} />
-                    <p>Please select a case study from the header to start working with scenarios</p>
-                    <p className="text-sm mt-1">Choose from the dropdown in the top header to continue</p>
+                    <p>Select a case study above to view its scenarios</p>
                   </div>
-                </DashboardCard>
-              ) : (
-                <DashboardCard>
-                  {/* Header with case study info and new scenario button */}
-                  <div className="flex items-center justify-between mb-6">
-                    <button
-                      onClick={handleCreateNewScenario}
-                      className="flex items-center gap-2 px-4 py-2 bg-wpGreen text-white rounded-md hover:bg-wpGreen-600 transition-colors"
-                    >
-                      <Plus size={16} />
-                      New Scenario
-                    </button>
+                ) : loading ? (
+                  <div className="flex items-center justify-center py-12">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-wpBlue"></div>
+                    <span className="ml-3 text-gray-600">Loading scenarios…</span>
                   </div>
-
-                  {/* Tab Content */}
-                  {activeTab === 'main' ? (
-                    // Main scenarios overview
-                    loading ? (
-                      <div className="flex items-center justify-center py-12">
-                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-wpBlue"></div>
-                        <span className="ml-3 text-gray-600">Loading scenarios...</span>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {(() => {
-                          const allScenarios = getAllScenarios(selectedCaseStudy.id);
-                          return allScenarios.length > 0 ? allScenarios.map(scenario => (
-                            <ScenarioCard 
-                              key={scenario.id} 
-                              scenario={scenario} 
-                              selectedCaseStudy={selectedCaseStudy}
-                            />
-                          )) : (
-                            <div className="col-span-full text-center py-12 text-gray-500">
-                              <ChartColumn className="mx-auto mb-4 text-gray-300" size={48} />
-                              <p>No scenarios in this case study</p>
-                              <p className="text-sm mt-1">Click "New Scenario" to create your first scenario</p>
-                            </div>
-                          );
-                        })()}
-                      </div>
-                    )
-                  ) : (
-                    // Individual scenario view
-                    <ScenarioDetailView 
-                      scenarioId={activeTab} 
-                      selectedCaseStudy={selectedCaseStudy}
-                    />
-                  )}
-                </DashboardCard>
-              )}
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {(() => {
+                      const allScenarios = getAllScenarios(selectedCaseStudy.id);
+                      return allScenarios.length > 0 ? allScenarios.map(scenario => (
+                        <ScenarioCard
+                          key={scenario.id}
+                          scenario={scenario}
+                          selectedCaseStudy={selectedCaseStudy}
+                        />
+                      )) : (
+                        <div className="col-span-full text-center py-12 text-gray-500">
+                          <ChartColumn className="mx-auto mb-4 text-gray-300" size={48} />
+                          <p>No scenarios in this case study</p>
+                          <p className="text-sm mt-1">Click "New Scenario" to create your first scenario</p>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+              </DashboardCard>
             </div>
           </div>
         );
+      }
+      
+      case 'model': {
+        const analyticsHeader = (
+          <div className="flex items-center gap-4 mt-6 p-6 rounded-t-xl bg-wpWhite-100 flex-shrink-0">
+            <select
+              value={analyticsCaseStudy?.id ?? ''}
+              onChange={(e) => {
+                if (!e.target.value) {
+                  setAnalyticsCaseStudy(null);
+                  setAnalyticsScenarios([]);
+                  return;
+                }
+                const cs = caseStudies.find((c) => c.id === e.target.value);
+                if (cs) {
+                  setAnalyticsCaseStudy(cs);
+                  setSelectedCaseStudy(cs);
+                  setResultsState(prev => ({ ...prev, caseStudyId: cs.id }));
+                  loadAnalyticsScenarios(cs.id);
+                }
+              }}
+              className="px-3 py-3 border text-sm border-wpBrown bg-wpGray-200 text-wpBlue font-bold font-inter rounded-lg focus:ring-2 focus:ring-wpBlue focus:border-transparent"
+            >
+              <option value="">Select a case study…</option>
+              {caseStudies.map((cs) => (
+                <option key={cs.id} value={cs.id}>{cs.name}</option>
+              ))}
+            </select>
+            {analyticsCaseStudy && (
+              <button
+                onClick={() => loadAnalyticsScenarios(analyticsCaseStudy.id)}
+                className="flex items-center gap-1.5 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors text-sm"
+              >
+                <RefreshCw size={15} className={analyticsLoading ? 'animate-spin' : ''} />
+                Refresh
+              </button>
+            )}
+          </div>
+        );
+        return (
+          <div className="flex flex-col h-full p-6 pt-0">
+            {analyticsHeader}
+            <div className="flex-1 overflow-auto">
+              <DashboardCard>
+                {!analyticsCaseStudy ? (
+                  <div className="text-center py-12 text-gray-500">
+                    <TrendingUp className="mx-auto mb-4 text-gray-300" size={48} />
+                    <p>Select a case study to view its scenarios</p>
+                  </div>
+                ) : analyticsLoading ? (
+                  <div className="flex items-center justify-center py-12">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-wpBlue"></div>
+                    <span className="ml-3 text-gray-600">Loading scenarios…</span>
+                  </div>
+                ) : analyticsScenarios.length === 0 ? (
+                  <div className="text-center py-12 text-gray-500">
+                    <TrendingUp className="mx-auto mb-4 text-gray-300" size={48} />
+                    <p>No scenarios found for this case study</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {analyticsScenarios.map((scenario) => (
+                      <AnalyticsScenarioCard
+                        key={scenario.id}
+                        scenario={scenario}
+                        onRunComplete={() => loadAnalyticsScenarios(analyticsCaseStudy.id)}
+                        onViewResults={(sc) => {
+                          setResultsState({ caseStudyId: analyticsCaseStudy.id, scenarioId: sc.id });
+                          handleNavigation('analytics');
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
+              </DashboardCard>
+            </div>
+          </div>
+        );
+      }
       
       case 'analytics':
         return (
-          <div className="space-y-8">
-            <DashboardCard title="Analytics">
-              <div className="text-center py-12 text-gray-500">
-                <TrendingUp className="mx-auto mb-4 text-gray-300" size={48} />
-                <p>Analytics dashboard coming soon!</p>
-                <p className="text-sm mt-1">Scenario outputs and insights will be displayed here</p>
-              </div>
-            </DashboardCard>
-          </div>
+          <ResultsView
+            caseStudies={caseStudies}
+            initialCaseStudyId={resultsState.caseStudyId || analyticsCaseStudy?.id || selectedCaseStudy?.id}
+            initialScenarioId={resultsState.scenarioId}
+            onCaseStudyChange={(cs) => {
+              setAnalyticsCaseStudy(cs);
+              setSelectedCaseStudy(cs);
+              setResultsState(prev => ({ ...prev, caseStudyId: cs.id }));
+            }}
+          />
         );
-      
+
       case 'settings':
         return (
           <div className="space-y-8">
@@ -770,13 +1016,12 @@ function Dashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 flex">
-      {/* Left Sidebar */}
-      <div className="w-64 bg-white shadow-lg border-r border-gray-200 flex flex-col">
-        {/* Sidebar Header */}
-        <div className="p-6 border-b border-gray-200">
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-lg flex items-center justify-center">
+    <div className="min-h-screen bg-wpGray-100 flex flex-col">
+      {/* Top Navbar */}
+      <div className="bg-wpWhite-100 border-b border-gray-200 h-24 shadow-sm flex items-center px-6 py-3 gap-6 flex-shrink-0">
+        {/* Logo */}
+        <div className="flex items-center gap-2 w-56 flex-shrink-0">
+          <div className="w-16 h-16 rounded-lg flex items-center justify-center">
                   <svg
       width="316"
       height="200"
@@ -801,124 +1046,87 @@ function Dashboard() {
     </svg>
             </div>
             <div>
-              <h2 className="font-bold text-wpBlue font-outfit"><span className="text-wpGreen">Water</span>Path</h2>
-              <p className="text-xs text-gray-500 text-wpBlue">Scenario Builder</p>
+              <h2 className="font-bold text-2xl text-wpBlue font-outfit"><span className="text-wpGreen">Water</span>Path</h2>
+              <p className="text-xs font-medium uppercase text-gray-500 tracking-wide text-wpBlue">Scenario Builder</p>
             </div>
           </div>
+
+        {/* Page title */}
+        <div className="flex-1 pl-2">
+          <h1 className="text-xl font-bold text-wpBlue">
+            {navigationItems.find(item => item.id === activeSection)?.label || 'Dashboard'}
+          </h1>
+          <p className="text-wpBlue-900 text-xs mt-0.5">
+            {navigationItems.find(item => item.id === activeSection)?.description || ''}
+          </p>
         </div>
 
-        {/* Navigation */}
-        <nav className="flex-1 p-4">
-          <div className="space-y-2">
-            {navigationItems.map((item) => {
-              const IconComponent = item.icon;
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => handleNavigation(item.id)}
-                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors duration-200 ${
-                    activeSection === item.id
-                      ? 'bg-wpBlue text-white shadow-md'
-                      : 'text-gray-700 hover:bg-gray-100'
-                  }`}
-                >
-                  <IconComponent size={20} />
-                  <div className="flex-1">
-                    <div className="font-medium">{item.label}</div>
-                    <div className={`text-xs ${
-                      activeSection === item.id ? 'text-wpBlue-100' : 'text-gray-500'
-                    }`}>
-                      {item.description}
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </nav>
-
-        {/* Sidebar Footer */}
-        <div className="p-4 border-t border-gray-200">
-          <div className="flex items-center gap-2 text-xs text-gray-500">
-            <Clock size={14} />
-            <span>Last updated: {metrics.lastUpdate}</span>
-          </div>
-        </div>
+        {/* Refresh button */}
+        <button
+          className="bg-wpBlue hover:bg-wpBlue-800 text-white px-4 py-2 rounded-lg font-medium transition-colors duration-200 disabled:opacity-50 flex items-center gap-2 flex-shrink-0"
+          onClick={refreshAll}
+          disabled={loading}
+        >
+          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+          {loading ? 'Refreshing...' : 'Refresh'}
+        </button>
       </div>
 
-      {/* Main Content Area */}
-      <div className="flex-1 flex flex-col">
-        {/* Top Header */}
-        <div className="bg-white shadow-sm border-b border-gray-200">
-          <div className="px-6 py-4">
-            <div className="flex justify-between items-center">
-              <div className="flex items-center gap-4">
-                <div>
-                  <h1 className="text-2xl font-bold text-gray-900">
-                    {navigationItems.find(item => item.id === activeSection)?.label || 'Dashboard'}
-                  </h1>
-                  <p className="text-gray-600 text-sm mt-1">
-                    {navigationItems.find(item => item.id === activeSection)?.description || 'Multi-container application dashboard'}
-                  </p>
-                </div>
-                
-                {/* Case Study Selection for Scenario Editor */}
-                {activeSection === 'scenarios' && (
-                  <div className="flex items-center gap-2 ml-8">
-                    <span className="text-sm font-medium text-gray-700">Case Study:</span>
-                    {selectedCaseStudy ? (
-                      <div className="flex items-center gap-2 px-3 py-2 bg-wpBlue-50 border border-wpBlue-200 rounded-lg">
-                        <FolderOpen className="text-wpBlue-600" size={16} />
-                        <span className="text-wpBlue-800 font-medium">{selectedCaseStudy.name}</span>
-                        <button
-                          onClick={() => {
-                            setSelectedCaseStudy(null);
-                            clearTempScenarios();
-                          }}
-                          className="p-1 text-wpBlue-600 hover:text-wpBlue-800 hover:bg-wpBlue-100 rounded"
-                          title="Change case study"
-                        >
-                          <X size={14} />
-                        </button>
+      {/* Body row: sidebar + content */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Left Sidebar */}
+        <div className="w-64 bg-wpWhite-100 border-r border-gray-200 flex flex-col flex-shrink-0">
+          {/* Navigation */}
+          <nav className="flex-1 p-4 overflow-y-auto">
+            <div className="space-y-2">
+              {navigationItems.map((item) => {
+                const IconComponent = item.icon;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => handleNavigation(item.id)}
+                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors duration-200 ${
+                      activeSection === item.id
+                        ? 'bg-wpBlue text-white shadow-md'
+                        : 'text-gray-700 hover:bg-gray-100'
+                    }`}
+                  >
+                    <IconComponent size={20} />
+                    <div className="flex-1">
+                      <div className="font-medium">{item.label}</div>
+                      <div className={`text-xs ${
+                        activeSection === item.id ? 'text-wpBlue-100' : 'text-gray-500'
+                      }`}>
+                        {item.description}
                       </div>
-                    ) : (
-                      <select
-                        onChange={(e) => {
-                          const caseStudy = caseStudies.find(cs => cs.id === e.target.value);
-                          if (caseStudy) handleCaseStudySelect(caseStudy);
-                        }}
-                        className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent"
-                        value=""
-                      >
-                        <option value="">Select a case study...</option>
-                        {caseStudies.map(caseStudy => (
-                          <option key={caseStudy.id} value={caseStudy.id}>
-                            {caseStudy.name}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-                )}
-              </div>
-              <button 
-                className="bg-wpBlue hover:bg-wpBlue-800 text-white px-4 py-2 rounded-lg font-medium transition-colors duration-200 disabled:opacity-50 flex items-center gap-2"
-                onClick={refreshAll} 
-                disabled={loading}
-              >
-                <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-                {loading ? 'Refreshing...' : 'Refresh'}
-              </button>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </nav>
+
+          {/* Sidebar Footer */}
+          <div className="p-4 border-t border-gray-200">
+            <div className="flex items-center gap-2 text-xs text-gray-500">
+              <Clock size={14} />
+              <span>Last updated: {metrics.lastUpdate}</span>
             </div>
           </div>
         </div>
 
-        {/* Scenario Tabs - only show when in scenario section and case study is selected */}
-        {activeSection === 'scenarios' && selectedCaseStudy && <ScenarioTabBar />}
+        {/* Main Content Area */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {/* Scenario Tabs - only show when in scenario section and case study is selected */}
+          {activeSection === 'scenarios' && <ScenarioTabBar
+            onCreateScenario={selectedCaseStudy ? handleCreateNewScenario : null}
+            caseStudySlug={selectedCaseStudy ? toCsSlug(selectedCaseStudy) : ''}
+          />}
 
-        {/* Main Content */}
-        <div className="flex-1 p-6">
-          {renderContent()}
+          {/* Main Content */}
+          <div className={(activeSection === 'scenarios' || activeSection === 'model' || activeSection === 'analytics') ? 'flex-1 overflow-hidden' : 'flex-1 p-6'}>
+            {renderContent()}
+          </div>
         </div>
       </div>
       
@@ -959,6 +1167,15 @@ function Dashboard() {
         onClose={() => setIsSSPDialogOpen(false)}
         onSubmit={handleSSPScenarioSubmit}
       />
+
+      {/* Baseline missing-pathogen prompt */}
+      <ScenarioMetadataDialog
+        isOpen={!!baselineWithoutPathogen}
+        onClose={() => setBaselineWithoutPathogen(null)}
+        scenario={baselineWithoutPathogen}
+        onSave={handleBaselinePathozenSave}
+        requirePathogen
+      />
       
       {/* Terminal Component */}
       {showTerminal && (
@@ -977,6 +1194,11 @@ function App() {
         <Route path="/service-status" element={<Dashboard />} />
         <Route path="/case-studies" element={<Dashboard />} />
         <Route path="/scenarios" element={<Dashboard />} />
+        <Route path="/scenarios/:csSlug" element={<Dashboard />} />
+        <Route path="/scenarios/:csSlug/:scenarioSlug" element={<Dashboard />} />
+        <Route path="/scenarios/:csSlug/:scenarioSlug/:category" element={<Dashboard />} />
+        <Route path="/scenarios/:csSlug/:scenarioSlug/:category/:subcategory" element={<Dashboard />} />
+        <Route path="/model" element={<Dashboard />} />
         <Route path="/analytics" element={<Dashboard />} />
         <Route path="/settings" element={<Dashboard />} />
       </Routes>

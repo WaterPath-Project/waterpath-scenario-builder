@@ -1,0 +1,2 @@
+scenario_id,name,folder,ssp,pathogen,year,is_baseline,notes,created_at,updated_at
+b3b0da4d-079d-43b3-8106-2c88833480d1,Baseline,baseline,,rotavirus,2025,True,Baseline scenario imported from ZIP file,2026-03-01T18:43:20.862040,2026-03-01T18:43:28.874406

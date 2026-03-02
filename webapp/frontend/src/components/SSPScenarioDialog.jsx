@@ -7,13 +7,15 @@ import {
   DialogTitle,
   DialogDescription,
 } from './Dialog';
+import useConfigStore from '../store/configStore';
 
 const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
+  const { pathogenOptions } = useConfigStore();
   const [step, setStep] = useState(1); // 1: Basic Info, 2: Configuration
   const [formData, setFormData] = useState({
     scenarioName: '',
     sspScenario: '1',
-    pathogen: 'Rotavirus',
+    pathogen: '',
     year: '2030',
     projectionMethod: 'isimip',
     modifiers: []
@@ -30,11 +32,6 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
     { value: '3', label: 'SSP3 - Regional Rivalry' },
     { value: '4', label: 'SSP4 - Inequality' },
     { value: '5', label: 'SSP5 - Fossil-fueled Development' }
-  ];
-
-  const pathogenOptions = [
-    { value: 'Rotavirus', label: 'Rotavirus' },
-    { value: 'Cryptosporidium', label: 'Cryptosporidium' }
   ];
 
   const yearOptions = [
@@ -159,7 +156,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
     setFormData({
       scenarioName: '',
       sspScenario: '1',
-      pathogen: 'Rotavirus',
+      pathogen: '',
       year: '2030',
       projectionMethod: 'isimip',
       modifiers: []

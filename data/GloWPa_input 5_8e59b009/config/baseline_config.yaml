@@ -1,0 +1,33 @@
+logger:
+  enabled: TRUE
+  threshold: INFO
+  file: output/baseline/glowpa.log
+  appender: TEE
+input:
+  isoraster: input/baseline/human_emissions/isoraster.tif
+  isodata: input/baseline/human_emissions/isodata.RDS
+  wwtp: input/baseline/human_emissions/treatment.RDS
+  population:
+    urban: input/baseline/human_emissions/popurban.tif
+    rural: input/baseline/human_emissions/poprural.tif
+wwtp:
+  treatment: POINT
+population:
+  correct: TRUE
+pathogen: rotavirus
+output:
+  dir: output/baseline
+  sources:
+    human:
+      land: human_sources_land_rotavirus_baseline.csv
+      surface_water: human_sources_water_rotavirus_baseline.csv
+  sinks:
+    surface_water:
+      table: surface_water_emissions_rotavirus_baseline.csv
+      grid: surface_water_emissions_rotavirus_baseline.tif
+    land:
+      table: land_emissions_rotavirus_baseline.csv
+      grid: land_emissions_rotavirus_baseline.tif
+constants:
+  runoff_fraction: 0.025
+  threshold_discharge: 1

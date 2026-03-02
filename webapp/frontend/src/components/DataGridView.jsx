@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { ReactGrid, Column, Row } from '@silevis/reactgrid';
+import { ReactGrid } from '@silevis/reactgrid';
 import '@silevis/reactgrid/styles.css';
 
-const DataGridView = ({ data, fieldnames, onDataChange }) => {
+const DataGridView = ({ data, fieldnames, onDataChange, readOnly = false }) => {
   const [rows, setRows] = useState([]);
   const [columns, setColumns] = useState([]);
 
@@ -43,7 +43,8 @@ const DataGridView = ({ data, fieldnames, onDataChange }) => {
         { type: 'header', text: (index + 1).toString() },
         ...headers.map(header => ({
           type: 'text',
-          text: String(row[header] || '')
+          text: String(row[header] || ''),
+          nonEditable: readOnly,
         }))
       ]
     }));

@@ -1,3 +1,0 @@
-scenario_id,name,description,ssp,year,additional_notes,pathogen,projection_method,csv_file,created_at,updated_at
-65a31275-c4ba-4261-aeeb-d94bfe8d56fe,Baseline,Baseline scenario for isodata.csv file (renamed to baseline.csv),,,Baseline scenario created from isodata.csv file,,,baseline,2025-11-25T14:01:38.172517,2025-11-25T14:01:38.172527
-c749ffc6-8554-4fe0-b285-59b378295314,SSP1 Rotavirus Dhaka,,SSP1,2030,,,,SSP1 Rotavirus Dhaka_c749ffc6.csv,2026-02-07T09:00:30.821616,2026-02-07T09:00:30.821632

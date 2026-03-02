@@ -1,0 +1,30 @@
+{
+  "created": "2026-03-01T18:43:20.858499",
+  "created_by": "Upload User",
+  "description": "Imported from session (4).zip",
+  "enabled_categories": [
+    "human-emissions"
+  ],
+  "name": "west_athens",
+  "resources": [
+    {
+      "description": "Data file: treatment.csv",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "name": "treatment",
+      "path": "input/baseline/treatment.csv",
+      "title": "treatment.csv"
+    },
+    {
+      "description": "Data file: isodata.csv",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "name": "isodata",
+      "path": "input/baseline/isodata.csv",
+      "title": "isodata.csv"
+    }
+  ],
+  "title": "West Athens",
+  "version": "1.0.0",
+  "case_study_id": "b121bb5e-e31e-7e37-37c5-e873ece9a312"
+}

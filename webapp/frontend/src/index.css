@@ -17,3 +17,48 @@ code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
     monospace;
 }
+
+/* Range slider — color only the thumb, leave track neutral gray */
+input[type="range"].accent-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+}
+input[type="range"].accent-thumb::-webkit-slider-runnable-track {
+  height: 6px;
+  background: linear-gradient(
+    to right,
+    var(--thumb-color) 0%,
+    var(--thumb-color) var(--fill-pct),
+    #f3f4f6 var(--fill-pct),
+    #f3f4f6 100%
+  );
+  border-radius: 3px;
+}
+input[type="range"].accent-thumb::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background-color: var(--thumb-color);
+  cursor: pointer;
+}
+input[type="range"].accent-thumb::-moz-range-track {
+  height: 6px;
+  background: #f3f4f6;
+  border-radius: 3px;
+}
+input[type="range"].accent-thumb::-moz-range-progress {
+  height: 6px;
+  background-color: var(--thumb-color);
+  border-radius: 3px;
+}
+input[type="range"].accent-thumb::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background-color: var(--thumb-color);
+  cursor: pointer;
+  border: none;
+}

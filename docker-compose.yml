@@ -21,6 +21,7 @@ services:
       - "5000:5000"  # Flask backend
     volumes:
       - ./data:/app/data              # Mount entire data directory for case study access
+      - /var/run/docker.sock:/var/run/docker.sock  # Docker socket for SDK access
     environment:
       - FLASK_ENV=development
       - REACT_APP_API_URL=http://localhost:5000

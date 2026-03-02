@@ -93,7 +93,7 @@ const ScenarioCard = ({ scenario, selectedCaseStudy }) => {
 
   return (
     <div 
-      className={`p-4 rounded-lg border transition-all duration-200 cursor-pointer ${
+      className={`p-4 rounded-lg border transition-all duration-200 cursor-pointer bg-wpWhite-100 ${
         scenario.isTemp 
           ? 'bg-gradient-to-r from-yellow-50 to-orange-50 border-orange-200 hover:shadow-md' 
           : 'bg-gradient-to-r from-wpBlue-50 to-wpGreen-50 border-gray-200 hover:shadow-md'
@@ -186,17 +186,23 @@ const ScenarioCard = ({ scenario, selectedCaseStudy }) => {
           {scenario.description || scenario.value || 'No description'}
         </p>
         
-        <div className="flex items-center text-sm text-gray-500">
-          <span>Case Study: </span>
-          <span className="ml-1">{selectedCaseStudy?.name || 'Unknown'}</span>
-        </div>
 
-        {/* Show SSP and Year if available */}
-        {(scenario.ssp || scenario.year) && (
-          <div className="flex items-center gap-4 text-sm text-gray-500">
+        {/* Show SSP, Pathogen and Year if available */}
+        {(scenario.ssp || scenario.year || scenario.pathogen || scenario.is_baseline) && (
+          <div className="flex flex-wrap items-center gap-2 text-sm text-gray-500">
+            {scenario.is_baseline && (
+              <span className="bg-gray-100 text-gray-700 px-2 py-1 rounded text-xs font-medium">
+                Baseline
+              </span>
+            )}
             {scenario.ssp && (
               <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs">
                 {scenario.ssp}
+              </span>
+            )}
+            {scenario.pathogen && (
+              <span className="bg-purple-100 text-purple-800 px-2 py-1 rounded text-xs">
+                {scenario.pathogen}
               </span>
             )}
             {scenario.year && (
@@ -239,7 +245,7 @@ const ScenarioCard = ({ scenario, selectedCaseStudy }) => {
               Delete Scenario
             </h3>
             <p className="text-gray-600 mb-4">
-              Are you sure you want to delete "{scenario.name}"? This action cannot be undone and will permanently remove the scenario and its associated CSV file.
+              Are you sure you want to delete "{scenario.name}"? This action cannot be undone and will permanently remove the scenario folder and all its data.
             </p>
             <div className="flex gap-3 justify-end">
               <button

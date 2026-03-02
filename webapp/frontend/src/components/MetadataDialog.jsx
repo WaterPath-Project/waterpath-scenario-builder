@@ -110,9 +110,23 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
     });
   }, []);
 
+  // Derive a slug from a title string: lowercase, non-alphanumeric → underscore, collapse runs
+  const slugify = (title) =>
+    title
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+
   // Create memoized onChange handlers for main fields
-  const handleNameChange = useCallback((value) => handleFieldChange('name', value), [handleFieldChange]);
-  const handleTitleChange = useCallback((value) => handleFieldChange('title', value), [handleFieldChange]);
+  // name is always auto-derived — no standalone handleNameChange needed
+  const handleTitleChange = useCallback((value) => {
+    setTempEditData(prevData => ({
+      ...prevData,
+      title: value,
+      name: slugify(value),
+    }));
+  }, []);
   const handleCreatedChange = useCallback((value) => handleFieldChange('created', value), [handleFieldChange]);
   const handleUpdatedChange = useCallback((value) => handleFieldChange('updated', value), [handleFieldChange]);
   const handleDescriptionChange = useCallback((value) => handleFieldChange('description', value), [handleFieldChange]);
@@ -245,18 +259,20 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
               <div>
-                <span className="font-medium text-gray-700">Name:</span>
-                <EditableField
-                  value={displayData.name}
-                  onChange={handleNameChange}
-                />
-              </div>
-              <div>
                 <span className="font-medium text-gray-700">Title:</span>
                 <EditableField
                   value={displayData.title}
                   onChange={handleTitleChange}
                 />
+              </div>
+              <div>
+                <span className="font-medium text-gray-700">Name:</span>
+                <p className="text-gray-600 font-mono text-xs mt-1 px-2 py-1 bg-gray-100 rounded">
+                  {displayData.name || slugify(displayData.title || '')}
+                </p>
+                {isEditing && (
+                  <p className="text-xs text-gray-400 mt-0.5">Auto-generated from title</p>
+                )}
               </div>
               <div>
                 <span className="font-medium text-gray-700">Created:</span>

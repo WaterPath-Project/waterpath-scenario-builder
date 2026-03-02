@@ -9,10 +9,25 @@ const useScenarioStore = create((set, get) => ({
   editingScenarioId: null,
   activeTab: 'main', // 'main' for overview, or scenario ID for specific scenario
   tabs: [{ id: 'main', name: 'Main', type: 'main', icon: 'Home' }], // Tab list
+  metadataEditScenarioId: null, // Scenario ID whose metadata should be edited
+  dirtyScenarioIds: {},          // { [scenarioId]: true } — scenarios with unsaved isodata edits
 
   // Actions
   setScenarios: (scenarios) => set({ scenarios }),
   
+  openMetadataEditor: (scenarioId) => set({ metadataEditScenarioId: scenarioId }),
+  
+  closeMetadataEditor: () => set({ metadataEditScenarioId: null }),
+
+  setScenarioDirty: (scenarioId, isDirty) => {
+    set((state) => {
+      const next = { ...state.dirtyScenarioIds };
+      if (isDirty) next[scenarioId] = true;
+      else delete next[scenarioId];
+      return { dirtyScenarioIds: next };
+    });
+  },
+
   createTempScenario: (caseStudyId, sspData = null) => {
     const newScenario = {
       id: `temp-${Date.now()}`,
@@ -96,13 +111,15 @@ const useScenarioStore = create((set, get) => ({
     try {
       // Prepare the scenario data for saving
       const scenarioData = {
-        name: scenario.name,
-        description: scenario.description,
-        ssp: scenario.ssp,
-        year: scenario.year,
-        case_study_id: scenario.case_study_id,
-        value: scenario.value,
-        data: scenario.data
+        name:             scenario.name,
+        description:      scenario.description,
+        ssp:              scenario.ssp,
+        year:             scenario.year,
+        pathogen:         scenario.pathogen || '',
+        projectionMethod: scenario.projectionMethod || '',
+        case_study_id:    scenario.case_study_id,
+        notes:            scenario.additional_notes || '',
+        data:             scenario.data,
       };
 
       // Save to backend - this will create CSV file and update datapackage.json

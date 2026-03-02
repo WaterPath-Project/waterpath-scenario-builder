@@ -1,9 +1,81 @@
-import React, { useState, useEffect } from 'react';
-import { Save, Edit3, Trash2, FileText, Calendar } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Edit3, Trash2, BarChart3 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import useScenarioStore from '../store/scenarioStore';
 import DataGridView from './DataGridView';
+import ScenarioMetadataDialog from './ScenarioMetadataDialog';
+import PopulationPanel from './PopulationPanel';
+import SanitationLadderPanel from './SanitationLadderPanel';
+import WastewaterTreatmentPanel from './WastewaterTreatmentPanel';
 
-const ScenarioDetailView = ({ scenarioId, selectedCaseStudy }) => {
+// Import category icons
+import HumanEmissionsIcon from '../../assets/icons/human_emissions.svg';
+import LivestockEmissionsIcon from '../../assets/icons/livestock_emissions.svg';
+import ConcentrationsIcon from '../../assets/icons/concentrations.svg';
+import RiskIcon from '../../assets/icons/risk.svg';
+
+// Import subcategory icons
+import HumanPopulationIcon from '../../assets/icons/human_population.svg';
+import SanitationIcon from '../../assets/icons/sanitation.svg';
+import WastewaterTreatmentIcon from '../../assets/icons/wastewater_treatment.svg';
+import LivestockPopulationIcon from '../../assets/icons/livestock_population.svg';
+import ManureManagementIcon from '../../assets/icons/manure_management.svg';
+import ProductionSystemsIcon from '../../assets/icons/production_systems.svg';
+import FlowIcon from '../../assets/icons/flow.svg';
+import DischargeIcon from '../../assets/icons/discharge.svg';
+import RunoffIcon from '../../assets/icons/runoff.svg';
+import RiverParametersIcon from '../../assets/icons/river_parameters.svg';
+import ExposureDataIcon from '../../assets/icons/exposure_data.svg';
+import PathogenPropertiesIcon from '../../assets/icons/pathogen_properties.svg';
+
+// URL slug from scenario name
+const toSlug = (name) => encodeURIComponent(name ?? '');
+
+// Define categories and subcategories
+const CATEGORIES = [
+  {
+    id: 'human-emissions',
+    label: 'Human Emissions',
+    icon: HumanEmissionsIcon,
+    subcategories: [
+      { id: 'population', label: 'Population', icon: HumanPopulationIcon },
+      { id: 'sanitation', label: 'Sanitation', icon: SanitationIcon },
+      { id: 'wastewater-treatment', label: 'Wastewater Treatment', icon: WastewaterTreatmentIcon },
+    ]
+  },
+  {
+    id: 'livestock-emissions',
+    label: 'Livestock Emissions',
+    icon: LivestockEmissionsIcon,
+    subcategories: [
+      { id: 'livestock-population', label: 'Livestock Population', icon: LivestockPopulationIcon },
+      { id: 'manure-management', label: 'Manure Management', icon: ManureManagementIcon },
+      { id: 'production-systems', label: 'Production Systems', icon: ProductionSystemsIcon },
+    ]
+  },
+  {
+    id: 'concentrations',
+    label: 'Concentrations',
+    icon: ConcentrationsIcon,
+    subcategories: [
+      { id: 'flow', label: 'Flow', icon: FlowIcon },
+      { id: 'discharge', label: 'Discharge', icon: DischargeIcon },
+      { id: 'runoff', label: 'Runoff', icon: RunoffIcon },
+      { id: 'river-parameters', label: 'River Parameters', icon: RiverParametersIcon },
+    ]
+  },
+  {
+    id: 'risk',
+    label: 'Risk',
+    icon: RiskIcon,
+    subcategories: [
+      { id: 'exposure-data', label: 'Exposure Data', icon: ExposureDataIcon },
+      { id: 'pathogen-properties', label: 'Pathogen Properties', icon: PathogenPropertiesIcon },
+    ]
+  }
+];
+
+const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '', initialCategory, initialSubcategory }) => {
   const { 
     scenarios, 
     tempScenarios, 
@@ -11,78 +83,93 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy }) => {
     updateScenario,
     deleteTempScenario, 
     deleteScenario,
-    saveScenario 
+    saveScenario,
+    metadataEditScenarioId,
+    closeMetadataEditor,
+    setScenarioDirty,
   } = useScenarioStore();
   
+  const navigate = useNavigate();
+
+  // Filter categories to those enabled by the case study (null/undefined means all)
+  const enabledCategoryIds = selectedCaseStudy?.enabled_categories ?? null;
+  const isCategoryEnabled = (id) => !enabledCategoryIds || enabledCategoryIds.includes(id);
+  // All categories are shown; only enabled ones are interactive
+  const availableCategories = CATEGORIES;
+
   // Find the scenario (either temp or persistent)
   const scenario = [...scenarios, ...tempScenarios].find(s => s.id === scenarioId);
-  console.log(scenario);
-  const [isSaving, setIsSaving] = useState(false);
-  const [isEditing, setIsEditing] = useState(scenario?.isTemp || false);
-  const [showMetadata, setShowMetadata] = useState(false);
-  
-  // Local form state to handle changes
-  const [formData, setFormData] = useState({
-    name: '',
-    description: '',
-    ssp: '',
-    year: '',
-    additional_notes: ''
-  });
 
-  // Update form data when scenario changes
+  const validCat = (id) => CATEGORIES.find((c) => c.id === id && isCategoryEnabled(c.id));
+  const validSub = (catId, subId) => CATEGORIES.find((c) => c.id === catId && isCategoryEnabled(c.id))?.subcategories.find((s) => s.id === subId);
+
+  const [isMetadataDialogOpen, setIsMetadataDialogOpen] = useState(false);
+  // Default to first *enabled* category
+  const firstEnabled = CATEGORIES.find(c => isCategoryEnabled(c.id));
+  const [activeCategory,    setActiveCategory]    = useState(() => validCat(initialCategory)                      ? initialCategory    : firstEnabled?.id);
+  const [activeSubcategory, setActiveSubcategory] = useState(() => validSub(initialCategory, initialSubcategory)  ? initialSubcategory : firstEnabled?.subcategories[0]?.id);
+
+  // Track which subcategories have unsaved changes
+  const [dirtySubcategories, setDirtySubcategories] = useState({});
+
+  const handleSubcatDirtyChange = useCallback((subcategoryId, isDirty) => {
+    setDirtySubcategories((prev) => {
+      const next = { ...prev, [subcategoryId]: isDirty };
+      const hasAnyDirty = Object.values(next).some(Boolean);
+      setScenarioDirty(scenarioId, hasAnyDirty);
+      return next;
+    });
+  }, [scenarioId, setScenarioDirty]);
+
+  const isCategoryDirty = (categoryId) => {
+    const cat = availableCategories.find((c) => c.id === categoryId);
+    return cat?.subcategories.some((sub) => dirtySubcategories[sub.id]) ?? false;
+  };
+  
+  // Open dialog when store triggers metadata editing for this scenario
   useEffect(() => {
-    if (scenario) {
-      setFormData({
-        name: scenario.name || '',
-        description: scenario.description || '',
-        ssp: scenario.ssp || '',
-        year: scenario.year || '',
-        additional_notes: scenario.additional_notes || ''
-      });
+    if (metadataEditScenarioId === scenarioId) {
+      setIsMetadataDialogOpen(true);
+      closeMetadataEditor(); // Clear the trigger
     }
-  }, [scenario]);
+  }, [metadataEditScenarioId, scenarioId, closeMetadataEditor]);
+  
+  // Sync from URL when user navigates via browser back/forward
+  useEffect(() => {
+    if (initialCategory && validCat(initialCategory)) {
+      setActiveCategory(initialCategory);
+      if (initialSubcategory && validSub(initialCategory, initialSubcategory)) {
+        setActiveSubcategory(initialSubcategory);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialCategory, initialSubcategory]);
 
   if (!scenario) {
     return (
       <div className="flex items-center justify-center py-12">
         <div className="text-center text-gray-500">
-          <FileText className="mx-auto mb-4 text-gray-300" size={48} />
+          <BarChart3 className="mx-auto mb-4 text-gray-300" size={48} />
           <p>Scenario not found</p>
         </div>
       </div>
     );
   }
 
-  const handleSave = async () => {
+  const handleMetadataSave = async (formData) => {
     if (scenario.isTemp) {
-      setIsSaving(true);
-      try {
-        await saveScenario(scenario.id, formData);
-        setIsEditing(false);
-      } catch (error) {
-        alert('Failed to save scenario: ' + error.message);
-      } finally {
-        setIsSaving(false);
-      }
+      // For temp scenarios, update the temp scenario in the store
+      updateTempScenario(scenario.id, formData);
     } else {
-      // Update existing persistent scenario
-      setIsSaving(true);
-      try {
-        await updateScenario(scenario.id, formData);
-        setIsEditing(false);
-      } catch (error) {
-        alert('Failed to update scenario: ' + error.message);
-      } finally {
-        setIsSaving(false);
-      }
+      // For persistent scenarios, call the update API
+      await updateScenario(scenario.id, formData);
     }
   };
 
   const handleDelete = async () => {
     const confirmMessage = scenario.isTemp 
-      ? `Are you sure you want to delete "${formData.name || scenario.name}"? This temporary scenario will be removed from your browser.`
-      : `Are you sure you want to delete "${formData.name || scenario.name}"? This will permanently remove the scenario and its CSV file from the server.`;
+      ? `Are you sure you want to delete "${scenario.name}"? This temporary scenario will be removed from your browser.`
+      : `Are you sure you want to delete "${scenario.name}"? This will permanently remove the scenario and its CSV file from the server.`;
     
     if (window.confirm(confirmMessage)) {
       try {
@@ -93,231 +180,163 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy }) => {
     }
   };
 
-  const handleFieldUpdate = (field, value) => {
-    setFormData(prev => ({
-      ...prev,
-      [field]: value
-    }));
-    
-    // For temp scenarios, also update the store immediately for live updates
-    if (scenario.isTemp) {
-      updateTempScenario(scenario.id, { [field]: value });
-    }
-  };
+
+
+  const currentCategory = availableCategories.find(cat => cat.id === activeCategory);
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="bg-wpWhite-100 h-full flex flex-col">
       {/* Header with actions */}
-      <div className="flex items-center justify-between pb-4 border-b border-gray-200">
-        <div className="flex items-center space-x-3">
-          <FileText className="text-wpBlue-500" size={24} />
+      <div className="flex items-center justify-between border-b border-gray-200 bg-white flex-shrink-0">
+        <div className="flex items-center space-x-3 p-6">
+          <BarChart3 className="text-wpBlue" size={24} />
           <div>
-            <h2 className="text-xl font-semibold text-gray-900">
-              {formData.name || scenario.name || 'Untitled Scenario'}
+            <h2 className="text-xl font-semibold font-outfit text-wpBlue">
+              {scenario.name || 'Untitled Scenario'}
             </h2>
-            <p className="text-sm text-gray-500">
+            <p className="text-sm text-outfit text-wpBlue">
               {scenario.isTemp ? 'Temporary scenario (not saved)' : 'Saved scenario'}
             </p>
           </div>
         </div>
         
         <div className="flex items-center space-x-2">
-          {!isEditing ? (
-            <>
+          <button
+            onClick={() => setIsMetadataDialogOpen(true)}
+            className="flex items-center space-x-1 px-3 py-1 text-sm text-wpBlue-600 hover:text-wpBlue-700 hover:bg-wpBlue-50 rounded transition-colors"
+          >
+            <Edit3 size={16} />
+            <span>Edit metadata</span>
+          </button>
+          <button
+            onClick={handleDelete}
+            className="flex items-center space-x-1 px-3 py-1 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
+          >
+            <Trash2 size={16} />
+            <span>Delete</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Category Tabs */}
+      <div className="bg-white flex-shrink-0">
+        <div className="px-6">
+          <h3 className="font-medium text-wpBlue pt-4 pb-2">Changes per category</h3>
+          <div className="flex space-x-2 w-full">
+            {CATEGORIES.map((category) => {
+              const enabled = isCategoryEnabled(category.id);
+              return (
               <button
+                key={category.id}
+                disabled={!enabled}
                 onClick={() => {
-                  if (showMetadata) {
-                    setIsEditing(true);
-                  } else {
-                    setShowMetadata(true);
+                  if (!enabled) return;
+                  const cat = CATEGORIES.find((c) => c.id === category.id);
+                  const firstSub = cat?.subcategories[0]?.id ?? activeSubcategory;
+                  setActiveCategory(category.id);
+                  setActiveSubcategory(firstSub);
+                  if (scenario?.name) {
+                    const prefix = caseStudySlug ? `/scenarios/${caseStudySlug}` : '/scenarios';
+                    navigate(`${prefix}/${toSlug(scenario.name)}/${category.id}/${firstSub}`);
                   }
                 }}
-                className="flex items-center space-x-1 px-3 py-1 text-sm text-wpBlue-600 hover:text-wpBlue-700 hover:bg-wpBlue-50 rounded transition-colors"
+                className={`
+                  relative flex flex-1 items-center gap-3 px-6 py-3 mb-3 rounded-xl transition-colors justify-center
+                  ${!enabled
+                    ? 'bg-gray-100 text-gray-400 opacity-40 cursor-not-allowed'
+                    : activeCategory === category.id
+                      ? 'bg-white text-wpBlue hover:bg-gray-50 shadow-md shadow-wpGray-500/50'
+                      : 'bg-gray-100 text-wpBlue hover:bg-gray-200'
+                  }
+                `}
               >
-                <Edit3 size={16} />
-                <span>Edit metadata</span>
+                <img src={category.icon} alt={category.label} className="w-12 h-12" />
+                <span className="font-semibold font-outfit">{category.label}</span>
+                {enabled && isCategoryDirty(category.id) && (
+                  <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-orange-400" title="Unsaved changes" />
+                )}
               </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* Split View: Subcategories Sidebar + Content */}
+      <div className="flex flex-1 overflow-hidden ">
+        {/* Left Sidebar - Subcategories */}
+        <div className="w-80 bg-white p-6 overflow-y-auto">
+          <h3 className="text-sm font-medium text-wpBlue mb-4">Subcategories</h3>
+          <div className="space-y-2">
+            {currentCategory?.subcategories.map((subcategory) => (
               <button
-                onClick={handleDelete}
-                className="flex items-center space-x-1 px-3 py-1 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
-              >
-                <Trash2 size={16} />
-                <span>Delete</span>
-              </button>
-            </>
-          ) : (
-            <div className="flex items-center space-x-2">
-              <button
-                onClick={handleSave}
-                disabled={isSaving}
-                className="flex items-center space-x-1 px-3 py-1 text-sm bg-wpBlue-500 text-white hover:bg-wpBlue-600 disabled:opacity-50 rounded transition-colors"
-              >
-                <Save size={16} />
-                <span>{isSaving ? 'Saving...' : 'Save'}</span>
-              </button>
-              <button
+                key={subcategory.id}
                 onClick={() => {
-                  setIsEditing(false);
-                  setShowMetadata(false);
-                  // Reset form data to original values
-                  setFormData({
-                    name: scenario.name || '',
-                    description: scenario.description || '',
-                    ssp: scenario.ssp || '',
-                    year: scenario.year || '',
-                    additional_notes: scenario.additional_notes || ''
-                  });
+                  setActiveSubcategory(subcategory.id);
+                  if (scenario?.name) {
+                    const prefix = caseStudySlug ? `/scenarios/${caseStudySlug}` : '/scenarios';
+                    navigate(`${prefix}/${toSlug(scenario.name)}/${activeCategory}/${subcategory.id}`);
+                  }
                 }}
-                className="px-3 py-1 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded transition-colors"
+                className={`
+                  w-full flex items-center gap-3 px-4 py-1 rounded-xl transition-colors text-left
+                  ${activeSubcategory === subcategory.id
+                    ? 'bg-gray-100 text-wpBlue-600'
+                    : 'text-gray-700 hover:bg-gray-50'
+                  }
+                `}
               >
-                Cancel
+                <img src={subcategory.icon} alt={subcategory.label} className="w-10 h-10" />
+                <span className="text-sm font-medium">{subcategory.label}</span>
+                {dirtySubcategories[subcategory.id] && (
+                  <span className="ml-auto w-2 h-2 rounded-full bg-orange-400 flex-shrink-0" title="Unsaved changes" />
+                )}
               </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Right Content Area */}
+        <div className="flex-1 bg-gray-50 p-6 overflow-y-auto">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">
+            {currentCategory?.subcategories.find(sub => sub.id === activeSubcategory)?.label}
+          </h3>
+
+          {activeSubcategory === 'population' ? (
+            <PopulationPanel
+              key={scenario.id}
+              scenario={scenario}
+              onDirtyChange={(d) => handleSubcatDirtyChange('population', d)}
+            />
+          ) : activeSubcategory === 'sanitation' ? (
+            <SanitationLadderPanel
+              key={scenario.id}
+              scenario={scenario}
+              onDirtyChange={(d) => handleSubcatDirtyChange('sanitation', d)}
+            />
+          ) : activeSubcategory === 'wastewater-treatment' ? (
+            <WastewaterTreatmentPanel
+              key={scenario.id}
+              scenario={scenario}
+              onDirtyChange={(d) => handleSubcatDirtyChange('wastewater-treatment', d)}
+            />
+          ) : (
+            <div className="bg-white rounded-lg border border-gray-200 p-6">
+              <p className="text-gray-500 text-sm">
+                Content for {currentCategory?.subcategories.find(sub => sub.id === activeSubcategory)?.label} will appear here.
+              </p>
             </div>
           )}
         </div>
       </div>
 
-      {/* Scenario Details */}
-      {showMetadata && (
-        <div className="bg-white rounded-lg border border-gray-200">
-        <div className="p-6 space-y-4">
-          <div className="grid grid-cols-1 gap-6">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Name
-              </label>
-              {isEditing ? (
-                <input
-                  type="text"
-                  value={formData.name}
-                  onChange={(e) => handleFieldUpdate('name', e.target.value)}
-                  className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent"
-                  placeholder="Enter scenario name"
-                />
-              ) : (
-                <p className="text-gray-900">{formData.name || 'Untitled'}</p>
-              )}
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Description
-              </label>
-              {isEditing ? (
-                <textarea
-                  value={formData.description}
-                  onChange={(e) => handleFieldUpdate('description', e.target.value)}
-                  className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent"
-                  rows={3}
-                  placeholder="Enter scenario description"
-                />
-              ) : (
-                <p className="text-gray-900">{formData.description || 'No description'}</p>
-              )}
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  SSP (Shared Socioeconomic Pathway)
-                </label>
-                {isEditing ? (
-                  <select
-                    value={formData.ssp}
-                    onChange={(e) => handleFieldUpdate('ssp', e.target.value)}
-                    className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent"
-                  >
-                    <option value="">Select SSP</option>
-                    <option value="SSP1">SSP1 - Sustainability</option>
-                    <option value="SSP2">SSP2 - Middle of the Road</option>
-                    <option value="SSP3">SSP3 - Regional Rivalry</option>
-                    <option value="SSP4">SSP4 - Inequality</option>
-                    <option value="SSP5">SSP5 - Fossil-fueled Development</option>
-                  </select>
-                ) : (
-                  <p className="text-gray-900">{formData.ssp || 'Not specified'}</p>
-                )}
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Year
-                </label>
-                {isEditing ? (
-                  <select
-                    value={formData.year}
-                    onChange={(e) => handleFieldUpdate('year', parseInt(e.target.value))}
-                    className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent"
-                  >
-                    <option value="">Select Year</option>
-                    <option value="2025">2025</option>
-                    <option value="2030">2030</option>
-                    <option value="2050">2050</option>
-                    <option value="2100">2100</option>
-                  </select>
-                ) : (
-                  <p className="text-gray-900">{formData.year || 'Not specified'}</p>
-                )}
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Additional Notes
-              </label>
-              {isEditing ? (
-                <textarea
-                  value={formData.additional_notes}
-                  onChange={(e) => handleFieldUpdate('additional_notes', e.target.value)}
-                  className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent"
-                  rows={2}
-                  placeholder="Additional notes or comments"
-                />
-              ) : (
-                <p className="text-gray-900">{formData.additional_notes || 'No additional notes'}</p>
-              )}
-            </div>
-
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div>
-                <label className="block text-gray-500 mb-1">
-                  <Calendar size={16} className="inline mr-1" />
-                  Created
-                </label>
-                <p className="text-gray-900">
-                  {scenario.created_at ? new Date(scenario.created_at).toLocaleDateString() : 'Not available'}
-                </p>
-              </div>
-              <div>
-                <label className="block text-gray-500 mb-1">
-                  <Calendar size={16} className="inline mr-1" />
-                  Updated
-                </label>
-                <p className="text-gray-900">
-                  {scenario.updated_at ? new Date(scenario.updated_at).toLocaleDateString() : 'Not available'}
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      )}
-
-      {/* Data Section */}
-      {scenario.data && scenario.data.data && scenario.data.data.length > 0 && (
-        <div className="bg-white rounded-lg border border-gray-200">
-          <div className="p-4">
-            {console.log('Scenario data:', scenario.data)}
-            <DataGridView 
-              data={scenario.data.data} 
-              fieldnames={scenario.data.fieldnames} // Pass column order
-              onDataChange={(newData) => {
-                console.log('Data updated:', newData);
-              }}
-            />
-          </div>
-        </div>
-      )}
+      {/* Metadata Edit Dialog */}
+      <ScenarioMetadataDialog
+        isOpen={isMetadataDialogOpen}
+        onClose={() => setIsMetadataDialogOpen(false)}
+        scenario={scenario}
+        onSave={handleMetadataSave}
+      />
     </div>
   );
 };

@@ -1,0 +1,3 @@
+scenario_id,name,folder,ssp,pathogen,year,is_baseline,notes,created_at,updated_at
+2149d0ca-685f-414a-94fa-238a6f24d4df,Baseline,baseline,,rotavirus,,True,Baseline scenario imported from ZIP file,2026-02-28T19:24:41.316337,2026-03-01T08:01:34.796089
+b94f0dcb-56ba-4310-bc32-eb23d1c48cbb,Kampala SSP1,glowpa_input_5_ssp1_rotavirus_2050,SSP1,rotavirus,2050,False,,2026-03-01T18:00:04.898581,2026-03-01T18:00:04.898581

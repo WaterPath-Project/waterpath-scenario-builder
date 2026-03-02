@@ -9,13 +9,16 @@ module.exports = {
         inter: ["Inter", "sans-serif"],
       },
       borderRadius: {
-        lg: "var(--radius)",
-        md: "calc(var(--radius) - 2px)",
-        sm: "calc(var(--radius) - 4px)",
+        sm: "4px",
+        md: "2px",
+        lg: "8px",
+        xl: "16px"
       },
       colors: {
         wpGray: {
           100: "#EEF2F5",
+          200: "#F6F9FB",
+          300: "#F1F4FA"
         },
         wpBlue: {
           DEFAULT: "#0B4159",
@@ -34,6 +37,7 @@ module.exports = {
         },
         wpWhite: {
           DEFAULT: "#F6F9FB",
+          100: "#FFFFFF"
         },
         wpBrown: {
           DEFAULT: "#F2EFE6",

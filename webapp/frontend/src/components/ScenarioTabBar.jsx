@@ -1,47 +1,70 @@
 import React from 'react';
-import { Home, X, ChartColumn } from 'lucide-react';
+import { Grid3x3, X, ChartColumn, Plus } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import useScenarioStore from '../store/scenarioStore';
 
-const ScenarioTabBar = () => {
-  const { tabs, activeTab, setActiveTab, deleteTempScenario } = useScenarioStore();
+const toSlug = (name) => encodeURIComponent(name ?? '');
+const DEFAULT_CATEGORY = 'human-emissions';
+const DEFAULT_SUBCATEGORY = 'population';
+
+const ScenarioTabBar = ({ onCreateScenario, caseStudySlug = '' }) => {
+  const { tabs, activeTab, setActiveTab, deleteScenario, openMetadataEditor, dirtyScenarioIds } = useScenarioStore();
+  const navigate = useNavigate();
 
   const handleTabClick = (tabId) => {
     setActiveTab(tabId);
-  };
-
-  const handleCloseTab = (e, tabId) => {
-    e.stopPropagation();
-    // Only temp scenarios can be closed
-    const tab = tabs.find(t => t.id === tabId);
-    if (tab?.isTemp) {
-      deleteTempScenario(tabId);
+    if (tabId === 'main') {
+      navigate(caseStudySlug ? `/scenarios/${caseStudySlug}` : '/scenarios');
+    } else {
+      const tab = tabs.find((t) => t.id === tabId);
+      if (tab) navigate(`/scenarios/${caseStudySlug ? `${caseStudySlug}/` : ''}${toSlug(tab.name)}/${DEFAULT_CATEGORY}/${DEFAULT_SUBCATEGORY}`);
     }
   };
 
-  if (tabs.length <= 1) {
-    return null; // Don't show tab bar if only main tab
-  }
+  const handleTabDoubleClick = (tabId, tabType) => {
+    // Only allow editing metadata for scenario tabs, not the main tab
+    if (tabType !== 'main') {
+      openMetadataEditor(tabId);
+    }
+  };
+
+  const handleCloseTab = async (e, tabId) => {
+    e.stopPropagation();
+    // Delete any scenario (temp or saved)
+    const tab = tabs.find(t => t.id === tabId);
+    if (tab && tab.type !== 'main') {
+      if (window.confirm(`Are you sure you want to delete "${tab.name}"?`)) {
+        try {
+          await deleteScenario(tabId);
+        } catch (error) {
+          console.error('Error deleting scenario:', error);
+          alert('Failed to delete scenario');
+        }
+      }
+    }
+  };
 
   return (
-    <div className="bg-gray-100 border-t border-gray-200">
-      <div className="flex overflow-x-auto">
+    <div className="mt-8 ml-4 p-2 pb-0">
+      <div className="flex overflow-hidden">
         {tabs.map((tab) => (
           <button
             key={tab.id}
             onClick={() => handleTabClick(tab.id)}
+            onDoubleClick={() => handleTabDoubleClick(tab.id, tab.type)}
             className={`
-              flex items-center gap-2 px-4 py-2 text-sm font-medium border-r border-gray-200
-              whitespace-nowrap flex-shrink-0 relative group
+              ${tab.id=='main' && 'rounded-tl-xl'} flex font-outfit items-center gap-2 px-4 py-2 text-sm font-semibold 
+              whitespace-nowrap flex-shrink-0 relative group mr-2 bg-wpGray-200
               ${activeTab === tab.id 
-                ? 'bg-white text-wpBlue-600 border-b-2 border-wpBlue-500 -mb-px' 
-                : 'bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-800'
+                ? 'bg-wpWhite-100 text-wpBlue-600 -mb-px' 
+                : 'text-wpBlue hover:bg-gray-100 hover:text-gray-800'
               }
               ${tab.isTemp ? 'italic' : ''}
             `}
           >
             {/* Tab icon */}
             {tab.type === 'main' ? (
-              <Home size={16} />
+              <Grid3x3 size={16} />
             ) : (
               <ChartColumn size={16} className={
                 tab.isTemp ? 'text-yellow-400' : 'text-wpBlue-400'
@@ -49,30 +72,43 @@ const ScenarioTabBar = () => {
             )}
             
             {/* Tab name */}
+            {tab.type !== 'main' && (
             <span className="max-w-[120px] truncate">
               {tab.name}
             </span>
+            )}
             
-            {/* Close button for temp scenarios */}
-            {tab.isTemp && (
+            {/* Delete button for scenario tabs (not main) */}
+            {tab.type !== 'main' && (
               <button
                 onClick={(e) => handleCloseTab(e, tab.id)}
                 className="ml-1 p-0.5 rounded hover:bg-red-100 opacity-0 group-hover:opacity-100 transition-opacity"
-                title="Close tab"
+                title="Delete scenario"
               >
                 <X size={12} className="text-red-500" />
               </button>
             )}
 
-            {/* Unsaved indicator */}
-            {tab.isTemp && (
+            {/* Unsaved indicator: temp scenario or has dirty isodata edits */}
+            {(tab.isTemp || dirtyScenarioIds?.[tab.id]) && (
               <div className="absolute top-1 right-1 w-2 h-2 bg-orange-400 rounded-full" />
             )}
           </button>
         ))}
         
+        {/* Add New Scenario Plus Tab */}
+        {onCreateScenario && (
+          <button
+            onClick={onCreateScenario}
+            className="flex items-center justify-center px-4 py-2 text-sm bg-gray-50 text-gray-600 hover:bg-wpGreen hover:text-white transition-colors flex-shrink-0"
+            title="Create new scenario"
+          >
+            <Plus size={16} />
+          </button>
+        )}
+        
         {/* Spacer to fill remaining space */}
-        <div className="flex-1 bg-gray-50 border-r border-gray-200" />
+        <div className="flex-1 border-r border-gray-200" />
       </div>
     </div>
   );

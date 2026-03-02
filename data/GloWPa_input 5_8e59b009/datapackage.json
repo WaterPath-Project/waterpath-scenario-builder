@@ -1,0 +1,30 @@
+{
+  "case_study_id": "047be9c3-35b8-2e78-071c-04dc7f93da7e",
+  "created": "2026-02-28T19:24:41.313830",
+  "created_by": "Upload User",
+  "description": "Imported from GloWPa_input (5).zip",
+  "enabled_categories": [
+    "human-emissions"
+  ],
+  "name": "kampala",
+  "resources": [
+    {
+      "description": "Data file: treatment.csv",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "name": "treatment",
+      "path": "input/baseline/treatment.csv",
+      "title": "treatment.csv"
+    },
+    {
+      "description": "Data file: isodata.csv",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "name": "isodata",
+      "path": "input/baseline/isodata.csv",
+      "title": "isodata.csv"
+    }
+  ],
+  "title": "Kampala",
+  "version": "1.0.0"
+}
