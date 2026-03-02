@@ -40,6 +40,11 @@ else:
     # Running locally - use relative path
     DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'data'))
 
+# External WaterPath Data API (projections, etc.)
+WATERPATH_DATA_API_URL = os.environ.get(
+    'WATERPATH_DATA_API_URL', 'https://dev.waterpath.venthic.com/api'
+).rstrip('/')
+
 # Mapping from frontend category id → expected sub-folder name inside baseline/
 CATEGORY_FOLDER_MAP = {
     'human-emissions':      'human_emissions',
@@ -207,6 +212,117 @@ def create_scenario_folder(case_study_path, folder_name, transformations=None):
 
     print(f"[DEBUG] Created scenario folder: {scenario_path}")
     return scenario_path
+
+
+# Mapping from projection schema → category sub-folder inside input/<scenario>/
+_SCHEMA_CATEGORY_MAP = {
+    'population':  'human_emissions',
+    'sanitation':  'human_emissions',
+    'treatment':   'human_emissions',
+}
+
+
+def apply_projections_to_scenario(case_study_path, folder_name, ssp, year, schemas=None):
+    """Call the external WaterPath Data API to auto-calculate projections and
+    apply the returned files to an already-created scenario folder.
+
+    For each schema in *schemas* (default: ``['population']``):
+      1. Locate the baseline ``isodata.csv`` inside the scenario folder.
+      2. POST to ``WATERPATH_DATA_API_URL/data/projections/download``.
+      3. Extract the returned zip into the category sub-folder of the scenario,
+         renaming raster files according to ``RASTER_RENAME_MAP``.
+      4. Return per-schema result dicts with keys ``ok``, ``error``, ``summary``.
+
+    Args:
+        case_study_path: Root of the case study directory.
+        folder_name:     Scenario folder name (already created before this call).
+        ssp:             SSP string, e.g. ``'1'``, ``'SSP3'``.
+        year:            Projection year, e.g. ``2050``.
+        schemas:         List of schema names to project. Defaults to
+                         ``['population']``.
+
+    Returns:
+        dict mapping each schema name to a result dict.
+    """
+    if schemas is None:
+        schemas = ['population']
+
+    # Normalise SSP: '1', 'ssp1', 'SSP1' → 'SSP1'
+    ssp_str = str(ssp).strip()
+    if not ssp_str.upper().startswith('SSP'):
+        ssp_str = f"SSP{ssp_str}"
+
+    scenario_input_path = os.path.join(case_study_path, 'input', folder_name)
+    results = {}
+
+    for schema in schemas:
+        cat_folder = _SCHEMA_CATEGORY_MAP.get(schema, 'human_emissions')
+        isodata_path = os.path.join(scenario_input_path, cat_folder, 'isodata.csv')
+
+        if not os.path.exists(isodata_path):
+            results[schema] = {
+                'ok': False,
+                'error': f"isodata.csv not found at {isodata_path}",
+                'summary': None,
+            }
+            print(f"[WARNING] Projection skipped for schema='{schema}': isodata.csv missing")
+            continue
+
+        url = f"{WATERPATH_DATA_API_URL}/data/projections/download"
+        params = {'schema': schema, 'year': int(year), 'ssp': ssp_str}
+
+        print(f"[DEBUG] Calling projections API: POST {url} params={params}")
+        try:
+            with open(isodata_path, 'rb') as f:
+                resp = requests.post(
+                    url,
+                    params=params,
+                    files={'file': ('isodata.csv', f, 'text/csv')},
+                    timeout=120,
+                )
+
+            if resp.status_code != 200:
+                results[schema] = {
+                    'ok': False,
+                    'error': f"API returned {resp.status_code}: {resp.text[:500]}",
+                    'summary': None,
+                }
+                print(f"[WARNING] Projection API error for schema='{schema}': {results[schema]['error']}")
+                continue
+
+            # Extract the returned zip into the category sub-folder
+            target_dir = os.path.join(scenario_input_path, cat_folder)
+            summary_data = None
+
+            with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+                for member in zf.infolist():
+                    # Flatten any directory entries
+                    if member.is_dir():
+                        continue
+                    # Use only the basename so nested zip paths are handled safely
+                    base_name = os.path.basename(member.filename)
+                    if not base_name:
+                        continue
+                    # Rename rasters on the fly (pop_urban.tif → popurban.tif, etc.)
+                    dest_name = RASTER_RENAME_MAP.get(base_name, base_name)
+                    dest_path = os.path.join(target_dir, dest_name)
+                    with zf.open(member) as src, open(dest_path, 'wb') as dst:
+                        dst.write(src.read())
+                    if base_name == 'summary.json':
+                        try:
+                            with open(dest_path, 'r', encoding='utf-8') as sf:
+                                summary_data = json.load(sf)
+                        except Exception:
+                            pass
+
+            print(f"[DEBUG] Projection applied for schema='{schema}' → {target_dir}")
+            results[schema] = {'ok': True, 'error': None, 'summary': summary_data}
+
+        except Exception as exc:
+            results[schema] = {'ok': False, 'error': str(exc), 'summary': None}
+            print(f"[WARNING] Projection exception for schema='{schema}': {exc}")
+
+    return results
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1754,6 +1870,21 @@ def create_scenario():
         # Copy baseline → new scenario folder
         create_scenario_folder(case_study_path, folder_name)
 
+        # Auto-calculate projections via external API when requested
+        projection_results = {}
+        if projection_method == 'isimip' and ssp and year:
+            print(f"[DEBUG] Auto-calculating projections for '{folder_name}' (ssp={ssp}, year={year})")
+            projection_results = apply_projections_to_scenario(
+                case_study_path, folder_name,
+                ssp=ssp, year=year,
+                schemas=['population'],
+            )
+            for schema, result in projection_results.items():
+                if result['ok']:
+                    print(f"[DEBUG] Projection OK for schema='{schema}'")
+                else:
+                    print(f"[WARNING] Projection failed for schema='{schema}': {result.get('error')}")
+
         scenario_id = str(uuid.uuid4())
         now = datetime.now().isoformat()
 
@@ -1787,6 +1918,7 @@ def create_scenario():
             'is_baseline':  False,
             'created_at':   now,
             'updated_at':   now,
+            'projection_results': projection_results,
         }
 
         print(f"[DEBUG] Created scenario '{scenario_name}' in folder '{folder_name}'")

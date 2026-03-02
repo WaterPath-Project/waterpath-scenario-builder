@@ -13,12 +13,25 @@ const pct = (v) => {
 };
 
 const FRACTION_STEP = 0.001;
+const fmt3 = (v) => (v == null || isNaN(v) ? '—' : Number(v).toFixed(3));
 
-// StatCard
-const StatCard = ({ label, value, sub }) => (
-  <div className="bg-white rounded-xl border border-gray-200 px-5 py-4 flex flex-col gap-1 shadow-sm">
+// StatCard — optionally shows −/+ buttons flanking the value
+const StatCard = ({ label, value, sub, onDecrement, onIncrement }) => (
+  <div className="flex-1 min-w-0 bg-white rounded-xl border border-gray-200 px-5 py-4 flex flex-col gap-1 shadow-sm">
     <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</span>
-    <span className="text-2xl font-bold text-wpBlue">{value}</span>
+    <div className="flex items-center gap-2">
+      {onDecrement && (
+        <button onClick={onDecrement} className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-wpBlue transition-colors" title="Decrease">
+          <Minus size={14} />
+        </button>
+      )}
+      <span className="text-2xl font-bold text-wpBlue">{value}</span>
+      {onIncrement && (
+        <button onClick={onIncrement} className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-wpBlue transition-colors" title="Increase">
+          <Plus size={14} />
+        </button>
+      )}
+    </div>
     {sub && <span className="text-xs text-gray-400">{sub}</span>}
   </div>
 );
@@ -72,7 +85,7 @@ const Stepper = ({ value, onChange, step, min, max, format }) => {
   );
 };
 
-const RAW_COLS = ['subarea', 'population', 'fraction_urban_pop', 'fraction_pop_under5'];
+const RAW_COLS = ['subarea', 'population', 'fraction_urban_pop', 'fraction_pop_under5', 'hdi'];
 
 // ─── Inner panel: receives already-parsed rows, manages editing state ────────
 const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange }) => {
@@ -84,6 +97,7 @@ const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange
       population: parseFloat(r.population) || 0,
       fraction_urban_pop: parseFloat(r.fraction_urban_pop) || 0,
       fraction_pop_under5: parseFloat(r.fraction_pop_under5) || 0,
+      hdi: parseFloat(r.hdi) || 0,
     }));
 
   const [localRows, setLocalRows] = useState(() => parseRows(initialRows));
@@ -94,8 +108,17 @@ const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange
       population: parseFloat(r.population) || 0,
       fraction_urban_pop: parseFloat(r.fraction_urban_pop) || 0,
       fraction_pop_under5: parseFloat(r.fraction_pop_under5) || 0,
+      hdi: parseFloat(r.hdi) || 0,
     }))
   );
+
+  // True when all initial HDI values are the same (enables the shared HDI StatCard)
+  const hdiUniform = useMemo(() => {
+    if (!initialRows.length) return false;
+    const first = parseFloat(initialRows[0].hdi) || 0;
+    return initialRows.every((r) => Math.abs((parseFloat(r.hdi) || 0) - first) < 0.0001);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -117,7 +140,8 @@ const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange
         if (
           r.population !== s?.population ||
           r.fraction_urban_pop !== s?.fraction_urban_pop ||
-          r.fraction_pop_under5 !== s?.fraction_pop_under5
+          r.fraction_pop_under5 !== s?.fraction_pop_under5 ||
+          r.hdi !== s?.hdi
         ) newChanged.add(i);
       });
       setChangedRows(newChanged);
@@ -145,6 +169,7 @@ const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange
         population: r.population,
         fraction_urban_pop: r.fraction_urban_pop,
         fraction_pop_under5: r.fraction_pop_under5,
+        hdi: r.hdi,
       }));
       setChangedRows(new Set());
       setIsDirty(false);
@@ -156,32 +181,47 @@ const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange
     }
   }, [localRows, scenario.id, onDirtyChange]);
 
-  const adjustAll = useCallback((pctDelta) => {
-    setLocalRows((prev) => {
-      const next = prev.map((r) => ({ ...r, population: Math.max(0, Math.round(r.population * (1 + pctDelta))) }));
-      const newChanged = new Set();
-      next.forEach((r, i) => {
-        const s = savedRowsRef.current[i];
-        if (
-          r.population !== s?.population ||
-          r.fraction_urban_pop !== s?.fraction_urban_pop ||
-          r.fraction_pop_under5 !== s?.fraction_pop_under5
-        ) newChanged.add(i);
-      });
-      setChangedRows(newChanged);
-      const dirty = newChanged.size > 0;
-      setIsDirty(dirty);
-      onDirtyChange?.(dirty);
-      return next;
+  const markDirty = useCallback((next) => {
+    const newChanged = new Set();
+    next.forEach((r, i) => {
+      const s = savedRowsRef.current[i];
+      if (
+        r.population !== s?.population ||
+        r.fraction_urban_pop !== s?.fraction_urban_pop ||
+        r.fraction_pop_under5 !== s?.fraction_pop_under5 ||
+        r.hdi !== s?.hdi
+      ) newChanged.add(i);
     });
+    setChangedRows(newChanged);
+    const dirty = newChanged.size > 0;
+    setIsDirty(dirty);
+    onDirtyChange?.(dirty);
   }, [onDirtyChange]);
+
+  // Adjust all populations by a percentage delta
+  const adjustAll = useCallback((pctDelta) => {
+    const next = localRows.map((r) => ({ ...r, population: Math.max(0, Math.round(r.population * (1 + pctDelta))) }));
+    setLocalRows(next);
+    markDirty(next);
+  }, [localRows, markDirty]);
+
+  // Adjust a fraction/HDI field across all rows by a fixed delta
+  const adjustAllField = useCallback((field, delta, min = 0, max = 1) => {
+    const next = localRows.map((r) => ({
+      ...r,
+      [field]: Math.round(Math.min(max, Math.max(min, (r[field] || 0) + delta)) * 1000) / 1000,
+    }));
+    setLocalRows(next);
+    markDirty(next);
+  }, [localRows, markDirty]);
 
   const stats = useMemo(() => {
     if (!localRows.length) return null;
     const totalPop  = localRows.reduce((s, r) => s + r.population, 0);
     const avgUrban  = localRows.reduce((s, r) => s + r.fraction_urban_pop, 0) / localRows.length;
     const avgUnder5 = localRows.reduce((s, r) => s + r.fraction_pop_under5, 0) / localRows.length;
-    return { totalPop, avgUrban, avgUnder5 };
+    const avgHdi    = localRows.reduce((s, r) => s + (r.hdi || 0), 0) / localRows.length;
+    return { totalPop, avgUrban, avgUnder5, avgHdi };
   }, [localRows]);
 
   const rawFieldnames = useMemo(
@@ -205,17 +245,45 @@ const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange
   return (
     <div className="space-y-6">
       {stats && (
-        <div className="grid grid-cols-3 gap-4">
-          <StatCard label="Total population" value={fmt(stats.totalPop)} sub={`across ${localRows.length} area${localRows.length !== 1 ? 's' : ''}`} />
-          <StatCard label="Avg. urban population" value={pct(stats.avgUrban)} sub={`across ${localRows.length} area${localRows.length !== 1 ? 's' : ''}`} />
-          <StatCard label="Avg. population under 5" value={pct(stats.avgUnder5)} sub={`across ${localRows.length} area${localRows.length !== 1 ? 's' : ''}`} />
+        <div className="flex gap-4">
+          <StatCard
+            label="Total population"
+            value={fmt(stats.totalPop)}
+            sub={`across ${localRows.length} area${localRows.length !== 1 ? 's' : ''} · ±1% per click`}
+            onDecrement={() => adjustAll(-0.01)}
+            onIncrement={() => adjustAll(+0.01)}
+          />
+          <StatCard
+            label="Avg. urban population"
+            value={pct(stats.avgUrban)}
+            sub={`across ${localRows.length} area${localRows.length !== 1 ? 's' : ''} · ±0.1 pp per click`}
+            onDecrement={() => adjustAllField('fraction_urban_pop', -0.001)}
+            onIncrement={() => adjustAllField('fraction_urban_pop', +0.001)}
+          />
+          <StatCard
+            label="Avg. population under 5"
+            value={pct(stats.avgUnder5)}
+            sub={`across ${localRows.length} area${localRows.length !== 1 ? 's' : ''} · ±0.1 pp per click`}
+            onDecrement={() => adjustAllField('fraction_pop_under5', -0.001)}
+            onIncrement={() => adjustAllField('fraction_pop_under5', +0.001)}
+          />
+          {hdiUniform && (
+            <StatCard
+              label="HDI (all areas)"
+              value={fmt3(stats.avgHdi)}
+              sub="Human Development Index · ±0.01 per click"
+              onDecrement={() => adjustAllField('hdi', -0.01, 0.001, 0.999)}
+              onIncrement={() => adjustAllField('hdi', +0.01, 0.001, 0.999)}
+            />
+          )}
         </div>
       )}
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
         <div className="px-5 py-3 border-b border-gray-100 flex items-center gap-2">
           <h4 className="text-sm font-semibold text-wpBlue">Summary by area</h4>
-          <span className="ml-auto text-xs text-gray-400">Click a value or use +/− to edit</span>
+          <span className="ml-2 text-xs text-gray-400">Click a value or use +/− to edit</span>
+          <div className="ml-auto" />
           {isDirty && (
             <>
               <button
@@ -238,20 +306,6 @@ const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange
             </>
           )}
         </div>
-        <div className="px-5 py-2 border-b border-gray-100 flex items-center gap-2 bg-gray-50/70">
-          <span className="text-xs text-gray-500 flex-shrink-0">Adjust all populations:</span>
-          <div className="flex items-center gap-1 ml-auto">
-            {[[-0.10, '−10%'], [-0.01, '−1%'], [0.01, '+1%'], [0.10, '+10%']].map(([d, label]) => (
-              <button
-                key={label}
-                onClick={() => adjustAll(d)}
-                className="px-2 py-0.5 text-xs rounded border border-gray-200 bg-white hover:bg-gray-100 text-gray-700 font-mono transition-colors"
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -260,6 +314,7 @@ const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange
                 <th className="px-5 py-3 text-center font-medium">Population</th>
                 <th className="px-5 py-3 text-left font-medium w-56">Urban pop.</th>
                 <th className="px-5 py-3 text-left font-medium w-56">Under 5</th>
+                <th className="px-5 py-3 text-left font-medium w-40">HDI</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -286,6 +341,11 @@ const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange
                   <td className="px-5 py-3">
                     <div className="flex justify-center">
                       <Stepper value={row.fraction_pop_under5} step={FRACTION_STEP} min={0} max={1} format={pct} onChange={(v) => updateField(i, 'fraction_pop_under5', Math.round(v * 1000) / 1000)} />
+                    </div>
+                  </td>
+                  <td className="px-5 py-3">
+                    <div className="flex justify-center">
+                      <Stepper value={row.hdi} step={0.001} min={0.001} max={0.999} format={fmt3} onChange={(v) => updateField(i, 'hdi', Math.round(v * 1000) / 1000)} />
                     </div>
                   </td>
                 </tr>

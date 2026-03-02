@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter as Router, Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import axios from 'axios';
 import Terminal from './components/Terminal';
@@ -7,6 +7,7 @@ import ScenarioTabBar from './components/ScenarioTabBar';
 import ScenarioDetailView from './components/ScenarioDetailView';
 import useScenarioStore from './store/scenarioStore';
 import useConfigStore from './store/configStore';
+import useSettingsStore from './store/settingsStore';
 import { 
   Home, 
   ChartColumn, 
@@ -26,7 +27,6 @@ import {
   AlertCircle,
   Database,
   Bot,
-  Play,
   Square,
   Upload,
   FolderOpen,
@@ -39,7 +39,6 @@ import MetadataDialog from './components/MetadataDialog';
 import ConfirmDialog from './components/ConfirmDialog';
 import SSPScenarioDialog from './components/SSPScenarioDialog';
 import ScenarioMetadataDialog from './components/ScenarioMetadataDialog';
-import AnalyticsScenarioCard from './components/AnalyticsScenarioCard';
 import ResultsView from './components/ResultsView';
 import './index.css';
 
@@ -93,7 +92,7 @@ const MetricCard = ({ title, value, subtitle, IconComponent, trend }) => (
 );
 
 const DashboardCard = ({ title, children, className = "" }) => (
-  <div className={`bg-wpWhite-100 rounded-xl p-6 mt-0 ${className}`}>
+  <div className={`bg-wpWhite-100 rounded-b-xl p-6 mt-0 ${className}`}>
     <h3 className="text-lg font-semibold text-wpBlue mb-4">{title}</h3>
     {children}
   </div>
@@ -162,27 +161,18 @@ function Dashboard() {
     getAllScenarios,
     createTempScenario,
     saveScenario,
-    clearTempScenarios
+    clearTempScenarios,
+    dirtyScenarioIds,
+    setScenarioDirty,
   } = useScenarioStore();
+
+  const { heatmapView, setHeatmapView } = useSettingsStore();
 
   // Effect to sync activeSection with URL changes
   useEffect(() => {
     const newActiveSection = getActiveSectionFromPath(location.pathname);
     setActiveSection(newActiveSection);
   }, [location.pathname]);
-
-  // Refresh analytics scenarios whenever the user navigates to the model screen;
-  // also auto-select the only case study when there is exactly one.
-  useEffect(() => {
-    if (activeSection !== 'model') return;
-    if (!analyticsCaseStudy && caseStudies.length === 1) {
-      setAnalyticsCaseStudy(caseStudies[0]);
-      loadAnalyticsScenarios(caseStudies[0].id);
-    } else if (analyticsCaseStudy?.id) {
-      loadAnalyticsScenarios(analyticsCaseStudy.id);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSection, caseStudies]);
 
   // Effect 1: sync case-study selection from URL (no dependency on scenarios/tempScenarios)
   useEffect(() => {
@@ -231,15 +221,43 @@ function Dashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname, scenarios, tempScenarios]);
 
+  // Unsaved-changes guard
+  // pendingNavAction stored as { fn } to prevent React treating it as a state updater
+  const [showUnsavedModal, setShowUnsavedModal] = useState(false);
+  const [pendingNavAction, setPendingNavAction] = useState(null);
+
+  const safeNavigate = useCallback((navFn) => {
+    const isInDirtyScenario =
+      activeSection === 'scenarios' &&
+      activeTab !== 'main' &&
+      !!dirtyScenarioIds?.[activeTab];
+    if (isInDirtyScenario) {
+      setPendingNavAction({ fn: navFn });
+      setShowUnsavedModal(true);
+    } else {
+      navFn();
+    }
+  }, [activeSection, activeTab, dirtyScenarioIds]);
+
+  // Load analytics for the selected case study whenever it changes
+  // (feeds readiness + has_outputs into scenario cards)
+  useEffect(() => {
+    if (!selectedCaseStudy?.id) return;
+    loadAnalyticsScenarios(selectedCaseStudy.id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCaseStudy?.id]);
+
   // Navigation handler
   const handleNavigation = (sectionId) => {
-    setActiveSection(sectionId);
-    if (sectionId === 'scenarios') {
-      const cs = selectedCaseStudy || analyticsCaseStudy;
-      navigate(cs ? `/scenarios/${toCsSlug(cs)}` : '/scenarios');
-    } else {
-      navigate(`/${sectionId}`);
-    }
+    safeNavigate(() => {
+      setActiveSection(sectionId);
+      if (sectionId === 'scenarios') {
+        const cs = selectedCaseStudy || analyticsCaseStudy;
+        navigate(cs ? `/scenarios/${toCsSlug(cs)}` : '/scenarios');
+      } else {
+        navigate(`/${sectionId}`);
+      }
+    });
   };
 
   const checkBackendHealth = async () => {
@@ -315,8 +333,16 @@ function Dashboard() {
     
     // Save the scenario immediately
     try {
-      await saveScenario(scenarioId);
+      const savedScenario = await saveScenario(scenarioId);
       console.log('Scenario saved successfully');
+      // Re-fetch scenarios so tabs are rebuilt from the server (ensures all tabs appear)
+      if (selectedCaseStudy) {
+        await fetchScenarios(selectedCaseStudy.id);
+        // Restore focus to the newly created scenario tab
+        if (savedScenario?.id) {
+          setActiveTab(savedScenario.id);
+        }
+      }
     } catch (error) {
       console.error('Error saving scenario:', error);
       // Still close the dialog even if save fails - scenario will be temp
@@ -562,12 +588,6 @@ function Dashboard() {
       description: 'Manage scenario data' 
     },
     { 
-      id: 'model', 
-      label: 'Model Runs', 
-      icon: Play, 
-      description: 'Execute and monitor model' 
-    },
-    { 
       id: 'analytics', 
       label: 'Analytics', 
       icon: TrendingUp, 
@@ -757,7 +777,8 @@ function Dashboard() {
                 {caseStudies.length > 0 ? caseStudies.map(caseStudy => (
                   <div 
                     key={caseStudy.id} 
-                    className="p-4 border rounded-lg border-gray-200 hover:border-wpBlue-300 hover:bg-gray-50 transition-all"
+                    onClick={() => handleCaseStudySelect(caseStudy)}
+                    className="p-4 border rounded-lg border-gray-200 hover:border-wpBlue-300 hover:bg-gray-50 transition-all cursor-pointer"
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
@@ -857,6 +878,10 @@ function Dashboard() {
                   caseStudySlug={caseStudySlug}
                   initialCategory={urlCategory ?? undefined}
                   initialSubcategory={urlSubcategory ?? undefined}
+                  onViewResults={(sc) => {
+                    setResultsState({ caseStudyId: selectedCaseStudy?.id, scenarioId: sc.id });
+                    handleNavigation('analytics');
+                  }}
                 />
               </div>
             </div>
@@ -888,6 +913,7 @@ function Dashboard() {
                           key={scenario.id}
                           scenario={scenario}
                           selectedCaseStudy={selectedCaseStudy}
+                          analyticsInfo={analyticsScenarios.find(a => a.id === scenario.id) ?? null}
                         />
                       )) : (
                         <div className="col-span-full text-center py-12 text-gray-500">
@@ -897,84 +923,6 @@ function Dashboard() {
                         </div>
                       );
                     })()}
-                  </div>
-                )}
-              </DashboardCard>
-            </div>
-          </div>
-        );
-      }
-      
-      case 'model': {
-        const analyticsHeader = (
-          <div className="flex items-center gap-4 mt-6 p-6 rounded-t-xl bg-wpWhite-100 flex-shrink-0">
-            <select
-              value={analyticsCaseStudy?.id ?? ''}
-              onChange={(e) => {
-                if (!e.target.value) {
-                  setAnalyticsCaseStudy(null);
-                  setAnalyticsScenarios([]);
-                  return;
-                }
-                const cs = caseStudies.find((c) => c.id === e.target.value);
-                if (cs) {
-                  setAnalyticsCaseStudy(cs);
-                  setSelectedCaseStudy(cs);
-                  setResultsState(prev => ({ ...prev, caseStudyId: cs.id }));
-                  loadAnalyticsScenarios(cs.id);
-                }
-              }}
-              className="px-3 py-3 border text-sm border-wpBrown bg-wpGray-200 text-wpBlue font-bold font-inter rounded-lg focus:ring-2 focus:ring-wpBlue focus:border-transparent"
-            >
-              <option value="">Select a case study…</option>
-              {caseStudies.map((cs) => (
-                <option key={cs.id} value={cs.id}>{cs.name}</option>
-              ))}
-            </select>
-            {analyticsCaseStudy && (
-              <button
-                onClick={() => loadAnalyticsScenarios(analyticsCaseStudy.id)}
-                className="flex items-center gap-1.5 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors text-sm"
-              >
-                <RefreshCw size={15} className={analyticsLoading ? 'animate-spin' : ''} />
-                Refresh
-              </button>
-            )}
-          </div>
-        );
-        return (
-          <div className="flex flex-col h-full p-6 pt-0">
-            {analyticsHeader}
-            <div className="flex-1 overflow-auto">
-              <DashboardCard>
-                {!analyticsCaseStudy ? (
-                  <div className="text-center py-12 text-gray-500">
-                    <TrendingUp className="mx-auto mb-4 text-gray-300" size={48} />
-                    <p>Select a case study to view its scenarios</p>
-                  </div>
-                ) : analyticsLoading ? (
-                  <div className="flex items-center justify-center py-12">
-                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-wpBlue"></div>
-                    <span className="ml-3 text-gray-600">Loading scenarios…</span>
-                  </div>
-                ) : analyticsScenarios.length === 0 ? (
-                  <div className="text-center py-12 text-gray-500">
-                    <TrendingUp className="mx-auto mb-4 text-gray-300" size={48} />
-                    <p>No scenarios found for this case study</p>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {analyticsScenarios.map((scenario) => (
-                      <AnalyticsScenarioCard
-                        key={scenario.id}
-                        scenario={scenario}
-                        onRunComplete={() => loadAnalyticsScenarios(analyticsCaseStudy.id)}
-                        onViewResults={(sc) => {
-                          setResultsState({ caseStudyId: analyticsCaseStudy.id, scenarioId: sc.id });
-                          handleNavigation('analytics');
-                        }}
-                      />
-                    ))}
                   </div>
                 )}
               </DashboardCard>
@@ -997,18 +945,39 @@ function Dashboard() {
           />
         );
 
-      case 'settings':
+      case 'settings': {
         return (
           <div className="space-y-8">
-            <DashboardCard title="System Settings">
-              <div className="text-center py-12 text-gray-500">
-                <Settings className="mx-auto mb-4 text-gray-300" size={48} />
-                <p>Settings panel coming soon!</p>
-                <p className="text-sm mt-1">Configure system preferences and options here</p>
+            <DashboardCard title="Map Display">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
+                  <div>
+                    <p className="text-sm font-medium text-gray-800">Enable heatmap view</p>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      When on, the map shows a continuous raster heatmap overlay. When off, areas are shown as distinct coloured squares (choropleth).
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setHeatmapView(!heatmapView)}
+                    className={`ml-6 relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-wpBlue focus:ring-offset-2 ${
+                      heatmapView ? 'bg-wpBlue' : 'bg-gray-300'
+                    }`}
+                    role="switch"
+                    aria-checked={heatmapView}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                        heatmapView ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
               </div>
             </DashboardCard>
           </div>
         );
+      }
       
       default:
         return null;
@@ -1121,15 +1090,48 @@ function Dashboard() {
           {activeSection === 'scenarios' && <ScenarioTabBar
             onCreateScenario={selectedCaseStudy ? handleCreateNewScenario : null}
             caseStudySlug={selectedCaseStudy ? toCsSlug(selectedCaseStudy) : ''}
+            onBeforeTabChange={safeNavigate}
           />}
 
           {/* Main Content */}
-          <div className={(activeSection === 'scenarios' || activeSection === 'model' || activeSection === 'analytics') ? 'flex-1 overflow-hidden' : 'flex-1 p-6'}>
+          <div className={(activeSection === 'scenarios' || activeSection === 'analytics') ? 'flex-1 overflow-hidden' : 'flex-1 p-6'}>
             {renderContent()}
           </div>
         </div>
       </div>
       
+      {/* Unsaved-changes guard modal */}
+      {showUnsavedModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl space-y-4 mx-4">
+            <h3 className="text-lg font-semibold text-wpBlue font-outfit">Unsaved changes</h3>
+            <p className="text-sm text-gray-600 leading-relaxed">
+              You have unsaved changes in this scenario. Save or reset them before leaving, or choose to leave anyway and lose your changes.
+            </p>
+            <div className="flex gap-3 justify-end pt-1">
+              <button
+                onClick={() => {
+                  setScenarioDirty(activeTab, false);
+                  const fn = pendingNavAction?.fn;
+                  setPendingNavAction(null);
+                  setShowUnsavedModal(false);
+                  fn?.();
+                }}
+                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                Leave anyway
+              </button>
+              <button
+                onClick={() => { setPendingNavAction(null); setShowUnsavedModal(false); }}
+                className="px-4 py-2 text-sm text-white bg-wpBlue hover:bg-wpBlue/90 rounded-lg transition-colors font-medium"
+              >
+                Stay &amp; save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Metadata Dialog */}
       <MetadataDialog 
         isOpen={isMetadataDialogOpen}

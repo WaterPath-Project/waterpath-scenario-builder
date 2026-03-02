@@ -24,8 +24,6 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
   const [errors, setErrors] = useState({});
   const [isLoadingISIMIP, setIsLoadingISIMIP] = useState(false);
 
-  console.log('SSPScenarioDialog render - isOpen:', isOpen, 'step:', step);
-
   const sspOptions = [
     { value: '1', label: 'SSP1 - Sustainability' },
     { value: '2', label: 'SSP2 - Middle of the Road' },
@@ -41,7 +39,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
   ];
 
   const projectionMethodOptions = [
-    { value: 'isimip', label: 'Pull ISIMIP projections' },
+    { value: 'isimip', label: 'Auto-calculate assumptions (Internet access required)' },
     { value: 'custom', label: 'Custom assumptions' }
   ];
 
@@ -114,15 +112,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
 
   const handleNext = () => {
     if (validateForm()) {
-      if (formData.projectionMethod === 'isimip') {
-        setIsLoadingISIMIP(true);
-        setStep(2);
-        setTimeout(() => {
-          setIsLoadingISIMIP(false);
-        }, 2000);
-      } else {
-        setStep(2);
-      }
+      setStep(2);
     }
   };
 
@@ -130,22 +120,22 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
     setStep(1);
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    
+
     if (validateForm()) {
-      // If ISIMIP is selected, show loading effect
       if (formData.projectionMethod === 'isimip') {
+        // Show loading while the backend fetches and applies projections
         setIsLoadingISIMIP(true);
-        // Simulate ISIMIP data fetch
-        setTimeout(() => {
+        try {
+          await onSubmit(formData);
+        } finally {
           setIsLoadingISIMIP(false);
-          onSubmit(formData);
           handleReset();
-        }, 2000); // 2 second loading simulation
+        }
       } else {
-        // Custom assumptions - submit immediately
-        onSubmit(formData);
+        // Custom assumptions – copy baseline and submit immediately
+        await onSubmit(formData);
         handleReset();
       }
     }
@@ -201,7 +191,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
                   name="scenarioName"
                   value={formData.scenarioName}
                   onChange={handleInputChange}
-                  className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                  className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-wpBlue ${
                     errors.scenarioName ? 'border-red-500' : 'border-gray-300'
                   }`}
                   placeholder="Enter scenario name"
@@ -221,7 +211,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
                   name="sspScenario"
                   value={formData.sspScenario}
                   onChange={handleInputChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wpBlue"
                 >
                   {sspOptions.map(option => (
                     <option key={option.value} value={option.value}>
@@ -241,7 +231,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
                   name="pathogen"
                   value={formData.pathogen}
                   onChange={handleInputChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wpBlue"
                 >
                   {pathogenOptions.map(option => (
                     <option key={option.value} value={option.value}>
@@ -261,7 +251,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
                   name="year"
                   value={formData.year}
                   onChange={handleInputChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wpBlue"
                 >
                   {yearOptions.map(option => (
                     <option key={option.value} value={option.value}>
@@ -271,7 +261,32 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
                 </select>
               </div>
 
-              {/* Data Projection Method */}
+              {/* Step 1 Navigation */}
+              <div className="flex items-center justify-end gap-3 pt-4 border-t">
+                <button
+                  type="button"
+                  onClick={handleCancel}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-wpBlue"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleNext}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-wpBlue border border-transparent rounded-lg hover:bg-wpBlue-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-wpBlue"
+                >
+                  Next
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+            </>
+          )}
+
+          {/* Step 2: Configuration */}
+          {step === 2 && (
+            <>
+
+          {/* Data Projection Method */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-3">
               Data Projection Method *
@@ -280,7 +295,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
               {projectionMethodOptions.map(option => (
                 <label
                   key={option.value}
-                  className="flex items-start p-4 border border-gray-300 rounded-md cursor-pointer hover:bg-gray-50 transition-colors"
+                  className="flex items-start p-4 border border-gray-300 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors"
                 >
                   <input
                     type="radio"
@@ -288,7 +303,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
                     value={option.value}
                     checked={formData.projectionMethod === option.value}
                     onChange={handleInputChange}
-                    className="mt-0.5 h-4 w-4 text-blue-600 focus:ring-blue-500"
+                    className="mt-0.5 h-4 w-4 text-wpBlue focus:ring-wpBlue"
                   />
                   <div className="ml-3">
                     <span className="block text-sm font-medium text-gray-900">
@@ -296,7 +311,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
                     </span>
                     {option.value === 'isimip' && (
                       <span className="block text-xs text-gray-500 mt-1">
-                        Automatically fetch data from ISIMIP database based on SSP scenario and year
+                        Automatically retrieve and apply projected values based on the selected SSP scenario and year. Requires internet access.
                       </span>
                     )}
                     {option.value === 'custom' && (
@@ -310,31 +325,6 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
             </div>
           </div>
 
-              {/* Step 1 Navigation */}
-              <div className="flex items-center justify-end gap-3 pt-4 border-t">
-                <button
-                  type="button"
-                  onClick={handleCancel}
-                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleNext}
-                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-                >
-                  Next
-                  <ChevronRight size={16} />
-                </button>
-              </div>
-            </>
-          )}
-
-          {/* Step 2: Configuration */}
-          {step === 2 && (
-            <>
-
           {/* Custom Modifiers - Only show when Custom assumptions is selected */}
           {formData.projectionMethod === 'custom' && (
             <div className="border-t pt-4">
@@ -345,7 +335,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
                 <button
                   type="button"
                   onClick={handleAddModifier}
-                  className="flex items-center gap-1 px-3 py-1.5 text-sm text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-md transition-colors"
+                  className="flex items-center gap-1 px-3 py-1.5 text-sm text-white bg-wpGreen hover:bg-wpGreen-800 rounded-lg transition-colors font-medium"
                 >
                   <Plus size={16} />
                   Add Modifier
@@ -371,7 +361,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
                             <select
                               value={modifier.type}
                               onChange={(e) => handleModifierChange(modifier.id, 'type', e.target.value)}
-                              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wpBlue"
                             >
                               {modifierOptions.map(opt => (
                                 <option key={opt.value} value={opt.value}>
@@ -392,7 +382,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
                                 step="0.01"
                                 value={modifier.value}
                                 onChange={(e) => handleModifierChange(modifier.id, 'value', parseFloat(e.target.value) || 0)}
-                                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wpBlue"
                                 placeholder="0.00"
                               />
                             </div>
@@ -405,7 +395,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
                                 step="0.01"
                                 value={modifier.min}
                                 onChange={(e) => handleModifierChange(modifier.id, 'min', parseFloat(e.target.value) || 0)}
-                                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wpBlue"
                                 placeholder="Min"
                               />
                             </div>
@@ -418,7 +408,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
                                 step="0.01"
                                 value={modifier.max}
                                 onChange={(e) => handleModifierChange(modifier.id, 'max', parseFloat(e.target.value) || 0)}
-                                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wpBlue"
                                 placeholder="Max"
                               />
                             </div>
@@ -429,7 +419,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
                         <button
                           type="button"
                           onClick={() => handleRemoveModifier(modifier.id)}
-                          className="mt-6 p-2 text-red-600 hover:text-red-700 hover:bg-red-50 rounded-md transition-colors"
+                          className="mt-6 p-2 text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors"
                           title="Remove modifier"
                         >
                           <Minus size={16} />
@@ -448,7 +438,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
               <div className="flex items-center gap-3">
                 <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
                 <span className="text-sm font-medium text-blue-900">
-                  Pulling ISIMIP projections...
+                  Auto-calculating assumptions… (this may take a moment)
                 </span>
               </div>
             </div>
@@ -460,7 +450,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
               type="button"
               onClick={handleBack}
               disabled={isLoadingISIMIP}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-wpBlue disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <ChevronLeft size={16} />
               Back
@@ -470,16 +460,16 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
                 type="button"
                 onClick={handleCancel}
                 disabled={isLoadingISIMIP}
-                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-wpBlue disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={isLoadingISIMIP}
-                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-4 py-2 text-sm font-medium text-white bg-wpBlue border border-transparent rounded-lg hover:bg-wpBlue-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-wpBlue disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {isLoadingISIMIP ? 'Loading...' : 'Create Scenario'}
+                {isLoadingISIMIP ? 'Applying projections…' : 'Create Scenario'}
               </button>
             </div>
           </div>

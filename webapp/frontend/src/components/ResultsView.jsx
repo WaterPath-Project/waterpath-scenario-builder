@@ -10,6 +10,7 @@ import HumanEmissionsIcon from '../../assets/icons/human_emissions.svg';
 import LivestockEmissionsIcon from '../../assets/icons/livestock_emissions.svg';
 import ConcentrationsIcon from '../../assets/icons/concentrations.svg';
 import RiskIcon from '../../assets/icons/risk.svg';
+import useSettingsStore from '../store/settingsStore';
 
 // Fix Leaflet default icon path issue in Vite
 delete L.Icon.Default.prototype._getIconUrl;
@@ -103,7 +104,7 @@ function Legend() {
           <span key={v} className="text-xs text-gray-400 font-mono">10<sup>{v}</sup></span>
         ))}
       </div>
-      <p className="text-xs text-gray-400 mt-1">Log₁₀ scale · virus equivalents per cell</p>
+      <p className="text-xs text-gray-400 mt-1">Log₁₀ scale · viral particles / grid cell / year</p>
     </div>
   );
 }
@@ -152,15 +153,13 @@ function FitBounds({ geojson }) {
   return null;
 }
 
-// Create a dedicated Leaflet pane for the polygon overlay with mix-blend-mode: multiply.
-// This lets the raster image show through the polygon fills while both remain fully visible.
+// Create a dedicated Leaflet pane for the polygon overlay so it sits above the raster layer.
 function CreateBlendPane() {
   const map = useMap();
   useEffect(() => {
     if (!map.getPane('polygonPane')) {
       const pane = map.createPane('polygonPane');
       pane.style.zIndex = '450';
-      pane.style.mixBlendMode = 'multiply';
     }
     // Label pane sits above both the raster (400) and polygons (450)
     if (!map.getPane('labelsPane')) {
@@ -236,6 +235,10 @@ function EmissionMap({ title, icon: Icon, geojson, isoTotals, rasterFile, scenar
   const onAreaClickRef = useRef(onAreaClick);
   useEffect(() => { onAreaClickRef.current = onAreaClick; }, [onAreaClick]);
 
+  const { heatmapView } = useSettingsStore();
+  const heatmapViewRef = useRef(heatmapView);
+  useEffect(() => { heatmapViewRef.current = heatmapView; }, [heatmapView]);
+
   // Fetch TIF raster as PNG + bounds for ImageOverlay
   const [rasterData, setRasterData] = useState(null);
   useEffect(() => {
@@ -247,8 +250,9 @@ function EmissionMap({ title, icon: Icon, geojson, isoTotals, rasterFile, scenar
 
   const getStyle = useCallback((feature) => {
     const val = isoTotalsRef.current?.[String(feature.properties.iso)];
-    return { fillColor: emissionColor(val), fillOpacity: 0.06, color: '#1e293b', weight: 0.6, opacity: 0.5, pane: 'polygonPane' };
-  }, []);
+    const baseFill = heatmapViewRef.current ? 0.06 : 0;
+    return { fillColor: emissionColor(val), fillOpacity: baseFill, color: '#1e293b', weight: 0.6, opacity: 0.5, pane: 'polygonPane' };
+  }, [heatmapView]);
 
   const onEachFeature = useCallback((feature, layer) => {
     const iso = feature.properties.iso;
@@ -256,19 +260,21 @@ function EmissionMap({ title, icon: Icon, geojson, isoTotals, rasterFile, scenar
     layer.on('mouseover', () => {
       const val = isoTotalsRef.current?.[String(iso)];
       layer.bindTooltip(`<strong>${name}</strong><br/>${formatScientific(val || 0)} virus eq.`, { sticky: true });
-      layer.setStyle({ fillOpacity: 0.3, weight: 1.5, color: '#0f172a', opacity: 0.9, pane: 'polygonPane' });
+      const hoverFill = heatmapViewRef.current ? 0.3 : 0.12;
+      layer.setStyle({ fillOpacity: hoverFill, weight: 1.5, color: '#0f172a', opacity: 0.9, pane: 'polygonPane' });
       layer.bringToFront();
     });
     layer.on('mouseout', () => {
-      layer.setStyle({ fillOpacity: 0.06, weight: 0.6, color: '#1e293b', opacity: 0.5, pane: 'polygonPane' });
+      const baseFill = heatmapViewRef.current ? 0.06 : 0;
+      layer.setStyle({ fillOpacity: baseFill, weight: 0.6, color: '#1e293b', opacity: 0.5, pane: 'polygonPane' });
     });
     layer.on('click', () => {
       onAreaClickRef.current?.({ iso, name });
     });
   }, []);
 
-  // Change key when isoTotals data arrives to force style refresh
-  const geoKey = `${scenarioId}-${Object.keys(isoTotals || {}).length}`;
+  // Change key when isoTotals data arrives or heatmapView changes to force style refresh
+  const geoKey = `${scenarioId}-${Object.keys(isoTotals || {}).length}-${heatmapView}`;
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4 space-y-3">
@@ -288,6 +294,7 @@ function EmissionMap({ title, icon: Icon, geojson, isoTotals, rasterFile, scenar
               <CreateBlendPane />
               {rasterData?.image && rasterData.bounds && (
                 <ImageOverlay
+                  className={heatmapView ? undefined : 'pixelated-raster'}
                   url={`data:image/png;base64,${rasterData.image}`}
                   bounds={[[rasterData.bounds.south, rasterData.bounds.west], [rasterData.bounds.north, rasterData.bounds.east]]}
                   opacity={0.85}
@@ -414,35 +421,8 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
 
   return (
     <div className="flex flex-col h-full overflow-auto p-6 pt-0">
-      {/* Category tabs */}
-      <div className="flex-shrink-0 pt-6 -mx-6 px-6">
-        <div className="flex space-x-2 pb-3">
-          {RESULT_CATEGORIES.map((cat) => {
-            const enabled = isCatEnabled(cat.id);
-            const active = selectedCategory === cat.id;
-            return (
-              <button
-                key={cat.id}
-                disabled={!enabled}
-                onClick={() => { if (enabled) setSelectedCategory(cat.id); }}
-                className={`relative flex flex-1 items-center gap-3 px-6 py-3 rounded-xl transition-colors justify-center
-                  ${
-                    !enabled
-                      ? 'bg-gray-100 text-gray-400 opacity-40 cursor-not-allowed'
-                      : active
-                        ? 'bg-white text-wpBlue shadow-md shadow-wpGray-500/50'
-                        : 'bg-gray-100 text-wpBlue hover:bg-gray-200'
-                  }`}
-              >
-                <img src={cat.icon} alt={cat.label} className="w-10 h-10" />
-                <span className="font-semibold font-outfit">{cat.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
       {/* Selectors + toggle */}
-      <div className="flex items-center gap-4 my-4 py-6 px-4 flex-shrink-0 flex-wrap rounded-xl bg-wpBrown-200">
+      <div className="flex items-center gap-4 my-2 py-6 px-4 flex-shrink-0 flex-wrap rounded-xl bg-wpBrown-200">
         <select
           value={selectedCsId}
           onChange={e => {
@@ -495,7 +475,7 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
             className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium transition-colors ${
               emissionType === 'water'
                 ? 'bg-wpBlue text-white'
-                : 'text-wpBlue hover:bg-wpBrown-100'
+                : 'text-wpBlue hover:bg-wpGray-100'
             }`}
           >
             <Droplets size={14} /> Surface Water
@@ -505,14 +485,40 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
             className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium transition-colors ${
               emissionType === 'land'
                 ? 'bg-wpGreen text-white'
-                : 'text-wpBlue hover:bg-wpBrown-100'
+                : 'text-wpBlue hover:bg-wpGray-100'
             }`}
           >
             <Trees size={14} /> Land
           </button>
         </div>
       </div>
-
+      {/* Category tabs */}
+      <div className="flex-shrink-0 pt-0 -mx-6 px-6">
+        <div className="flex space-x-2 bg-wpWhite-100 rounded-xl">
+          {RESULT_CATEGORIES.map((cat) => {
+            const enabled = isCatEnabled(cat.id);
+            const active = selectedCategory === cat.id;
+            return (
+              <button
+                key={cat.id}
+                disabled={!enabled}
+                onClick={() => { if (enabled) setSelectedCategory(cat.id); }}
+                className={`relative flex flex-1 items-center gap-3 px-6 py-3 rounded-xl transition-colors justify-center
+                  ${
+                    !enabled
+                      ? 'bg-gray-100 text-gray-400 opacity-40 cursor-not-allowed'
+                      : active
+                        ? 'bg-white text-wpBlue shadow-md shadow-wpGray-500/50'
+                        : 'bg-gray-100 text-wpBlue hover:bg-gray-200'
+                  }`}
+              >
+                <img src={cat.icon} alt={cat.label} className="w-10 h-10" />
+                <span className="font-semibold font-outfit">{cat.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
       {/* Empty state */}
       {!selectedScId && (
         <div className="flex-1 flex items-center justify-center">

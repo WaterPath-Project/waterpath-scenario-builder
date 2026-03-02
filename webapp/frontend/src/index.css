@@ -18,6 +18,13 @@ code {
     monospace;
 }
 
+/* Prevent browser from blurring TIF raster tiles — keep crisp pixel grid */
+.pixelated-raster {
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: crisp-edges;
+}
+
 /* Range slider — color only the thumb, leave track neutral gray */
 input[type="range"].accent-thumb {
   -webkit-appearance: none;

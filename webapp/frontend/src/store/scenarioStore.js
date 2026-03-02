@@ -11,6 +11,7 @@ const useScenarioStore = create((set, get) => ({
   tabs: [{ id: 'main', name: 'Main', type: 'main', icon: 'Home' }], // Tab list
   metadataEditScenarioId: null, // Scenario ID whose metadata should be edited
   dirtyScenarioIds: {},          // { [scenarioId]: true } — scenarios with unsaved isodata edits
+  needsRerunIds: {},             // { [scenarioId]: true } — model needs re-run after data save
 
   // Actions
   setScenarios: (scenarios) => set({ scenarios }),
@@ -25,6 +26,15 @@ const useScenarioStore = create((set, get) => ({
       if (isDirty) next[scenarioId] = true;
       else delete next[scenarioId];
       return { dirtyScenarioIds: next };
+    });
+  },
+
+  setNeedsRerun: (scenarioId, needs) => {
+    set((state) => {
+      const next = { ...state.needsRerunIds };
+      if (needs) next[scenarioId] = true;
+      else delete next[scenarioId];
+      return { needsRerunIds: next };
     });
   },
 
@@ -153,6 +163,12 @@ const useScenarioStore = create((set, get) => ({
       set((state) => ({
         scenarios: state.scenarios.map(scenario =>
           scenario.id === scenarioId ? { ...scenario, ...response.data } : scenario
+        ),
+        // Also update the tab name if the scenario name changed
+        tabs: state.tabs.map(tab =>
+          tab.id === scenarioId && response.data.name
+            ? { ...tab, name: response.data.name }
+            : tab
         )
       }));
       
@@ -200,8 +216,9 @@ const useScenarioStore = create((set, get) => ({
   },
 
   setupTabsForCaseStudy: (caseStudyId) => {
-    const { scenarios } = get();
+    const { scenarios, tempScenarios } = get();
     const caseStudyScenarios = scenarios.filter(s => s.case_study_id === caseStudyId);
+    const caseStudyTempScenarios = tempScenarios.filter(s => s.case_study_id === caseStudyId);
     
     const scenarioTabs = caseStudyScenarios.map(scenario => ({
       id: scenario.id,
@@ -209,11 +226,19 @@ const useScenarioStore = create((set, get) => ({
       type: 'scenario',
       isTemp: false
     }));
+
+    const tempTabs = caseStudyTempScenarios.map(scenario => ({
+      id: scenario.id,
+      name: scenario.name,
+      type: 'scenario',
+      isTemp: true
+    }));
     
     set({
       tabs: [
         { id: 'main', name: 'Main', type: 'main', icon: 'Home' },
-        ...scenarioTabs
+        ...scenarioTabs,
+        ...tempTabs
       ],
       activeTab: 'main'
     });

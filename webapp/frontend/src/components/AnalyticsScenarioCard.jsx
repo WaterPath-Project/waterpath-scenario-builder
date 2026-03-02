@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import useScenarioStore from '../store/scenarioStore';
 import {
   CheckCircle,
   XCircle,
@@ -109,7 +110,9 @@ function RunStatusBadge({ status }) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewResults }) {
+export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewResults, isAnyRunning, onRunStart, onRunEnd }) {
+  const dirtyScenarioIds = useScenarioStore((state) => state.dirtyScenarioIds);
+  const hasDirtyChanges = !!dirtyScenarioIds?.[scenario.id];
   const [showReadiness, setShowReadiness] = useState(false);
   const [runId, setRunId] = useState(null);
   const [runMode, setRunMode] = useState(null);
@@ -143,6 +146,7 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
         if (['success', 'error', 'timeout'].includes(data.status)) {
           clearInterval(pollRef.current);
           setRunLoading(false);
+          onRunEnd?.();
           onRunComplete?.(scenario.id, data.status);
         }
       } catch {
@@ -159,6 +163,7 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
     setRunLoading(true);
     setRunStatus('pending');
     setShowOutput(true);
+    onRunStart?.();
     try {
       const res = await axios.post(`/api/scenarios/${scenario.id}/run-model`);
       setRunId(res.data.run_id);
@@ -167,6 +172,7 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
       setRunLoading(false);
       setRunStatus('error');
       setRunOutput({ stdout: '', stderr: err.response?.data?.error || err.message });
+      onRunEnd?.();
     }
   };
 
@@ -211,11 +217,19 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
         </div>
         <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
           {runStatus !== 'idle' && <RunStatusBadge status={runStatus} />}
-          {hasResults && (
+          {hasDirtyChanges && (
+            <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 flex items-center gap-1" title="This scenario has unsaved changes — save and re-run to update results">
+              <span className="w-1.5 h-1.5 rounded-full bg-orange-400 inline-block" /> Re-run needed
+            </span>
+          )}
+          {hasResults ? (
             <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-wpGreen text-wpBlue-900 flex items-center gap-1">
               <CheckCircle size={11} /> Results ready
             </span>
-          )}
+          ): <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-wpBrown text-wpBlue-900 flex items-center gap-1">
+              No results yet
+            </span>
+          }
           {!canRun && (
             <AlertTriangle size={18} className="text-orange-500" title="Not ready – missing files or pathogen" />
           )}
@@ -243,9 +257,10 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
       {/* Action row */}
       <div className="flex flex-wrap items-center gap-2 mt-3">
         <button
-          disabled={!canRun || runLoading}
+          disabled={!canRun || runLoading || isAnyRunning}
           onClick={handleRunModel}
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-wpBlue hover:bg-wpBlue-600 rounded disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          title={isAnyRunning && !runLoading ? 'Another scenario is already running' : undefined}
         >
           {runLoading ? (
             <><RefreshCw size={13} className="animate-spin" /> Running…</>

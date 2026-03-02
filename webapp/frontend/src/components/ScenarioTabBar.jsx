@@ -7,17 +7,24 @@ const toSlug = (name) => encodeURIComponent(name ?? '');
 const DEFAULT_CATEGORY = 'human-emissions';
 const DEFAULT_SUBCATEGORY = 'population';
 
-const ScenarioTabBar = ({ onCreateScenario, caseStudySlug = '' }) => {
+const ScenarioTabBar = ({ onCreateScenario, caseStudySlug = '', onBeforeTabChange }) => {
   const { tabs, activeTab, setActiveTab, deleteScenario, openMetadataEditor, dirtyScenarioIds } = useScenarioStore();
   const navigate = useNavigate();
 
   const handleTabClick = (tabId) => {
-    setActiveTab(tabId);
-    if (tabId === 'main') {
-      navigate(caseStudySlug ? `/scenarios/${caseStudySlug}` : '/scenarios');
+    const doNav = () => {
+      setActiveTab(tabId);
+      if (tabId === 'main') {
+        navigate(caseStudySlug ? `/scenarios/${caseStudySlug}` : '/scenarios');
+      } else {
+        const tab = tabs.find((t) => t.id === tabId);
+        if (tab) navigate(`/scenarios/${caseStudySlug ? `${caseStudySlug}/` : ''}${toSlug(tab.name)}/${DEFAULT_CATEGORY}/${DEFAULT_SUBCATEGORY}`);
+      }
+    };
+    if (onBeforeTabChange) {
+      onBeforeTabChange(doNav);
     } else {
-      const tab = tabs.find((t) => t.id === tabId);
-      if (tab) navigate(`/scenarios/${caseStudySlug ? `${caseStudySlug}/` : ''}${toSlug(tab.name)}/${DEFAULT_CATEGORY}/${DEFAULT_SUBCATEGORY}`);
+      doNav();
     }
   };
 

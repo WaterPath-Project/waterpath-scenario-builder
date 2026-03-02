@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { BarChart3, Edit, Save, X, Trash2 } from 'lucide-react';
+import { BarChart3, Edit, Save, X, Trash2, Play, CheckCircle, AlertTriangle, Clock } from 'lucide-react';
 import useScenarioStore from '../store/scenarioStore';
 
-const ScenarioCard = ({ scenario, selectedCaseStudy }) => {
+const ScenarioCard = ({ scenario, selectedCaseStudy, analyticsInfo }) => {
   const [isEditing, setIsEditing] = useState(scenario.isEditing || false);
   const [scenarioName, setScenarioName] = useState(scenario.name);
   const [isSaving, setIsSaving] = useState(false);
@@ -219,6 +219,30 @@ const ScenarioCard = ({ scenario, selectedCaseStudy }) => {
             {new Date(scenario.updated_at || Date.now()).toLocaleDateString()}
           </span>
         </div>
+
+        {/* Model run synopsis — only for persisted scenarios with analytics data */}
+        {analyticsInfo && !scenario.isTemp && (
+          <div className="flex items-center gap-2 flex-wrap mt-1">
+            {analyticsInfo.has_outputs ? (
+              <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 font-medium">
+                <CheckCircle size={11} /> Results available
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
+                <Clock size={11} /> No results yet
+              </span>
+            )}
+            {analyticsInfo.readiness?.ready ? (
+              <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-600">
+                <Play size={10} /> Ready to run
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">
+                <AlertTriangle size={10} /> Not ready
+              </span>
+            )}
+          </div>
+        )}
 
         {scenario.isTemp && (
           <div className="mt-3 p-2 bg-yellow-100 border border-yellow-300 rounded text-sm">

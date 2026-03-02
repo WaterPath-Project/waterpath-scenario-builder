@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Edit3, Trash2, BarChart3 } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Edit3, Trash2, BarChart3, Play, RefreshCw, Loader2, ScrollText, BarChart2, CheckCircle, AlertTriangle } from 'lucide-react';
+import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import useScenarioStore from '../store/scenarioStore';
 import DataGridView from './DataGridView';
@@ -27,6 +28,15 @@ import RunoffIcon from '../../assets/icons/runoff.svg';
 import RiverParametersIcon from '../../assets/icons/river_parameters.svg';
 import ExposureDataIcon from '../../assets/icons/exposure_data.svg';
 import PathogenPropertiesIcon from '../../assets/icons/pathogen_properties.svg';
+
+// Run status pill config
+const RUN_STATUS_CFG = {
+  pending: { label: 'Queued',   cls: 'bg-yellow-100 text-yellow-700' },
+  running: { label: 'Running\u2026', cls: 'bg-blue-100 text-blue-700' },
+  success: { label: 'Done \u2713',   cls: 'bg-green-100 text-green-700' },
+  error:   { label: 'Error',    cls: 'bg-red-100 text-red-700' },
+  timeout: { label: 'Timeout',  cls: 'bg-orange-100 text-orange-700' },
+};
 
 // URL slug from scenario name
 const toSlug = (name) => encodeURIComponent(name ?? '');
@@ -75,7 +85,7 @@ const CATEGORIES = [
   }
 ];
 
-const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '', initialCategory, initialSubcategory }) => {
+const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '', initialCategory, initialSubcategory, onViewResults }) => {
   const { 
     scenarios, 
     tempScenarios, 
@@ -87,9 +97,29 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
     metadataEditScenarioId,
     closeMetadataEditor,
     setScenarioDirty,
+    needsRerunIds,
+    setNeedsRerun,
   } = useScenarioStore();
   
   const navigate = useNavigate();
+
+  // ── Run model state ────────────────────────────────────────────────────────
+  const [scenarioInfo, setScenarioInfo] = useState(null);
+  const [runId,     setRunId]     = useState(null);
+  const [runMode,   setRunMode]   = useState(null);
+  const [runStatus, setRunStatus] = useState('idle');
+  const [runLoading, setRunLoading] = useState(false);
+  const [runOutput,  setRunOutput]  = useState({ stdout: '', stderr: '' });
+  const [showOutput, setShowOutput] = useState(false);
+  const [glowpaLog,  setGlowpaLog]  = useState(null);
+  const [logLoading, setLogLoading] = useState(false);
+  const [showLog,    setShowLog]    = useState(false);
+  const needsRerun = needsRerunIds[scenarioId] ?? false;
+
+  const pollRef = useRef(null);
+
+  const canRun     = scenarioInfo?.readiness?.ready === true;
+  const hasResults = runStatus === 'success' || !!scenarioInfo?.has_outputs;
 
   // Filter categories to those enabled by the case study (null/undefined means all)
   const enabledCategoryIds = selectedCaseStudy?.enabled_categories ?? null;
@@ -114,16 +144,108 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
 
   const handleSubcatDirtyChange = useCallback((subcategoryId, isDirty) => {
     setDirtySubcategories((prev) => {
+      const wasDirty = prev[subcategoryId];
       const next = { ...prev, [subcategoryId]: isDirty };
       const hasAnyDirty = Object.values(next).some(Boolean);
       setScenarioDirty(scenarioId, hasAnyDirty);
+      // Transitioning dirty→clean means a save just happened
+      if (wasDirty && !isDirty) setNeedsRerun(scenarioId, true);
       return next;
     });
-  }, [scenarioId, setScenarioDirty]);
+  }, [scenarioId, setScenarioDirty, setNeedsRerun]);
 
   const isCategoryDirty = (categoryId) => {
     const cat = availableCategories.find((c) => c.id === categoryId);
     return cat?.subcategories.some((sub) => dirtySubcategories[sub.id]) ?? false;
+  };
+
+  // Derive overall dirty state
+  const isDirty = Object.values(dirtySubcategories).some(Boolean);
+
+  // Warn on browser tab close / hard refresh while dirty
+  useEffect(() => {
+    const handler = (e) => {
+      if (isDirty) { e.preventDefault(); e.returnValue = ''; }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [isDirty]);
+
+  // ── Fetch scenario readiness / has_outputs from analytics API ──────────────
+  useEffect(() => {
+    if (!selectedCaseStudy?.id || !scenarioId) return;
+    axios.get(`/api/case-studies/${selectedCaseStudy.id}/analytics`)
+      .then((res) => {
+        const found = res.data?.scenarios?.find((s) => s.id === scenarioId);
+        setScenarioInfo(found ?? null);
+      })
+      .catch(() => setScenarioInfo(null));
+  }, [selectedCaseStudy?.id, scenarioId]);
+
+  // ── Poll run status ────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!runId) return;
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await axios.get(`/api/run-status/${runId}`);
+        const data = res.data;
+        setRunStatus(data.status);
+        setRunOutput({ stdout: data.stdout || '', stderr: data.stderr || '' });
+        if (['success', 'error', 'timeout'].includes(data.status)) {
+          clearInterval(pollRef.current);
+          setRunLoading(false);
+          if (data.status === 'success') setNeedsRerun(scenarioId, false);
+          // Refresh scenario info so has_outputs is up to date
+          if (selectedCaseStudy?.id) {
+            axios.get(`/api/case-studies/${selectedCaseStudy.id}/analytics`)
+              .then((r) => {
+                const found = r.data?.scenarios?.find((s) => s.id === scenarioId);
+                setScenarioInfo(found ?? null);
+              })
+              .catch(() => {});
+          }
+        }
+      } catch {
+        clearInterval(pollRef.current);
+        setRunLoading(false);
+        setRunStatus('error');
+      }
+    }, 2000);
+    return () => clearInterval(pollRef.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId]);
+
+  // ── Run model handler ──────────────────────────────────────────────────────
+  const handleRunModel = async () => {
+    setRunLoading(true);
+    setRunStatus('pending');
+    setShowOutput(true);
+    setShowLog(false);
+    try {
+      const res = await axios.post(`/api/scenarios/${scenarioId}/run-model`);
+      setRunId(res.data.run_id);
+      setRunMode(res.data.mode);
+    } catch (err) {
+      setRunLoading(false);
+      setRunStatus('error');
+      setRunOutput({ stdout: '', stderr: err.response?.data?.error || err.message });
+    }
+  };
+
+  // ── Fetch GloWPa execution log ─────────────────────────────────────────────
+  const handleFetchLog = async () => {
+    if (glowpaLog && showLog) { setShowLog(false); return; }
+    setLogLoading(true);
+    try {
+      const res = await axios.get(`/api/scenarios/${scenarioId}/glowpa-log?tail=500`);
+      setGlowpaLog(res.data);
+      setShowLog(true);
+      setShowOutput(false);
+    } catch (err) {
+      alert('Failed to fetch log: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setLogLoading(false);
+    }
   };
   
   // Open dialog when store triggers metadata editing for this scenario
@@ -187,35 +309,122 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
   return (
     <div className="bg-wpWhite-100 h-full flex flex-col">
       {/* Header with actions */}
-      <div className="flex items-center justify-between border-b border-gray-200 bg-white flex-shrink-0">
-        <div className="flex items-center space-x-3 p-6">
-          <BarChart3 className="text-wpBlue" size={24} />
-          <div>
-            <h2 className="text-xl font-semibold font-outfit text-wpBlue">
-              {scenario.name || 'Untitled Scenario'}
-            </h2>
-            <p className="text-sm text-outfit text-wpBlue">
-              {scenario.isTemp ? 'Temporary scenario (not saved)' : 'Saved scenario'}
-            </p>
+      <div className="flex-shrink-0 bg-white border-b border-gray-200">
+        <div className="flex items-center justify-between px-6 py-4">
+          <div className="flex items-center space-x-3">
+            <BarChart3 className="text-wpBlue" size={24} />
+            <div>
+              <h2 className="text-xl font-semibold font-outfit text-wpBlue">
+                {scenario.name || 'Untitled Scenario'}
+              </h2>
+              <p className="text-sm font-outfit text-wpBlue">
+                {scenario.isTemp
+                  ? 'Temporary scenario (not saved)'
+                  : needsRerun
+                    ? <span className="text-orange-500 italic text-xs">** data updated since last model run **</span>
+                    : 'Saved scenario'
+                }
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            {/* Run model */}
+            <button
+              onClick={handleRunModel}
+              disabled={!canRun || runLoading}
+              title={canRun ? 'Run model for this scenario' : 'Scenario is not ready (missing files or pathogen)'}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-wpGreen text-wpBlue font-semibold rounded-lg hover:bg-wpGreen/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {runLoading ? <Loader2 size={15} className="animate-spin" /> : <Play size={15} />}
+              <span>Run model</span>
+            </button>
+
+            {/* View results */}
+            {hasResults && (
+              <button
+                onClick={() => onViewResults?.({ id: scenarioId, ...scenarioInfo })}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-wpBlue text-white rounded-lg hover:bg-wpBlue/90 transition-colors"
+              >
+                <BarChart2 size={15} />
+                <span>View results</span>
+              </button>
+            )}
+
+            {/* Execution log */}
+            <button
+              onClick={handleFetchLog}
+              disabled={logLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-40"
+            >
+              {logLoading ? <Loader2 size={15} className="animate-spin" /> : <ScrollText size={15} />}
+              <span>Execution log</span>
+            </button>
+
+            <div className="w-px h-5 bg-gray-200 mx-1" />
+
+            {/* Edit metadata */}
+            <button
+              onClick={() => setIsMetadataDialogOpen(true)}
+              className="flex items-center space-x-1 px-3 py-1 text-sm text-wpBlue-600 hover:text-wpBlue-700 hover:bg-wpBlue-50 rounded transition-colors"
+            >
+              <Edit3 size={16} />
+              <span>Edit metadata</span>
+            </button>
+            <button
+              onClick={handleDelete}
+              className="flex items-center space-x-1 px-3 py-1 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
+            >
+              <Trash2 size={16} />
+              <span>Delete</span>
+            </button>
           </div>
         </div>
-        
-        <div className="flex items-center space-x-2">
-          <button
-            onClick={() => setIsMetadataDialogOpen(true)}
-            className="flex items-center space-x-1 px-3 py-1 text-sm text-wpBlue-600 hover:text-wpBlue-700 hover:bg-wpBlue-50 rounded transition-colors"
-          >
-            <Edit3 size={16} />
-            <span>Edit metadata</span>
-          </button>
-          <button
-            onClick={handleDelete}
-            className="flex items-center space-x-1 px-3 py-1 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
-          >
-            <Trash2 size={16} />
-            <span>Delete</span>
-          </button>
-        </div>
+
+        {/* Inline run status bar */}
+        {runStatus !== 'idle' && (
+          <div className="px-6 pb-3 flex items-center gap-3">
+            {RUN_STATUS_CFG[runStatus] && (
+              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${RUN_STATUS_CFG[runStatus].cls}`}>
+                {RUN_STATUS_CFG[runStatus].label}
+              </span>
+            )}
+            {runMode && <span className="text-xs text-gray-400">mode: {runMode}</span>}
+            <button
+              onClick={() => setShowOutput((v) => !v)}
+              className="ml-auto text-xs text-gray-500 hover:text-gray-700 underline"
+            >
+              {showOutput ? 'Hide output' : 'Show output'}
+            </button>
+          </div>
+        )}
+
+        {/* Run output console */}
+        {showOutput && (runOutput.stdout || runOutput.stderr) && (
+          <div className="mx-6 mb-3 bg-gray-900 rounded-lg p-3 text-xs font-mono text-gray-100 max-h-48 overflow-y-auto">
+            <pre className="whitespace-pre-wrap">{runOutput.stdout}{runOutput.stderr}</pre>
+          </div>
+        )}
+
+        {/* GloWPa execution log */}
+        {showLog && glowpaLog && (
+          <div className="mx-6 mb-3">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-semibold text-gray-600">GloWPa Execution Log (last 500 lines)</span>
+              <button
+                onClick={() => setShowLog(false)}
+                className="text-xs text-gray-400 hover:text-gray-600 underline"
+              >
+                Close
+              </button>
+            </div>
+            <div className="bg-gray-900 rounded-lg p-3 text-xs font-mono text-gray-100 max-h-48 overflow-y-auto">
+              <pre className="whitespace-pre-wrap">
+                {typeof glowpaLog === 'string' ? glowpaLog : (glowpaLog.log ?? JSON.stringify(glowpaLog, null, 2))}
+              </pre>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Category Tabs */}

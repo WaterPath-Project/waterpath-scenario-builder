@@ -22,9 +22,12 @@ services:
     volumes:
       - ./data:/app/data              # Mount entire data directory for case study access
       - /var/run/docker.sock:/var/run/docker.sock  # Docker socket for SDK access
+    env_file:
+      - .env
     environment:
       - FLASK_ENV=development
       - REACT_APP_API_URL=http://localhost:5000
+      - WATERPATH_DATA_API_URL=${WATERPATH_DATA_API_URL:-https://dev.waterpath.venthic.com/api}
     networks:
       - app-network
     depends_on:
