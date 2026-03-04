@@ -267,7 +267,7 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
               </div>
               <div>
                 <span className="font-medium text-gray-700">Name:</span>
-                <p className="text-gray-600 font-mono text-xs mt-1 px-2 py-1 bg-gray-100 rounded">
+                <p className="text-gray-600 font-outfit text-xs mt-1 px-2 py-1 bg-gray-100 rounded">
                   {displayData.name || slugify(displayData.title || '')}
                 </p>
                 {isEditing && (

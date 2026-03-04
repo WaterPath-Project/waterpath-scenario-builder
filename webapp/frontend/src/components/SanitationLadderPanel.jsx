@@ -10,7 +10,8 @@ const COLORS = {
   basic:          '#51B453',   // medium green
   improved:       '#3F9842',   // midpoint of safelyManaged & basic (combined header)
   unimproved:     '#FFDA46',   // yellow  — needs dark text
-  openDefecation: '#FFC000',   // amber   — needs dark text
+  openDefecation: '#FFC000',   // amber   — needs dark text   // yellow  — needs dark text
+  notContributing:'rgb(107 114 128)',   // gray    — for tech mix fields that don't contribute to the ladder (e.g. flushOpen)
 };
 
 const BG = {
@@ -257,15 +258,107 @@ const IndependentSliderRow = ({ label, value, fieldKey, onChange, accentColor, d
   );
 };
 
+// ─── VerticalSliderColumn ────────────────────────────────────────────────────
+
+// ─── SyncedTwoColumns ────────────────────────────────────────────────────────
+// Measures the left column height with ResizeObserver and applies the same
+// explicit pixel height to the right column so vertical sliders can fill it.
+
+const SyncedTwoColumns = ({ leftContent, rightContent, borderColor }) => {
+  const leftRef = useRef(null);
+  const [leftH, setLeftH] = useState(null);
+
+  useEffect(() => {
+    const el = leftRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      if (el) setLeftH(el.offsetHeight);
+    });
+    ro.observe(el);
+    setLeftH(el.offsetHeight);
+    return () => ro.disconnect();
+  }, []);
+
+  return (
+    <div className="flex gap-4 mt-3">
+      <div className="w-3/4 min-w-0" ref={leftRef}>{leftContent}</div>
+      <div
+        className="w-1/4 flex flex-col border-l pl-4 items-center py-10"
+        style={{ borderColor, maxHeight: '440px', overflow: 'hidden' }}
+      >{rightContent}</div>
+    </div>
+  );
+};
+
+// ─── VerticalSliderColumn ────────────────────────────────────────────────────
+
+const VerticalSliderColumn = ({ label, value, fieldKey, onChange, accentColor }) => {
+  const [editing, setEditing] = useState(false);
+  const [inputVal, setInputVal] = useState('');
+
+  const commit = (raw) => {
+    const n = parseFloat(raw);
+    if (!isNaN(n)) onChange(fieldKey, Math.min(1, Math.max(0, n / 100)));
+    setEditing(false);
+  };
+
+  return (
+    <div className="flex flex-col items-center gap-1 flex-1">
+      <span className="text-[12px] pt-4 font-semibold text-gray-600 text-center leading-tight w-full break-words px-1">{label}</span>
+      <div className="flex-1 flex items-stretch justify-center min-h-0">
+        <input
+          type="range"
+          min={0} max={1} step={0.001}
+          value={value}
+          onChange={(e) => onChange(fieldKey, parseFloat(e.target.value))}
+          style={{
+            writingMode: 'vertical-lr',
+            direction: 'rtl',
+            width: 28,
+            height: '100%',
+            cursor: 'pointer',
+            accentColor,
+          }}
+        />
+      </div>
+      {editing ? (
+        <input
+          type="number"
+          min={0} max={100} step={0.1}
+          value={inputVal}
+          autoFocus
+          onChange={(e) => setInputVal(e.target.value)}
+          onBlur={(e) => commit(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit(e.target.value);
+            if (e.key === 'Escape') setEditing(false);
+          }}
+          className="w-14 text-center text-xs border rounded px-1 py-0.5 focus:outline-none"
+          style={{ borderColor: accentColor }}
+        />
+      ) : (
+        <span
+          className="text-xs tabular-nums font-medium cursor-text hover:bg-black/5 rounded px-1 py-0.5"
+          style={{ color: accentColor }}
+          title="Click to type a value"
+          onClick={() => { setInputVal((value * 100).toFixed(1)); setEditing(true); }}
+        >
+          {(value * 100).toFixed(1)}%
+        </span>
+      )}
+    </div>
+  );
+};
+
 // ─── CollapsibleSection ───────────────────────────────────────────────────────
 
-const CollapsibleSection = ({ headerColor, darkHeaderText, label, badgeContent, children, initialOpen }) => {
+const CollapsibleSection = ({ headerColor, darkHeaderText, label, badgeContent, children, initialOpen, hasError }) => {
   const [open, setOpen] = useState(initialOpen);
   const textClass    = darkHeaderText ? 'text-gray-900' : 'text-white';
   const chevronClass = darkHeaderText ? 'text-gray-700' : 'text-white/80';
 
   return (
-    <div className="rounded-xl overflow-hidden" >
+    <div className="rounded-xl overflow-hidden" style={hasError ? { outline: '2px solid #ef4444' } : {}} >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -317,13 +410,29 @@ const IntegerField = ({ label, value, onChange }) => (
   </div>
 );
 
+// ─── Persisted selection state (module-level) ─────────────────────────────────
+// Keeps the last-used area selection so switching between scenarios restores it.
+let _persistedIndices = null;     // Set<number> | null
+let _persistedMulti   = false;
+
 // ─── SanitationLadderInner ────────────────────────────────────────────────────
 
 const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChange }) => {
-  // selectedIndices: Set of row indices currently selected for editing/display
-  const [selectedIndices, setSelectedIndices] = useState(() => new Set([0]));
-  // multiSelectMode: whether the user is in multi-select mode
-  const [multiSelectMode, setMultiSelectMode] = useState(false);
+  // Default to all areas selected; restore persisted selection if available (clamped to row count).
+  const [selectedIndices, setSelectedIndices] = useState(() => {
+    if (_persistedIndices && _persistedIndices.size > 0) {
+      const valid = new Set([..._persistedIndices].filter(i => i < initialRows.length));
+      if (valid.size > 0) return valid;
+    }
+    return new Set(initialRows.map((_, i) => i));
+  });
+  const [multiSelectMode, setMultiSelectMode] = useState(
+    () => _persistedMulti || initialRows.length > 1
+  );
+
+  // Persist whenever selection changes so it survives scenario switches.
+  useEffect(() => { _persistedIndices = selectedIndices; }, [selectedIndices]);
+  useEffect(() => { _persistedMulti   = multiSelectMode; }, [multiSelectMode]);
 
   const [localValues, setLocalValues] = useState(() => initialRows.map(parseRow));
 
@@ -363,11 +472,33 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
     })
   , [localValues]);
 
-  // updateField: applies to all indices in the provided array
+  // updateField: applies the same value to all indices in the provided array
   const updateField = useCallback((indices, key, value) => {
     setLocalValues((prev) => {
       const idxSet = new Set(indices);
       const next = prev.map((v, i) => idxSet.has(i) ? { ...v, [key]: value } : v);
+      markDirty(next);
+      return next;
+    });
+  }, [markDirty]);
+
+  // updateFieldProportional: scales each area proportionally so that the new average equals
+  // newAvg, while preserving relative differences among areas.
+  // oldAvg is computed fresh from `prev` inside the updater to avoid stale-closure bugs.
+  const updateFieldProportional = useCallback((indices, key, newAvg) => {
+    setLocalValues((prev) => {
+      // Compute current average from the latest state
+      const oldAvg = indices.length > 0
+        ? indices.reduce((s, i) => s + (parseFloat(prev[i]?.[key]) || 0), 0) / indices.length
+        : 0;
+      const next = prev.map((v, i) => {
+        if (!indices.includes(i)) return v;
+        const oldVal = parseFloat(v[key]) || 0;
+        const scaled = oldAvg > 0.001
+          ? Math.min(1, Math.max(0, oldVal * (newAvg / oldAvg)))
+          : newAvg;
+        return { ...v, [key]: scaled };
+      });
       markDirty(next);
       return next;
     });
@@ -381,34 +512,26 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
 
   // Selection helpers
   const selectAll = useCallback(() => {
-    setSelectedIndices(new Set(initialRows.map((_, i) => i)));
-    setMultiSelectMode(true);
+    setMultiSelectMode(true); // All always enables multi-select mode
+    setSelectedIndices((prev) => {
+      // If already all selected, collapse back to first area
+      if (prev.size === initialRows.length) return new Set([0]);
+      return new Set(initialRows.map((_, i) => i));
+    });
   }, [initialRows]);
 
-  const toggleMultiSelectMode = useCallback(() => {
-    setMultiSelectMode((v) => {
-      if (v) {
-        // Leaving multi-select: keep only the first (lowest) selected index
-        setSelectedIndices((prev) => {
-          const first = Math.min(...prev);
-          return new Set([first >= 0 ? first : 0]);
-        });
-      }
-      return !v;
-    });
-  }, []);
-
   const handleAreaClick = useCallback((i) => {
-    if (multiSelectMode) {
-      setSelectedIndices((prev) => {
-        const next = new Set(prev);
-        if (next.has(i) && next.size > 1) next.delete(i);
-        else next.add(i);
-        return next;
-      });
-    } else {
+    if (!multiSelectMode) {
+      // Single-select mode: clicking any pill selects only that area
       setSelectedIndices(new Set([i]));
+      return;
     }
+    setSelectedIndices((prev) => {
+      const next = new Set(prev);
+      if (next.has(i) && next.size > 1) next.delete(i);
+      else next.add(i);
+      return next;
+    });
   }, [multiSelectMode]);
 
   // ── Validate that every active suffix in every row sums to 1 ───────────────
@@ -509,7 +632,7 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
   const areaLabel = isAllSelected
     ? 'All Areas'
     : selectedArr.length > 1
-      ? `${selectedArr.length} areas`
+      ? `${selectedArr.length} areas selected`
       : (repRow.subarea || repRow.iso || `Area ${selectedArr[0] + 1}`);
 
   // Show a suffix if at least one selected row uses it
@@ -536,28 +659,33 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
           <button
             onClick={selectAll}
             className={`relative px-3 py-1 text-xs rounded-full font-medium transition-colors border ${
-              isAllSelected && multiSelectMode
+              isAllSelected
                 ? 'text-white border-transparent'
                 : 'bg-white-100 text-gray-500 border-gray-300 hover:bg-gray-200'
             }`}
-            style={isAllSelected && multiSelectMode ? { backgroundColor: '#0B4159' } : {}}
+            style={isAllSelected ? { backgroundColor: '#0B4159' } : {}}
             title="Select all areas (shows averages)"
           >
             All
           </button>
 
-          {/* Multi-select toggle */}
+          {/* Multi-select toggle — sits right after All */}
           <button
-            onClick={toggleMultiSelectMode}
-            className={`px-3 py-1 text-xs rounded-full font-medium transition-colors border ${
+            onClick={() => {
+              setMultiSelectMode((v) => {
+                if (v) {
+                  setSelectedIndices((prev) => new Set([Array.from(prev).sort((a, b) => a - b)[0] ?? 0]));
+                }
+                return !v;
+              });
+            }}
+            className={`px-2.5 py-1 text-xs rounded-full font-medium transition-colors border ${
               multiSelectMode
-                ? 'text-white border-transparent'
-                : 'bg-white text-gray-500 border-gray-300 hover:bg-gray-100'
+                ? 'bg-wpBlue/10 text-wpBlue border-wpBlue/40'
+                : 'bg-white text-gray-400 border-gray-300 hover:bg-gray-100'
             }`}
-            style={multiSelectMode ? { backgroundColor: '#8DD0A4', color: '#0B4159' } : {}}
-            title={multiSelectMode ? 'Exit multi-select (keep first selection)' : 'Select multiple areas'}
           >
-            {multiSelectMode ? 'Done' : 'Select…'}
+            {multiSelectMode ? 'Single select' : 'Select multiple…'}
           </button>
 
           {/* Per-area pills */}
@@ -574,7 +702,7 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
                   isSelected ? 'text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                 }`}
                 style={isSelected ? { backgroundColor: '#0B4159' } : {}}
-                title={multiSelectMode ? (isSelected ? 'Click to deselect' : 'Click to add to selection') : lbl}
+                title={isSelected ? 'Click to deselect' : 'Click to select'}
               >
                 {lbl}
                 {/* Yellow dot — area has unsaved changes */}
@@ -594,26 +722,28 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
           })}
         </div>
 
-        {isDirty && (
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <span className="w-2 h-2 rounded-full bg-orange-400" title="Unsaved changes" />
-            <button
-              onClick={handleReset}
-              className="flex items-center gap-1 px-2 py-1 text-xs text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded transition-colors"
-            >
-              <RotateCcw size={12} /> Reset
-            </button>
-            <button
-              onClick={handleSave}
-              disabled={isSaving || !canSave}
-              title={!canSave ? 'Fix technology mix totals before saving' : ''}
-              className="flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              style={{ backgroundColor: canSave ? '#8DD0A4' : '#9ca3af', color: canSave ? '#0B4159' : 'white' }}
-            >
-              <Save size={12} /> {isSaving ? 'Saving…' : 'Save'}
-            </button>
-          </div>
-        )}
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {isDirty && (
+            <>
+              <span className="w-2 h-2 rounded-full bg-orange-400" title="Unsaved changes" />
+              <button
+                onClick={handleReset}
+                className="flex items-center gap-1 px-2 py-1 text-xs text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded transition-colors"
+              >
+                <RotateCcw size={12} /> Reset
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={isSaving || !canSave}
+                title={!canSave ? 'Fix technology mix totals before saving' : ''}
+                className="flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                style={{ backgroundColor: canSave ? '#8DD0A4' : '#9ca3af', color: canSave ? '#0B4159' : 'white' }}
+              >
+                <Save size={12} /> {isSaving ? 'Saving…' : 'Save'}
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* ── Validation banner ─────────────────────────────────────────────── */}
@@ -647,7 +777,12 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
                   return keySfx === '_urb' ? uf > 0 : uf < 1;
                 })
               : editIndices;
-            updateField(targets, key, value);
+            if (multiSelectMode && targets.length > 1) {
+              // Proportional scaling: preserve relative differences, move average to new value
+              updateFieldProportional(targets, key, value);
+            } else {
+              updateField(targets, key, value);
+            }
           };
           const techOk = Math.abs(ladder.techTotal - 1) <= SUM_TOL;
 
@@ -659,12 +794,6 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
                   <h4 className="text-sm font-semibold text-gray-700 truncate">
                     {areaLabel}
                   </h4>
-                  {selectedArr.length > 1 && (
-                    <span className="flex-shrink-0 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded"
-                      style={{ backgroundColor: '#0B415922', color: '#0B4159' }}>
-                      {isAllSelected ? 'avg · all' : `avg · ${selectedArr.length}`}
-                    </span>
-                  )}
                 </div>
                 <div className="flex items-center gap-3 flex-shrink-0">
                   <div className="flex gap-0.5 p-0.5 bg-gray-200 rounded-lg">
@@ -692,7 +821,7 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
                     })}
                   </div>
                   <span
-                    className="text-xs font-mono font-semibold px-1.5 py-0.5 rounded"
+                    className="text-xs font-outfit font-semibold px-1.5 py-0.5 rounded"
                     style={techOk
                       ? { color: COLORS.safelyManaged, backgroundColor: BG.improved }
                       : { color: '#b91c1c', backgroundColor: '#fef2f2' }
@@ -713,21 +842,22 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
                   darkHeaderText={false}
                   label="Improved Facilities"
                   initialOpen={ladder.improvedTotal > 0.001 || selectedArr.length > 1}
+                  hasError={!techOk}
                   badgeContent={
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-white/70 hidden sm:inline">SM:</span>
-                      <span className="text-xs font-mono font-bold text-white">
+                      <span className="text-xs font-outfit font-bold text-white">
                         {(ladder.safelyManaged * 100).toFixed(1)}%
                       </span>
                       <span className="text-white/40 text-xs">|</span>
                       <span className="text-xs text-white/70 hidden sm:inline">Basic:</span>
-                      <span className="text-xs font-mono font-bold text-white">
+                      <span className="text-xs font-outfit font-bold text-white">
                         {(ladder.basic * 100).toFixed(1)}%
                       </span>
                     </div>
                   }
                 >
-                  <div className="px-4 py-3 space-y-0" style={{ backgroundColor: BG.improved }}>
+                  <div className="px-4 py-3" style={{ backgroundColor: BG.improved }}>
                     {/* SM / Basic summary cards */}
                     <div className="flex gap-3 mb-3">
                       <div className="flex-1 rounded px-3 py-1.5 text-center"
@@ -752,79 +882,99 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
                       </div>
                     </div>
 
-                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">
-                      Improved technology mix
-                    </p>
-                    {IMPROVED_FIELDS.map((f) => {
-                      const key = `${f}${sfx}`;
-                      if (!(key in displayVals)) return null;
-                      return (
-                        <IndependentSliderRow
-                          key={key}
-                          label={FIELD_LABELS[f]}
-                          value={displayVals[key] ?? 0}
-                          fieldKey={key}
-                          accentColor={COLORS.safelyManaged}
-                          onChange={makeChange}
-                        />
-                      );
-                    })}
-
-                    <div className="mt-3 pt-3 border-t" style={{ borderColor: COLORS.safelyManaged + '33' }}>
-                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">
-                        Treatment and management
-                      </p>
-                      {TREATMENT_FIELDS.map((f) => {
-                        const key = `${f}${sfx}`;
-                        if (!(key in displayVals)) return null;
-                        return (
-                          <IndependentSliderRow
-                            key={key}
-                            label={FIELD_LABELS[f]}
-                            value={displayVals[key] ?? 0}
-                            fieldKey={key}
-                            accentColor={COLORS.safelyManaged}
-                            onChange={makeChange}
-                          />
-                        );
-                      })}
-                      <div className="pt-2 mt-2 border-t border-gray-100">
-                      {BOOLEAN_FIELDS.map((f) => {
-                        const key = `${f}${sfx}`;
-                        if (!(key in displayVals)) return null;
-                        return (
-                          <IndependentSliderRow
-                            key={key}
-                            label={FIELD_LABELS[f]}
-                            value={displayVals[key] ?? 0}
-                            fieldKey={key}
-                            accentColor={COLORS.safelyManaged}
-                            onChange={makeChange}
-                          />
-                        );
-                      })}
-                      </div>
-                      {`emptyFrequency${sfx}` in displayVals && (
-                        <div className="pt-2 mt-1 border-t border-gray-100">
-                          <IntegerField
-                            label={FIELD_LABELS.emptyFrequency}
-                            value={displayVals[`emptyFrequency${sfx}`]}
-                            onChange={(v) => updateField(editIndices, `emptyFrequency${sfx}`, v)}
-                          />
-                        </div>
-                      )}
-                    </div>
+                    {/* Two-column layout: left = mix + management, right = treatment */}
+                    <SyncedTwoColumns
+                      borderColor={COLORS.safelyManaged + '33'}
+                      leftContent={
+                        <>
+                          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">
+                            Technology mix
+                          </p>
+                          {IMPROVED_FIELDS.map((f) => {
+                            const key = `${f}${sfx}`;
+                            if (!(key in displayVals)) return null;
+                            return (
+                              <IndependentSliderRow
+                                key={key}
+                                label={FIELD_LABELS[f]}
+                                value={displayVals[key] ?? 0}
+                                fieldKey={key}
+                                accentColor={COLORS.safelyManaged}
+                                onChange={makeChange}
+                              />
+                            );
+                          })}
+                          <div className="mt-3 pt-3 border-t" style={{ borderColor: COLORS.safelyManaged + '33' }}>
+                            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">
+                              Management options
+                            </p>
+                            <div className="pt-1">
+                              {BOOLEAN_FIELDS.map((f) => {
+                                const key = `${f}${sfx}`;
+                                if (!(key in displayVals)) return null;
+                                return (
+                                  <IndependentSliderRow
+                                    key={key}
+                                    label={FIELD_LABELS[f]}
+                                    value={displayVals[key] ?? 0}
+                                    fieldKey={key}
+                                    accentColor={COLORS.notContributing}
+                                    onChange={makeChange}
+                                  />
+                                );
+                              })}
+                            </div>
+                            {`emptyFrequency${sfx}` in displayVals && (
+                              <div className="pt-2 mt-1 border-t border-gray-100">
+                                <IntegerField
+                                  label={FIELD_LABELS.emptyFrequency}
+                                  value={displayVals[`emptyFrequency${sfx}`]}
+                                  onChange={(v) => updateField(editIndices, `emptyFrequency${sfx}`, v)}
+                                />
+                              </div>
+                            )}
+                          </div>
+                        </>
+                      }
+                      rightContent={
+                        <>
+                          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 text-center">
+                            Treatment fractions
+                          </p>
+                          <div className="flex gap-2 justify-center flex-1 min-h-0">
+                            {TREATMENT_FIELDS.map((f) => {
+                              const key = `${f}${sfx}`;
+                              if (!(key in displayVals)) return null;
+                              return (
+                                <VerticalSliderColumn
+                                  key={key}
+                                  label={FIELD_LABELS[f].replace(' (fraction)', '')}
+                                  value={displayVals[key] ?? 0}
+                                  fieldKey={key}
+                                  accentColor={COLORS.safelyManaged}
+                                  onChange={makeChange}
+                                />
+                              );
+                            })}
+                          </div>
+                        </>
+                      }
+                    />
                   </div>
                 </CollapsibleSection>
 
-                {/* ── 2. Unimproved ─────────────────────────────────────────── */}
+                {/* ── 2 & 3. Unimproved + Open Defecation (same row) ────────── */}
+                <div className="flex gap-2">
+                  {/* Unimproved */}
+                  <div className="flex-1 min-w-0">
                 <CollapsibleSection
                   headerColor={COLORS.unimproved}
                   darkHeaderText={true}
                   label="Unimproved"
                   initialOpen={ladder.unimproved > 0.001}
+                  hasError={!techOk}
                   badgeContent={
-                    <span className="text-sm font-mono font-bold text-gray-900">
+                    <span className="text-sm font-outfit font-bold text-gray-900">
                       {(ladder.unimproved * 100).toFixed(1)}%
                     </span>
                   }
@@ -857,15 +1007,18 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
                     )}
                   </div>
                 </CollapsibleSection>
+                  </div>
 
-                {/* ── 3. Open Defecation ────────────────────────────────────── */}
+                  {/* Open Defecation */}
+                  <div className="flex-1 min-w-0">
                 <CollapsibleSection
                   headerColor={COLORS.openDefecation}
                   darkHeaderText={true}
                   label="Open Defecation"
                   initialOpen={ladder.openDefecation > 0.001}
+                  hasError={!techOk}
                   badgeContent={
-                    <span className="text-sm font-mono font-bold text-gray-900">
+                    <span className="text-sm font-outfit font-bold text-gray-900">
                       {(ladder.openDefecation * 100).toFixed(1)}%
                     </span>
                   }
@@ -891,6 +1044,8 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
                     })}
                   </div>
                 </CollapsibleSection>
+                  </div>
+                </div>
 
               </div>
             </div>

@@ -219,7 +219,7 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
   const handleRunModel = async () => {
     setRunLoading(true);
     setRunStatus('pending');
-    setShowOutput(true);
+    setShowOutput(false);
     setShowLog(false);
     try {
       const res = await axios.post(`/api/scenarios/${scenarioId}/run-model`);
@@ -320,9 +320,30 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
               <p className="text-sm font-outfit text-wpBlue">
                 {scenario.isTemp
                   ? 'Temporary scenario (not saved)'
-                  : needsRerun
-                    ? <span className="text-orange-500 italic text-xs">** data updated since last model run **</span>
-                    : 'Saved scenario'
+                  : runStatus === 'pending' || runStatus === 'running'
+                    ? <span className="flex items-center gap-1.5 text-xs" style={{ color: '#18B6A3' }}>
+                        <span className="w-2 h-2 rounded-full bg-[#18B6A3] animate-pulse"/>
+                        Running model…
+                      </span>
+                    : runStatus === 'success'
+                      ? <span className="flex items-center gap-1.5 text-xs" style={{ color: '#9EB65B' }}>
+                          <span className="w-2 h-2 rounded-full bg-[#9EB65B]"/>
+                          Saved scenario
+                        </span>
+                      : runStatus === 'error'
+                        ? <span className="flex items-center gap-1.5 text-xs text-red-500">
+                            <span className="w-2 h-2 rounded-full bg-red-500"/>
+                            Error during model run
+                          </span>
+                        : needsRerun
+                          ? <span className="flex items-center gap-1.5 text-xs text-orange-500">
+                            <span className="w-2 h-2 rounded-full bg-orange-500 animate-pulse"/>
+                            Changed scenario (needs re-run)
+                          </span>
+                          : <span className="flex items-center gap-1.5 text-xs text-wpBlue">
+                            <span className="w-2 h-2 rounded-full bg-wpBlue"/>
+                            Saved scenario
+                          </span>
                 }
               </p>
             </div>
@@ -385,11 +406,16 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
         {runStatus !== 'idle' && (
           <div className="px-6 pb-3 flex items-center gap-3">
             {RUN_STATUS_CFG[runStatus] && (
-              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${RUN_STATUS_CFG[runStatus].cls}`}>
+              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                runStatus === 'running' || runStatus === 'pending'
+                  ? 'text-[#18B6A3] bg-[#18B6A3]/10'
+                  : runStatus === 'success'
+                    ? 'text-[#9EB65B] bg-[#9EB65B]/10'
+                    : RUN_STATUS_CFG[runStatus].cls
+              }`}>
                 {RUN_STATUS_CFG[runStatus].label}
               </span>
             )}
-            {runMode && <span className="text-xs text-gray-400">mode: {runMode}</span>}
             <button
               onClick={() => setShowOutput((v) => !v)}
               className="ml-auto text-xs text-gray-500 hover:text-gray-700 underline"
@@ -401,7 +427,7 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
 
         {/* Run output console */}
         {showOutput && (runOutput.stdout || runOutput.stderr) && (
-          <div className="mx-6 mb-3 bg-gray-900 rounded-lg p-3 text-xs font-mono text-gray-100 max-h-48 overflow-y-auto">
+          <div className="mx-6 mb-3 bg-gray-900 rounded-lg p-3 text-xs font-outfit text-gray-100 max-h-48 overflow-y-auto">
             <pre className="whitespace-pre-wrap">{runOutput.stdout}{runOutput.stderr}</pre>
           </div>
         )}
@@ -418,7 +444,7 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
                 Close
               </button>
             </div>
-            <div className="bg-gray-900 rounded-lg p-3 text-xs font-mono text-gray-100 max-h-48 overflow-y-auto">
+            <div className="bg-gray-900 rounded-lg p-3 text-xs font-outfit text-gray-100 max-h-48 overflow-y-auto">
               <pre className="whitespace-pre-wrap">
                 {typeof glowpaLog === 'string' ? glowpaLog : (glowpaLog.log ?? JSON.stringify(glowpaLog, null, 2))}
               </pre>

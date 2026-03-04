@@ -18,7 +18,7 @@ module.exports = {
         wpGray: {
           100: "#EEF2F5",
           200: "#F6F9FB",
-          300: "#F1F4FA"
+          300: "#F1F4FA",
         },
         wpBlue: {
           DEFAULT: "#0B4159",
@@ -45,6 +45,21 @@ module.exports = {
           500: "#FFE597",
           200: "#F2EFE6",
           100: "#DDD6C2",
+        },
+        wpTeal: {
+          DEFAULT: "#18B6A3",
+          100: "#d0f5f1",
+          200: "#a1ebe3",
+        },
+        wpCypress: {
+          DEFAULT: "#9EB65B",
+          100: "#edf3d9",
+          200: "#d5e7a8",
+        },
+        wpLightBlue: {
+          DEFAULT: "#488ECF",
+          100: "#dceaf7",
+          200: "#b8d5ef",
         },
       },
     },

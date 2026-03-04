@@ -149,7 +149,7 @@ export const SanitationSliderGroup = ({ title, fields, values, labels, onSliderC
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between mb-1">
         <h5 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{title}</h5>
-        <span className={`text-xs font-mono px-1.5 py-0.5 rounded ${totalOk ? 'text-green-700 bg-green-50' : 'text-red-600 bg-red-50'}`}>
+        <span className={`text-xs font-outfit px-1.5 py-0.5 rounded ${totalOk ? 'text-green-700 bg-green-50' : 'text-red-600 bg-red-50'}`}>
           Σ = {(total * 100).toFixed(1)} %
         </span>
       </div>

@@ -221,6 +221,19 @@ function Dashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname, scenarios, tempScenarios]);
 
+  // Effect 3: auto-navigate to single scenario on /scenarios
+  useEffect(() => {
+    const parts = location.pathname.split('/').filter(Boolean);
+    if (parts[0] !== 'scenarios') return;
+    if (parts[2]) return; // already on a specific scenario
+    if (!selectedCaseStudy) return;
+    const allS = getAllScenarios(selectedCaseStudy.id);
+    if (allS.length === 1) {
+      navigate(`/scenarios/${toCsSlug(selectedCaseStudy)}/${toScenSlug(allS[0].name)}`);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname, scenarios, tempScenarios, selectedCaseStudy]);
+
   // Unsaved-changes guard
   // pendingNavAction stored as { fn } to prevent React treating it as a state updater
   const [showUnsavedModal, setShowUnsavedModal] = useState(false);
@@ -952,9 +965,9 @@ function Dashboard() {
               <div className="space-y-4">
                 <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
                   <div>
-                    <p className="text-sm font-medium text-gray-800">Enable heatmap view</p>
+                    <p className="text-sm font-medium text-gray-800">Enable raster smoothing</p>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      When on, the map shows a continuous raster heatmap overlay. When off, areas are shown as distinct coloured squares (choropleth).
+                      When off (default), each grid cell is rendered as a crisp pixel block — no resampling or interpolation. When on, the browser applies bilinear smoothing between cells (nearest-neighbour-style).
                     </p>
                   </div>
                   <button
@@ -987,7 +1000,7 @@ function Dashboard() {
   return (
     <div className="min-h-screen bg-wpGray-100 flex flex-col">
       {/* Top Navbar */}
-      <div className="bg-wpWhite-100 border-b border-gray-200 h-24 shadow-sm flex items-center px-6 py-3 gap-6 flex-shrink-0">
+      <div id="app-navbar" className="bg-wpWhite-100 border-b border-gray-200 h-24 shadow-sm flex items-center px-6 py-3 gap-6 flex-shrink-0">
         {/* Logo */}
         <div className="flex items-center gap-2 w-56 flex-shrink-0">
           <div className="w-16 h-16 rounded-lg flex items-center justify-center">
@@ -1044,7 +1057,7 @@ function Dashboard() {
       {/* Body row: sidebar + content */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left Sidebar */}
-        <div className="w-64 bg-wpWhite-100 border-r border-gray-200 flex flex-col flex-shrink-0">
+        <div id="app-sidebar" className="w-64 bg-wpWhite-100 border-r border-gray-200 flex flex-col flex-shrink-0">
           {/* Navigation */}
           <nav className="flex-1 p-4 overflow-y-auto">
             <div className="space-y-2">

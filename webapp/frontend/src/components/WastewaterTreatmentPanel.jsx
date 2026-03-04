@@ -362,7 +362,7 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
         <div className="px-5 py-3 border-b border-gray-100 flex items-center gap-2">
           <h4 className="text-sm font-semibold text-wpBlue">Treatment Efficiency Fractions</h4>
           {isDirty && <span className="w-2 h-2 rounded-full bg-orange-400 flex-shrink-0" title="Unsaved changes" />}
-          <span className="ml-auto text-xs font-mono text-gray-400 px-1.5 py-0.5">
+          <span className="ml-auto text-xs font-outfit text-gray-400 px-1.5 py-0.5">
             Σ = {(fractionSum * 100).toFixed(1)}%
           </span>
           {isDirty && (

@@ -905,7 +905,8 @@ def _execute_model_run(run_id, params):
         model_runs[run_id]['stdout'] = stdout
         model_runs[run_id]['stderr'] = stderr
         model_runs[run_id]['return_code'] = exit_code
-        simulation_complete = 'Finished GloWPa simulation' in stdout
+        simulation_complete = ('Finished GloWPa simulation' in stdout
+                               or 'Finished GloWPa simulation' in stderr)
         model_runs[run_id]['simulation_complete'] = simulation_complete
         model_runs[run_id]['status'] = 'success' if (exit_code == 0 and simulation_complete) else 'error'
         # Clean up RDS files after run
@@ -2072,7 +2073,13 @@ def update_scenario_isodata(scenario_id):
             writer.writeheader()
             writer.writerows(existing_rows)
 
-        return jsonify({'message': 'isodata.csv updated', 'rows': len(existing_rows)}), 200
+        real_path = os.path.realpath(csv_path)
+        print(f'[DEBUG] isodata written to: {real_path} ({len(existing_rows)} rows)')
+        return jsonify({
+            'message': 'isodata.csv updated',
+            'rows': len(existing_rows),
+            'written_path': real_path,
+        }), 200
 
     except Exception as e:
         return jsonify({'error': f'Failed to update isodata: {str(e)}'}), 500
@@ -2279,6 +2286,33 @@ _YLORRD = [
 ]
 
 
+def _apply_diverg(diff_pct_2d):
+    """Apply diverging colour map (matching frontend diffColor) to a diff % 2D array.
+    Negative (decrease) → green; positive (increase) → red. Saturates at ±100 %.
+    Values within ±2 % → near-white. NaN → transparent.
+    """
+    import numpy as np
+    flat = diff_pct_2d.flatten()
+    valid = ~np.isnan(flat)
+    pct = np.where(valid, flat, 0.0)
+    t = np.clip(np.abs(pct) / 100.0, 0.0, 1.0)
+    # Matches frontend diffColor():
+    #   increase: rgb(lerp(254,153,t), lerp(202,27,t), lerp(202,27,t))
+    #   decrease: rgb(lerp(187,20,t), lerp(247,83,t), lerp(208,45,t))
+    is_pos = pct >= 0
+    r = np.where(is_pos, 254 + t * (153 - 254), 187 + t * (20 - 187))
+    g = np.where(is_pos, 202 + t * (27  - 202), 247 + t * (83 - 247))
+    b = np.where(is_pos, 202 + t * (27  - 202), 208 + t * (45 - 208))
+    near_zero = np.abs(pct) < 2
+    r = np.where(near_zero, 243.0, r)
+    g = np.where(near_zero, 244.0, g)
+    b = np.where(near_zero, 246.0, b)
+    a = np.where(valid, 200, 0).astype(np.uint8)
+    h2, w2 = diff_pct_2d.shape
+    return np.stack([r.astype(np.uint8), g.astype(np.uint8), b.astype(np.uint8), a],
+                    axis=-1).reshape(h2, w2, 4)
+
+
 def _apply_ylorrd(norm_2d):
     """Apply YlOrRd colormap. norm_2d is float H×W in [0,1], NaN → transparent."""
     import numpy as np
@@ -2313,26 +2347,113 @@ def frontend_output_files(scenario_id):
         return jsonify({'error': str(exc)}), 500
 
 
-@frontend_app.route('/api/scenarios/<scenario_id>/output-raster/<path:filename>')
-def frontend_output_raster(scenario_id, filename):
-    """Return a colorized PNG of a GeoTIFF raster (log10-transformed) + WGS-84 bounds.
-
-    Reprojects the raster to Web Mercator (EPSG:3857) before encoding it as a
-    PNG.  Leaflet's default CRS is EPSG:3857 and it stretches ImageOverlay pixels
-    *linearly* in Mercator screen-space.  If we served a geographic (Plate Carrée)
-    image with WGS-84 bounds, equal-height rows in degrees would be rendered with
-    equal height in *pixels*, but Mercator demands northern rows be taller – so the
-    image would appear shifted northward at mid/high latitudes.  Serving a
-    Mercator-projected image eliminates this distortion entirely.
-    """
-    import base64
+@frontend_app.route('/api/scenarios/<scenario_id>/raster-area-stats/<path:filename>')
+def frontend_raster_area_stats(scenario_id, filename):
+    """Return per-ISO zonal statistics (min/max/mean/total/count) from a raster."""
     import numpy as np
     try:
+        import rasterio
+        from rasterio.mask import mask as rio_mask
+        from rasterio.warp import transform_geom
+        from rasterio.crs import CRS
+        import fiona
+
         cs, folder = _locate_scenario(scenario_id)
         tif_path = os.path.join(cs['folder_path'], 'output', folder, filename)
         if not os.path.exists(tif_path):
             return jsonify({'error': 'File not found'}), 404
 
+        geo_dir = os.path.join(cs['folder_path'], 'input', 'baseline', 'geodata')
+        if not os.path.isdir(geo_dir):
+            return jsonify({'error': 'No geodata folder'}), 404
+        shp_files = [f for f in os.listdir(geo_dir) if f.endswith('.shp')]
+        if not shp_files:
+            return jsonify({'error': 'No shapefile found'}), 404
+        shp_path = os.path.join(geo_dir, shp_files[0])
+
+        result = {}
+        with rasterio.open(tif_path) as src:
+            raster_crs = src.crs or CRS.from_epsg(4326)
+            nodata = src.nodata
+            wgs84_epsg = 'EPSG:4326'
+            with fiona.open(shp_path) as shp:
+                shp_crs_str = shp.crs_wkt or wgs84_epsg
+                for idx, feat in enumerate(shp):
+                    iso = str(idx + 1)  # 1-based index, matching geodata endpoint
+                    geom = feat['geometry']
+                    # Reproject geometry to raster CRS if needed
+                    try:
+                        geom_raster = transform_geom(shp_crs_str, raster_crs.to_wkt(), geom)
+                    except Exception:
+                        geom_raster = geom
+                    try:
+                        out, _ = rio_mask(src, [geom_raster], crop=True, all_touched=True, filled=True, nodata=np.nan)
+                        vals = out[0].astype(float)
+                        if nodata is not None:
+                            vals[vals == float(nodata)] = np.nan
+                        vals[vals <= 0] = np.nan
+                        vals[vals > 1e30] = np.nan
+                        valid = vals[~np.isnan(vals)]
+                        if len(valid):
+                            result[iso] = {
+                                'min':   float(valid.min()),
+                                'max':   float(valid.max()),
+                                'mean':  float(valid.mean()),
+                                'total': float(valid.sum()),
+                                'count': int(len(valid)),
+                            }
+                        else:
+                            result[iso] = None
+                    except Exception:
+                        result[iso] = None
+        return jsonify(result), 200
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
+@frontend_app.route('/api/scenarios/<scenario_id>/output-raster/<path:filename>')
+def frontend_output_raster(scenario_id, filename):
+    """Serve the raw GeoTIFF for client-side rendering with georaster-layer-for-leaflet."""
+    try:
+        cs, folder = _locate_scenario(scenario_id)
+        tif_path = os.path.join(cs['folder_path'], 'output', folder, filename)
+        if not os.path.exists(tif_path):
+            return jsonify({'error': 'File not found'}), 404
+        from flask import send_file
+        return send_file(tif_path, mimetype='image/tiff', as_attachment=False,
+                         download_name=filename)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
+@frontend_app.route('/api/raster-diff')
+def frontend_raster_diff():
+    """Return a colourised diff raster (B − A) / A × 100 % for two scenarios.
+
+    Query params:
+      scA   – scenario ID for the baseline raster
+      scB   – scenario ID for the comparison raster
+      file  – raster filename (relative to each scenario's output folder)
+
+    Returns {image: base64-PNG, bounds: {south,north,east,west}} using a
+    diverging green/red colour map (green = decrease, red = increase).
+    """
+    import base64
+    import numpy as np
+
+    sc_a   = request.args.get('scA')
+    sc_b   = request.args.get('scB')
+    fname  = request.args.get('file')
+    fname_a = request.args.get('fileA') or fname
+    fname_b = request.args.get('fileB') or fname
+    if not sc_a or not sc_b or not fname_a or not fname_b:
+        return jsonify({'error': 'scA, scB and file (or fileA+fileB) are required'}), 400
+
+    try:
         import rasterio
         from rasterio.warp import transform_bounds, reproject, Resampling, calculate_default_transform
         from rasterio.crs import CRS
@@ -2340,76 +2461,61 @@ def frontend_output_raster(scenario_id, filename):
         wgs84    = CRS.from_epsg(4326)
         mercator = CRS.from_epsg(3857)
 
-        with rasterio.open(tif_path) as src:
-            data       = src.read(1).astype(float)
-            src_crs    = src.crs or wgs84
-            src_tf     = src.transform
-            src_nodata = src.nodata
-            src_l, src_b, src_r, src_t = (src.bounds.left, src.bounds.bottom,
-                                            src.bounds.right, src.bounds.top)
+        def _load_merc(sc_id, tif_fname):
+            cs, folder = _locate_scenario(sc_id)
+            tif_path = os.path.join(cs['folder_path'], 'output', folder, tif_fname)
+            if not os.path.exists(tif_path):
+                raise ValueError(f'File not found for scenario {sc_id}: {tif_fname}')
+            with rasterio.open(tif_path) as src:
+                data    = src.read(1).astype(float)
+                src_crs = src.crs or wgs84
+                src_tf  = src.transform
+                src_nd  = src.nodata
+                l, b_b, r, t = src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top
+            # Mask nodata/negatives BEFORE any reprojection
+            if src_nd is not None:
+                data[data == src_nd] = np.nan
+            data[(data <= 0) | (data > 1e30)] = np.nan
+            # Only reproject if not already in WGS-84; use nearest to avoid averaging
+            if src_crs and src_crs.to_epsg() != 4326:
+                tmp_tf, tmp_w, tmp_h = calculate_default_transform(
+                    src_crs, wgs84, data.shape[1], data.shape[0], left=l, bottom=b_b, right=r, top=t)
+                tmp = np.full((tmp_h, tmp_w), np.nan, dtype=float)
+                reproject(source=data, destination=tmp, src_transform=src_tf, src_crs=src_crs,
+                          dst_transform=tmp_tf, dst_crs=wgs84, resampling=Resampling.nearest,
+                          src_nodata=np.nan, dst_nodata=np.nan)
+                data, src_tf = tmp, tmp_tf
+                l, b_b, r, t = rasterio.transform.array_bounds(tmp_h, tmp_w, tmp_tf)
+            return data, src_tf, (data.shape[0], data.shape[1]), (l, b_b, r, t)
 
-        # Ensure source is in WGS-84 first (needed for valid Mercator projection)
-        if src_crs != wgs84:
-            tmp_tf, tmp_w, tmp_h = calculate_default_transform(
-                src_crs, wgs84, data.shape[1], data.shape[0],
-                left=src_l, bottom=src_b, right=src_r, top=src_t
-            )
-            tmp = np.full((tmp_h, tmp_w), np.nan, dtype=float)
-            reproject(source=data, destination=tmp,
-                      src_transform=src_tf, src_crs=src_crs,
-                      dst_transform=tmp_tf, dst_crs=wgs84,
-                      resampling=Resampling.bilinear,
-                      src_nodata=src_nodata, dst_nodata=np.nan)
-            data, src_tf = tmp, tmp_tf
-            src_l, src_b, src_r, src_t = rasterio.transform.array_bounds(tmp_h, tmp_w, tmp_tf)
+        data_a, tf_a, shape_a, bounds_a = _load_merc(sc_a, fname_a)
+        data_b, tf_b, shape_b, bounds_b = _load_merc(sc_b, fname_b)
 
-        # Reproject geographic raster → Web Mercator so Leaflet renders without
-        # latitude-dependent vertical distortion.
-        merc_tf, merc_w, merc_h = calculate_default_transform(
-            wgs84, mercator, data.shape[1], data.shape[0],
-            left=src_l, bottom=src_b, right=src_r, top=src_t
-        )
-        merc_data = np.full((merc_h, merc_w), np.nan, dtype=float)
-        reproject(source=data, destination=merc_data,
-                  src_transform=src_tf, src_crs=wgs84,
-                  dst_transform=merc_tf, dst_crs=mercator,
-                  resampling=Resampling.bilinear,
-                  src_nodata=np.nan, dst_nodata=np.nan)
-        data = merc_data
+        # Align B onto A's grid if they differ (nearest so no averaging)
+        if data_b.shape != data_a.shape:
+            tmp = np.full(data_a.shape, np.nan, dtype=float)
+            reproject(source=data_b, destination=tmp,
+                      src_transform=tf_b, src_crs=wgs84,
+                      dst_transform=tf_a, dst_crs=wgs84,
+                      resampling=Resampling.nearest,
+                      src_nodata=np.nan, dst_nodata=np.nan)
+            data_b = tmp
 
-        # Convert Mercator pixel-edge bounds back to WGS-84 lat/lon for Leaflet
-        merc_bounds = rasterio.transform.array_bounds(merc_h, merc_w, merc_tf)
-        west, south, east, north = transform_bounds(mercator, wgs84, *merc_bounds)
-        geo_bounds = {'south': float(south), 'west': float(west),
-                      'north': float(north), 'east': float(east)}
+        with np.errstate(divide='ignore', invalid='ignore'):
+            diff_pct = np.where(
+                (data_a > 0) & ~np.isnan(data_a) & ~np.isnan(data_b),
+                (data_b - data_a) / data_a * 100.0,
+                np.nan)
 
-        # Mask nodata / negatives / NaN
-        if src_nodata is not None:
-            data[data == src_nodata] = np.nan
-        nodata_mask = np.isnan(data) | (data <= 0) | (data > 1e30)
-        data[nodata_mask] = np.nan
-        log_data = np.log10(data)
+        l, b_b2, r, t = bounds_a
+        geo_bounds = {'south': float(b_b2), 'west': float(l),
+                      'north': float(t),    'east': float(r)}
 
-        valid = log_data[~np.isnan(log_data)]
-        if len(valid) == 0:
-            return jsonify({'error': 'Raster contains no positive values'}), 400
-
-        vmin = float(np.percentile(valid, 2))
-        vmax = float(np.percentile(valid, 98))
-        if vmin == vmax:
-            vmax = vmin + 1.0
-
-        norm = (log_data - vmin) / (vmax - vmin)
-        rgba = _apply_ylorrd(norm)
+        rgba      = _apply_diverg(diff_pct)
         png_bytes = _png_from_rgba(rgba)
-        b64 = base64.b64encode(png_bytes).decode()
+        b64       = base64.b64encode(png_bytes).decode()
+        return jsonify({'image': b64, 'bounds': geo_bounds}), 200
 
-        return jsonify({
-            'image': b64,
-            'bounds': geo_bounds,
-            'vmin': round(vmin, 2),
-            'vmax': round(vmax, 2),
-        }), 200
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 404
     except Exception as exc:
@@ -2479,6 +2585,14 @@ def main_output_files(scenario_id):
 @app.route('/api/scenarios/<scenario_id>/output-raster/<path:filename>')
 def main_output_raster(scenario_id, filename):
     return frontend_output_raster(scenario_id, filename)
+
+@app.route('/api/scenarios/<scenario_id>/raster-area-stats/<path:filename>')
+def main_raster_area_stats(scenario_id, filename):
+    return frontend_raster_area_stats(scenario_id, filename)
+
+@app.route('/api/raster-diff')
+def main_raster_diff():
+    return frontend_raster_diff()
 
 @app.route('/api/scenarios/<scenario_id>/output-csv-data/<path:filename>')
 def main_output_csv_data(scenario_id, filename):

@@ -305,7 +305,7 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
         <div className="mt-3 space-y-1">
           {runMode && (
             <p className="text-xs text-gray-400">
-              Ran via: <span className="font-mono">{runMode === 'exec' ? 'docker exec glowpa-container' : 'docker run (one-shot)'}</span>
+              Ran via: <span className="font-outfit">{runMode === 'exec' ? 'docker exec glowpa-container' : 'docker run (one-shot)'}</span>
             </p>
           )}
           {runOutput.stdout && (
@@ -327,7 +327,7 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
           <div className="flex items-center justify-between mb-1">
             <p className="text-xs text-gray-400 flex items-center gap-1">
               <ScrollText size={11} />
-              <span className="font-mono">{glowpaLog.path}</span>
+              <span className="font-outfit">{glowpaLog.path}</span>
               {glowpaLog.lines > 0 && (
                 <span className="text-gray-300">({glowpaLog.lines} lines total)</span>
               )}

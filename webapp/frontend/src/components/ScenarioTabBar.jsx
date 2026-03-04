@@ -1,6 +1,6 @@
 import React from 'react';
 import { Grid3x3, X, ChartColumn, Plus } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import useScenarioStore from '../store/scenarioStore';
 
 const toSlug = (name) => encodeURIComponent(name ?? '');
@@ -10,6 +10,7 @@ const DEFAULT_SUBCATEGORY = 'population';
 const ScenarioTabBar = ({ onCreateScenario, caseStudySlug = '', onBeforeTabChange }) => {
   const { tabs, activeTab, setActiveTab, deleteScenario, openMetadataEditor, dirtyScenarioIds } = useScenarioStore();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const handleTabClick = (tabId) => {
     const doNav = () => {
@@ -18,7 +19,14 @@ const ScenarioTabBar = ({ onCreateScenario, caseStudySlug = '', onBeforeTabChang
         navigate(caseStudySlug ? `/scenarios/${caseStudySlug}` : '/scenarios');
       } else {
         const tab = tabs.find((t) => t.id === tabId);
-        if (tab) navigate(`/scenarios/${caseStudySlug ? `${caseStudySlug}/` : ''}${toSlug(tab.name)}/${DEFAULT_CATEGORY}/${DEFAULT_SUBCATEGORY}`);
+        if (tab) {
+          // Preserve current category/subcategory from the URL so switching
+          // between scenario tabs does not reset the active section.
+          const urlParts = location.pathname.split('/').filter(Boolean);
+          const currentCategory    = urlParts[3] ?? DEFAULT_CATEGORY;
+          const currentSubcategory = urlParts[4] ?? DEFAULT_SUBCATEGORY;
+          navigate(`/scenarios/${caseStudySlug ? `${caseStudySlug}/` : ''}${toSlug(tab.name)}/${currentCategory}/${currentSubcategory}`);
+        }
       }
     };
     if (onBeforeTabChange) {

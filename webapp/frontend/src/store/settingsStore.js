@@ -16,10 +16,10 @@ const useSettingsStore = create(
       // ── State ────────────────────────────────────────────────────────────────
 
       /**
-       * When true: show the TIF raster as a continuous heatmap overlay on the map.
-       * When false: show distinct coloured squares (choropleth) based on GeoJSON polygons.
+       * When true: apply nearest-neighbour smoothing to the raster overlay on the map.
+       * When false (default): exact pixel-accurate rendering – no resampling, no averaging.
        */
-      heatmapView: true,
+      heatmapView: false,
 
       // ── Actions ──────────────────────────────────────────────────────────────
 

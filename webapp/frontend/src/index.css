@@ -69,3 +69,42 @@ input[type="range"].accent-thumb::-moz-range-thumb {
   cursor: pointer;
   border: none;
 }
+
+/* ── Print styles ───────────────────────────────────────────────────────────
+   When the user triggers Print (or the print button), hide the app chrome so
+   only the main content area is visible on the printed page.
+   ──────────────────────────────────────────────────────────────────────── */
+@media print {
+  #app-navbar,
+  #app-sidebar {
+    display: none !important;
+  }
+
+  /* Let the main content fill the whole page */
+  .min-h-screen {
+    min-height: unset !important;
+  }
+
+  /* Remove the side-by-side flex layout so content stretches full width */
+  .flex.flex-1.overflow-hidden {
+    display: block !important;
+  }
+
+  /* Make map containers tall enough to print usefully */
+  .leaflet-container {
+    height: 480px !important;
+    break-inside: avoid;
+  }
+
+  /* Show all scrollable panels without clipping */
+  .overflow-y-auto,
+  .overflow-hidden {
+    overflow: visible !important;
+    height: auto !important;
+  }
+
+  /* Avoid breaking cards across pages */
+  .rounded-lg.border {
+    break-inside: avoid;
+  }
+}

@@ -130,9 +130,9 @@ const ScenarioCard = ({ scenario, selectedCaseStudy, analyticsInfo }) => {
             </button>
           </div>
         ) : (
-          <div className="flex items-center gap-2 flex-1">
-            <h4 className={`text-lg font-medium ${
-              scenario.isTemp ? 'text-orange-800' : 'text-wpBlue-800'
+          <div className="flex items-center gap-2 pt-0 pb-2 flex-1">
+            <h4 className={`text-2xl text-wpBlue font-bold font-outfit ${
+              scenario.isTemp ? 'text-orange-800' : 'text-wpBlue'
             }`}>
               {scenario.name}
             </h4>
@@ -183,7 +183,7 @@ const ScenarioCard = ({ scenario, selectedCaseStudy, analyticsInfo }) => {
         <p className={`font-semibold text-xl ${
           scenario.isTemp ? 'text-orange-600' : 'text-wpBlue-600'
         }`}>
-          {scenario.description || scenario.value || 'No description'}
+          {/* {scenario.description || scenario.value || 'No description'} */}
         </p>
         
 
@@ -196,54 +196,43 @@ const ScenarioCard = ({ scenario, selectedCaseStudy, analyticsInfo }) => {
               </span>
             )}
             {scenario.ssp && (
-              <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs">
+              <span className="bg-wpBlue/10 text-wpBlue-900 px-2 py-1 rounded text-xs">
                 {scenario.ssp}
               </span>
             )}
             {scenario.pathogen && (
-              <span className="bg-purple-100 text-purple-800 px-2 py-1 rounded text-xs">
-                {scenario.pathogen}
+              <span className="bg-wpTeal/20 text-wpTeal px-2 py-1 rounded text-xs">
+                {scenario.pathogen.charAt(0).toUpperCase()  + scenario.pathogen.slice(1)}
               </span>
             )}
             {scenario.year && (
-              <span className="bg-green-100 text-green-800 px-2 py-1 rounded text-xs">
+              <span className="bg-wpCypress/30 text-wpCypress px-2 py-1 rounded text-xs">
                 {scenario.year}
               </span>
             )}
           </div>
         )}
         
-        <div className="flex items-center text-sm text-gray-500">
+        
+        <div className="flex gap-2 justify-between items-center pt-4">
+        {/* Model run synopsis — only for persisted scenarios with analytics data */}
+        {analyticsInfo && !scenario.isTemp && (
+          <div className="flex items-start gap-2 flex-wrap mt-1">
+            {analyticsInfo.has_outputs && (
+              <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-wpGreen text-wpBlue font-medium">
+                <CheckCircle size={11} /> Results available
+              </span>
+            ) }
+          </div>
+        )}
+
+        <div className="flex align-items-end text-right text-xs text-gray-500">
           <span>Updated: </span>
           <span className="ml-1">
             {new Date(scenario.updated_at || Date.now()).toLocaleDateString()}
           </span>
         </div>
-
-        {/* Model run synopsis — only for persisted scenarios with analytics data */}
-        {analyticsInfo && !scenario.isTemp && (
-          <div className="flex items-center gap-2 flex-wrap mt-1">
-            {analyticsInfo.has_outputs ? (
-              <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 font-medium">
-                <CheckCircle size={11} /> Results available
-              </span>
-            ) : (
-              <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
-                <Clock size={11} /> No results yet
-              </span>
-            )}
-            {analyticsInfo.readiness?.ready ? (
-              <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-600">
-                <Play size={10} /> Ready to run
-              </span>
-            ) : (
-              <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">
-                <AlertTriangle size={10} /> Not ready
-              </span>
-            )}
-          </div>
-        )}
-
+</div>
         {scenario.isTemp && (
           <div className="mt-3 p-2 bg-yellow-100 border border-yellow-300 rounded text-sm">
             <p className="text-yellow-800">
