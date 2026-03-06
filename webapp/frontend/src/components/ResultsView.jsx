@@ -141,19 +141,19 @@ function fmtPct(v) {
 const LEGEND_GRADIENT = 'linear-gradient(to right,' +
   YLORRD_STOPS.map(([t, [r, g, b]]) => `rgb(${r},${g},${b}) ${(t * 100).toFixed(2)}%`).join(',') + ')';
 
-// Tick labels sit at the exact same normalised positions as the stops they represent.
-// Stop index 0 is unlabelled (position 0 = 10^0, shown implicitly by the white left edge).
-// Odd log₁₀ values 1-17 are labelled; each maps to the stop at t = v/17.
-const LEGEND_TICKS = [1, 3, 5, 7, 9, 11, 13, 15, 17];
-
 function Legend() {
-  const { heatmapView: smoothing } = useSettingsStore();
+  const { heatmapView: smoothing, fixedColorScale, dynamicLogMax } = useSettingsStore();
+  const effectiveLogMax = fixedColorScale ? LOG_MAX : (dynamicLogMax ?? LOG_MAX);
+
   if (!smoothing) {
-    // Discrete swatches — one per stop (skip the white "0" stop, show 10^1 … 10^17)
-    const swatches = YLORRD_STOPS.slice(1).map(([t, [r, g, b]]) => ({
-      color: `rgb(${r},${g},${b})`,
-      label: `${String(Math.round(t * 17))}`,
-    }));
+    // Discrete swatches — one per stop (skip the white "0" stop).
+    // Only show stops whose log₁₀ value falls within the effective range.
+    const swatches = YLORRD_STOPS.slice(1)
+      .filter(([t]) => Math.round(t * LOG_MAX) <= Math.ceil(effectiveLogMax))
+      .map(([t, [r, g, b]]) => ({
+        color: `rgb(${r},${g},${b})`,
+        label: `${String(Math.round(t * LOG_MAX))}`,
+      }));
     return (
       <div className="mt-2">
         <div className="flex items-center flex-wrap">
@@ -172,6 +172,11 @@ function Legend() {
       </div>
     );
   }
+
+  // Continuous gradient: same white→dark-red shape, ticks scaled to effectiveLogMax.
+  const legendTicks = [];
+  for (let v = 1; v <= Math.floor(effectiveLogMax); v += 2) legendTicks.push(v);
+
   return (
     <div className="mt-2">
       <div className="flex items-center gap-2">
@@ -184,19 +189,19 @@ function Legend() {
         <div className="flex-1">
           <div className="h-3 rounded-sm w-full" style={{ background: LEGEND_GRADIENT }}/>
           <div className="relative" style={{ height: 14 }}>
-            {LEGEND_TICKS.map(v => (
+            {legendTicks.map(v => (
               <span
                 key={v}
                 className="absolute text-sm text-gray-500 font-inter leading-none -translate-x-1/2"
-                style={{ left: `${(v / 17) * 100}%`, top: 2 }}
+                style={{ left: `${(v / effectiveLogMax) * 100}%`, top: 2 }}
               >
                 {v}
               </span>
             ))}
           </div>
         </div>
-        {/* Open-ended indicator */}
-        <span className="text-gray-400 text-xs font-bold flex-shrink-0">+</span>
+        {/* Open-ended indicator only shown when fixed scale */}
+        {fixedColorScale && <span className="text-gray-400 text-xs font-bold flex-shrink-0">+</span>}
       </div>
       <p className="text-xs text-gray-400 mt-1">Log₁₀ scale · viral particles / grid cell / year</p>
     </div>
@@ -308,7 +313,7 @@ function AreaDialog({ area, waterStats, landStats, onClose }) {
 
 function GeoTiffLayer({ url }) {
   const map = useMap();
-  const { heatmapView: smoothing } = useSettingsStore();
+  const { heatmapView: smoothing, fixedColorScale, setDynamicLogMax } = useSettingsStore();
 
   useEffect(() => {
     if (!url) return;
@@ -322,6 +327,16 @@ function GeoTiffLayer({ url }) {
         if (cancelled) return;
 
         const nd = gr.noDataValue;
+
+        // Compute the effective log₁₀ max for this raster.
+        // fixedColorScale=true  → always use the global LOG_MAX (17) for cross-dataset comparability.
+        // fixedColorScale=false → derive from the raster's own maximum so the full colour range is used.
+        let logMax = LOG_MAX;
+        if (!fixedColorScale && gr.maxs?.[0] > 0) {
+          logMax = Math.log10(gr.maxs[0]);
+        }
+        // Publish the effective max to the store so <Legend> can display matching tick marks.
+        setDynamicLogMax(fixedColorScale ? null : logMax);
 
         // Resolution controls the number of pixels per tile canvas.
         // Smoothing on  → low resolution (64px) tile is CSS-scaled up to 256px with bilinear interpolation.
@@ -337,7 +352,7 @@ function GeoTiffLayer({ url }) {
             const v = values[0];
             if (v == null || !isFinite(v) || v <= 0 || v === nd) return null;
             // When smoothing is off, snap to the nearest stop for distinct categorical colours.
-            return smoothing ? emissionColor(v) : emissionColorQuantized(v);
+            return smoothing ? emissionColor(v, LOG_MIN, logMax) : emissionColorQuantized(v, LOG_MIN, logMax);
           },
         });
 
@@ -357,7 +372,7 @@ function GeoTiffLayer({ url }) {
       cancelled = true;
       if (layer) map.removeLayer(layer);
     };
-  }, [url, map, smoothing]);
+  }, [url, map, smoothing, fixedColorScale]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return null;
 }
@@ -743,6 +758,27 @@ function StatsSection({ primaryData, secondaryData, isComparison, selectedAreas,
     [secSrc, isComparison]
   );
 
+  // Grand total: sum ALL value columns (humans + land + wwtp + …) across selected areas.
+  // iso_totals from the backend already holds per-area row-sum of all value columns.
+  const priEmIsoTotals = emissionType === 'water'
+    ? primaryData?.waterEmissions?.iso_totals
+    : primaryData?.landEmissions?.iso_totals;
+  const secEmIsoTotals = emissionType === 'water'
+    ? secondaryData?.waterEmissions?.iso_totals
+    : secondaryData?.landEmissions?.iso_totals;
+
+  const priGrandTotal = useMemo(() => {
+    if (!priEmIsoTotals) return humTotal;
+    const keys = selectedAreas ? [...selectedAreas] : Object.keys(priEmIsoTotals);
+    return keys.reduce((sum, iso) => sum + (priEmIsoTotals[iso] || 0), 0);
+  }, [priEmIsoTotals, selectedAreas, humTotal]);
+
+  const secGrandTotal = useMemo(() => {
+    if (!isComparison || !secEmIsoTotals) return secHumTotal;
+    const keys = selectedAreas ? [...selectedAreas] : Object.keys(secEmIsoTotals);
+    return keys.reduce((sum, iso) => sum + (secEmIsoTotals[iso] || 0), 0);
+  }, [secEmIsoTotals, selectedAreas, isComparison, secHumTotal]);
+
   if (!priSrcData) return null;
 
   const topEntry    = priSrcEntries[0] || null;
@@ -752,21 +788,21 @@ function StatsSection({ primaryData, secondaryData, isComparison, selectedAreas,
     <div className="space-y-4 pt-6">
       {/* Human emissions: Total | By Toilet Category | Contributing Technologies */}
       {emissionType === 'water' && (
-        <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide">Humans</p>
+        <p className="text-md font-semibold text-wpBlue uppercase font-outfit tracking-wide">Humans</p>
       )}
       <div className="flex gap-4 min-h-0">
 
         {/* Column 1: Total */}
         {(() => {
-          const pct = isComparison && humTotal > 0 ? ((secHumTotal - humTotal) / humTotal) * 100 : null;
+          const pct = isComparison && priGrandTotal > 0 ? ((secGrandTotal - priGrandTotal) / priGrandTotal) * 100 : null;
           return (
             <div className="flex-shrink-0 w-28">
               <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-1">Total</p>
               <p className={`text-xl font-bold text-wpBlue tabular-nums leading-tight ${isComparison ? 'opacity-40' : ''}`}>
-                {formatScientific(humTotal)}
+                {formatScientific(priGrandTotal)}
               </p>
               {isComparison && (
-                <p className="text-xl font-bold tabular-nums">{formatScientific(secHumTotal)}</p>
+                <p className="text-xl font-bold tabular-nums">{formatScientific(secGrandTotal)}</p>
               )}
               {pct !== null && (
                 <span className={`flex items-center gap-0.5 text-sm font-semibold mt-0.5 ${pct > 0 ? 'text-red-600' : pct < 0 ? 'text-green-600' : 'text-gray-500'}`}>
@@ -865,14 +901,14 @@ function StatsSection({ primaryData, secondaryData, isComparison, selectedAreas,
         </div>
       </div>
 
-      {/* Land + Wastewater Treatment Plants – side by side */}
+      {/* Land + Wastewater Treatment Plants */}
       {emissionType === 'water' && (priLand > 0 || priWwtp > 0) && (
         <div className="grid grid-cols-2 gap-4 pt-3 border-t border-gray-100">
           {priLand > 0 && (() => {
             const pct = isComparison && priLand > 0 ? ((secLand - priLand) / priLand) * 100 : null;
             return (
               <div className="space-y-1">
-                <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide">Land</p>
+                <p className="text-md font-semibold text-wpBlue font-outift uppercase tracking-wide">Land</p>
                 <div className="flex items-end gap-2 flex-wrap">
                   <span className={`text-lg font-bold tabular-nums ${isComparison ? 'opacity-40' : ''}`}>
                     {formatScientific(priLand)}
@@ -892,7 +928,7 @@ function StatsSection({ primaryData, secondaryData, isComparison, selectedAreas,
             const pct = isComparison && priWwtp > 0 ? ((secWwtp - priWwtp) / priWwtp) * 100 : null;
             return (
               <div className="space-y-1">
-                <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide">Wastewater Treatment Plants</p>
+                <p className="text-md font-semibold text-wpBlue font-outfit uppercase tracking-wide">Wastewater Treatment Plants</p>
                 <div className="flex items-end gap-2 flex-wrap">
                   <span className={`text-lg font-bold tabular-nums ${isComparison ? 'opacity-40' : ''}`}>
                     {formatScientific(priWwtp)}
@@ -1267,8 +1303,10 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
           {(areaOptions.length > 0 || primaryData) && (
             <div className="bg-white rounded-lg border border-gray-200 px-4 py-4 space-y-4">
               {primaryScenario?.pathogen && (
-                <p className="text-md font-semibold text-wpBlue uppercase tracking-wide">
+                <p className="text-md font-semibold text-wpBlue uppercase tracking-wide mr-6">
                   {primaryScenario.pathogen.charAt(0).toUpperCase() + primaryScenario.pathogen.slice(1)} Emissions by Source
+                  {isComparison && <span className="ml-1 text-xs font-normal text-wpTeal bg-wpTeal/10 px-1.5 py-0.5 rounded">comparison</span>}
+
                 </p>
               )}
               {areaOptions.length > 0 && (

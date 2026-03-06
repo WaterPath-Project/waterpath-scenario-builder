@@ -1,5 +1,5 @@
-import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import { RotateCcw, Save, ChevronDown, ChevronRight, ChevronUp, AlertTriangle, TableProperties } from 'lucide-react';
+﻿import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { RotateCcw, Save, ChevronDown, ChevronRight, ChevronUp, AlertTriangle, TableProperties, Layers } from 'lucide-react';
 import axios from 'axios';
 import DataGridView from './DataGridView';
 
@@ -162,7 +162,7 @@ const LadderBar = ({ ladder }) => {
   ];
 
   return (
-    <div className="mb-4 py-12">
+    <div className="mb-2">
       <div className="flex h-14 rounded-xl overflow-hidden shadow-sm">
         {segments.map(({ key, label, value, color, darkText }) => {
           const pct = Math.max(0, (value / total) * 100);
@@ -196,6 +196,9 @@ const LadderBar = ({ ladder }) => {
           );
         })}
       </div>
+      <p className="text-[10px] text-gray-400 italic mt-1.5 pb-6">
+        The sanitation ladder (Safely Managed / Basic / Unimproved / Open Defecation) is an approximation of UNICEF/WHO JMP categories. Note: the ‘Limited’ category is not represented in this model, although included in the technologies listed below.
+      </p>
     </div>
   );
 };
@@ -417,7 +420,7 @@ let _persistedMulti   = false;
 
 // ─── SanitationLadderInner ────────────────────────────────────────────────────
 
-const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChange }) => {
+const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChange, onSaved }) => {
   // Default to all areas selected; restore persisted selection if available (clamped to row count).
   const [selectedIndices, setSelectedIndices] = useState(() => {
     if (_persistedIndices && _persistedIndices.size > 0) {
@@ -441,6 +444,7 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
   const [isSaving, setIsSaving] = useState(false);
   const [activeSfxTab, setActiveSfxTab] = useState('_urb');
   const [showFullData, setShowFullData] = useState(false);
+  const [showJMPLadder, setShowJMPLadder] = useState(false);
 
   // Which suffixes have unsaved changes (for orange dot on tab)
   const dirtySuffixes = useMemo(() => {
@@ -564,12 +568,13 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
       savedRef.current = localValues.map((v) => ({ ...v }));
       setIsDirty(false);
       onDirtyChange?.(false);
+      onSaved?.();
     } catch (e) {
       alert('Failed to save: ' + (e.response?.data?.error || e.message));
     } finally {
       setIsSaving(false);
     }
-  }, [canSave, localValues, initialRows, scenario.id, onDirtyChange]);
+  }, [canSave, localValues, initialRows, scenario.id, onDirtyChange, onSaved]);
 
   const selectedArr  = useMemo(() => Array.from(selectedIndices).sort((a, b) => a - b), [selectedIndices]);
   const isAllSelected = selectedArr.length === initialRows.length;
@@ -796,6 +801,18 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
                   </h4>
                 </div>
                 <div className="flex items-center gap-3 flex-shrink-0">
+                  <button
+                    onClick={() => setShowJMPLadder((v) => !v)}
+                    title="Toggle sanitation ladder view"
+                    className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
+                      showJMPLadder
+                        ? 'bg-wpBlue text-white border-wpBlue'
+                        : 'text-gray-500 border-gray-300 hover:bg-gray-100'
+                    }`}
+                  >
+                    <Layers size={11} />
+                    <span>View Sanitation Ladder</span>
+                  </button>
                   <div className="flex gap-0.5 p-0.5 bg-gray-200 rounded-lg">
                     {SUFFIXES.map((s) => {
                       const isDisabled = !activeSfx.includes(s);
@@ -833,8 +850,8 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
               </div>
 
               <div className="px-4 py-4 space-y-3">
-                {/* Stacked bar */}
-                <LadderBar ladder={ladder} />
+
+                {showJMPLadder && <LadderBar ladder={ladder} />}
 
                 {/* ── 1. Improved Facilities (Safely Managed + Basic) ──────── */}
                 <CollapsibleSection
@@ -845,20 +862,29 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
                   hasError={!techOk}
                   badgeContent={
                     <div className="flex items-center gap-2">
-                      <span className="text-xs text-white/70 hidden sm:inline">SM:</span>
-                      <span className="text-xs font-outfit font-bold text-white">
-                        {(ladder.safelyManaged * 100).toFixed(1)}%
-                      </span>
-                      <span className="text-white/40 text-xs">|</span>
+                      {showJMPLadder ? (
+                        <>
+                          <span className="text-xs text-white/70 hidden sm:inline">SM:</span>
+                          <span className="text-xs font-outfit font-bold text-white">
+                            {(ladder.safelyManaged * 100).toFixed(1)}%
+                          </span>
+                          <span className="text-white/40 text-xs">|</span>
                       <span className="text-xs text-white/70 hidden sm:inline">Basic:</span>
                       <span className="text-xs font-outfit font-bold text-white">
                         {(ladder.basic * 100).toFixed(1)}%
                       </span>
+                        </>
+                      ) : (
+                        <span className="text-xs font-outfit font-bold text-white">
+                          {(ladder.improvedTotal * 100).toFixed(1)}%
+                        </span>
+                      )}
                     </div>
                   }
                 >
                   <div className="px-4 py-3" style={{ backgroundColor: BG.improved }}>
-                    {/* SM / Basic summary cards */}
+                    {/* SM / Basic summary cards — shown only when JMP Ladder is enabled */}
+                    {showJMPLadder && (
                     <div className="flex gap-3 mb-3">
                       <div className="flex-1 rounded px-3 py-1.5 text-center"
                         style={{ backgroundColor: COLORS.safelyManaged + '20', border: `1px solid ${COLORS.safelyManaged}44` }}>
@@ -881,6 +907,7 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
                         <div className="text-[10px] text-gray-400 italic">improved − safely managed</div>
                       </div>
                     </div>
+                    )}
 
                     {/* Two-column layout: left = mix + management, right = treatment */}
                     <SyncedTwoColumns
@@ -1077,7 +1104,7 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
 
 // ─── Outer wrapper ────────────────────────────────────────────────────────────
 
-const SanitationLadderPanel = ({ scenario, onDirtyChange }) => {
+const SanitationLadderPanel = ({ scenario, onDirtyChange, onSaved }) => {
   const [fetchState, setFetchState] = useState({ status: 'loading', rows: [], fieldnames: [] });
 
   useEffect(() => {
@@ -1136,6 +1163,7 @@ const SanitationLadderPanel = ({ scenario, onDirtyChange }) => {
       initialRows={fetchState.rows}
       fieldnames={fetchState.fieldnames}
       onDirtyChange={onDirtyChange}
+      onSaved={onSaved}
     />
   );
 };

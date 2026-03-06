@@ -9,7 +9,8 @@ import {
   Save, 
   Edit3,
   X,
-  Plus
+  Plus,
+  AlertTriangle
 } from 'lucide-react';
 
 const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
@@ -250,6 +251,16 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
           </DialogDescription>
         </DialogHeader>
         
+        {/* Admin level warning */}
+        {displayData.admin_level > 3 && (
+          <div className="flex items-start gap-2 px-4 py-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+            <AlertTriangle className="h-4 w-4 text-amber-500 flex-shrink-0 mt-0.5" />
+            <span>
+              This case study uses admin level {displayData.admin_level} boundaries. Areas smaller than 1&nbsp;km² may result in failure to calculate emissions.
+            </span>
+          </div>
+        )}
+
         <div className="space-y-6">
           {/* Case Study Metadata */}
           <div className="bg-blue-50 p-4 rounded-lg">

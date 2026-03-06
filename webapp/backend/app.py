@@ -909,8 +909,9 @@ def _execute_model_run(run_id, params):
                                or 'Finished GloWPa simulation' in stderr)
         model_runs[run_id]['simulation_complete'] = simulation_complete
         model_runs[run_id]['status'] = 'success' if (exit_code == 0 and simulation_complete) else 'error'
-        # Clean up RDS files after run
-        _cleanup_rds_files(run_id)
+        # Clean up RDS files after run (unless debug mode is enabled)
+        if not model_runs[run_id].get('debug_mode', False):
+            _cleanup_rds_files(run_id)
     except docker.errors.ContainerError as exc:
         model_runs[run_id]['status'] = 'error'
         model_runs[run_id]['stderr'] = (exc.stderr or b'').decode('utf-8', errors='replace')
@@ -1269,6 +1270,11 @@ def frontend_get_scenario_isodata(scenario_id):
 def frontend_update_scenario_isodata(scenario_id):
     """Patch isodata.csv for a scenario (frontend endpoint)"""
     return update_scenario_isodata(scenario_id)
+
+@frontend_app.route('/api/scenarios/<scenario_id>/summary', methods=['GET'])
+def frontend_get_scenario_summary(scenario_id):
+    """Return summary.json contents for a scenario (frontend endpoint)"""
+    return get_scenario_summary(scenario_id)
 
 
 # ── Wastewater Treatment helpers ──────────────────────────────────────────────
@@ -1733,6 +1739,23 @@ def frontend_get_case_study_datapackage(case_study_id):
         if os.path.exists(datapackage_path):
             with open(datapackage_path, 'r', encoding='utf-8') as f:
                 datapackage = json.load(f)
+            # Detect admin level from baseline geodata shapefile (augment response, not stored)
+            try:
+                geodata_dir = os.path.join(case_study['folder_path'], 'input', 'baseline', 'geodata')
+                if os.path.isdir(geodata_dir):
+                    shp_files = [f for f in os.listdir(geodata_dir) if f.lower().endswith('.shp')]
+                    if shp_files:
+                        import shapefile as sf_lib
+                        sf_obj = sf_lib.Reader(os.path.join(geodata_dir, shp_files[0]))
+                        fields = [f[0] for f in sf_obj.fields[1:]]
+                        max_level = 0
+                        for field in fields:
+                            if field.upper().startswith('GID_') and field[4:].isdigit():
+                                max_level = max(max_level, int(field[4:]))
+                        if max_level > 0:
+                            datapackage['admin_level'] = max_level
+            except Exception:
+                pass
             return jsonify(datapackage)
         else:
             print(f"[DEBUG] Datapackage file not found at: {datapackage_path}")
@@ -2018,6 +2041,70 @@ def get_scenario_isodata(scenario_id):
 
     except Exception as e:
         return jsonify({'error': f'Failed to read isodata: {str(e)}'}), 500
+
+
+@app.route('/api/scenarios/<scenario_id>/summary', methods=['GET'])
+def get_scenario_summary(scenario_id):
+    """Return the contents of summary.json for a scenario (if it exists).
+
+    summary.json is written by the WaterPath projection API into each
+    category sub-folder inside input/<scenario_folder>/.  We look in all
+    known category sub-folders and merge the results so the frontend can
+    display per-schema assumptions.
+
+    Returns a dict keyed by schema name (e.g. "population") whose values
+    are the parsed JSON objects, or an empty dict {} when no summary exists.
+    """
+    try:
+        target_case_study = None
+        target_folder = None
+        for case_study in case_studies:
+            cs_path = case_study.get('folder_path')
+            if not cs_path:
+                continue
+            meta_path = os.path.join(cs_path, 'config', 'scenario_metadata.csv')
+            if not os.path.exists(meta_path):
+                continue
+            with open(meta_path, 'r', newline='', encoding='utf-8') as f:
+                for row in csv.DictReader(f):
+                    if row['scenario_id'] == scenario_id:
+                        target_case_study = case_study
+                        target_folder = row.get('folder', 'baseline')
+                        break
+            if target_case_study:
+                break
+
+        if not target_case_study:
+            return jsonify({'error': 'Scenario not found'}), 404
+
+        cs_path = target_case_study['folder_path']
+        scenario_input_path = os.path.join(cs_path, 'input', target_folder)
+
+        # summary.json is written by the WaterPath projection API into each
+        # category sub-folder.  It contains an array of schema objects.
+        summaries = []
+        for cat_folder in {'human_emissions'}:
+            summary_path = os.path.join(scenario_input_path, cat_folder, 'summary.json')
+            if os.path.exists(summary_path):
+                try:
+                    with open(summary_path, 'r', encoding='utf-8') as sf:
+                        data = json.load(sf)
+                    if isinstance(data, list):
+                        summaries.extend(data)
+                    elif isinstance(data, dict):
+                        # New format: { "schemas": [...] } — unwrap the inner list
+                        inner = data.get('schemas')
+                        if isinstance(inner, list):
+                            summaries.extend(inner)
+                        else:
+                            summaries.append(data)
+                except Exception:
+                    pass
+
+        return jsonify(summaries), 200
+
+    except Exception as e:
+        return jsonify({'error': f'Failed to read summary: {str(e)}'}), 500
 
 
 @app.route('/api/scenarios/<scenario_id>/isodata', methods=['PUT'])
@@ -2648,6 +2735,9 @@ def frontend_run_model(scenario_id):
     (one-shot container with isolated volume mounts) automatically.
     """
     try:
+        body = request.get_json(silent=True) or {}
+        debug_mode = bool(body.get('debug_mode', False))
+
         cs, folder = _locate_scenario(scenario_id)
         cs_path = cs['folder_path']
         cs_folder_name = cs.get('folder_name', '')
@@ -2676,6 +2766,7 @@ def frontend_run_model(scenario_id):
             'scenario_id': scenario_id,
             'cs_path': cs_path,
             'folder': folder,
+            'debug_mode': debug_mode,
             'started_at': datetime.now().isoformat(),
             'finished_at': None,
             'stdout': '',

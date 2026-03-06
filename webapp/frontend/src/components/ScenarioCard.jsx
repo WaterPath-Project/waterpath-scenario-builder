@@ -180,11 +180,11 @@ const ScenarioCard = ({ scenario, selectedCaseStudy, analyticsInfo }) => {
 
       {/* Scenario details */}
       <div className="space-y-2">
-        <p className={`font-semibold text-xl ${
-          scenario.isTemp ? 'text-orange-600' : 'text-wpBlue-600'
-        }`}>
-          {/* {scenario.description || scenario.value || 'No description'} */}
-        </p>
+        {(scenario.notes || scenario.description) && (
+          <p className="text-sm text-gray-600 mt-1">
+            {scenario.notes || scenario.description}
+          </p>
+        )}
         
 
         {/* Show SSP, Pathogen and Year if available */}
@@ -219,7 +219,7 @@ const ScenarioCard = ({ scenario, selectedCaseStudy, analyticsInfo }) => {
         {analyticsInfo && !scenario.isTemp && (
           <div className="flex items-start gap-2 flex-wrap mt-1">
             {analyticsInfo.has_outputs && (
-              <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-wpGreen text-wpBlue font-medium">
+              <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-wpGreen/20 text-wpBlue font-medium">
                 <CheckCircle size={11} /> Results available
               </span>
             ) }

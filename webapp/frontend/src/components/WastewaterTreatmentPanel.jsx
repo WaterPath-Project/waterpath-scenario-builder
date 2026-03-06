@@ -140,7 +140,7 @@ const FractionSlider = ({ label, value, onChange, color }) => {
 
 // ─── Inner panel (receives already-loaded data) ───────────────────────────────
 
-const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions, isoRows = [], isoFieldnames = [], onDirtyChange }) => {
+const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions, isoRows = [], isoFieldnames = [], onDirtyChange, onSaved }) => {
   const { pathogens } = useConfigStore();
 
   // Derive the isodata column for the scenario's selected pathogen type.
@@ -289,6 +289,7 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
       savedFractionsRef.current = fractions;
       setIsDirty(false);
       onDirtyChange?.(false);
+      onSaved?.();
     } catch (e) {
       alert('Failed to save: ' + (e.response?.data?.error || e.message));
     } finally {
@@ -623,7 +624,7 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
 
 // ─── Outer wrapper: fetches data then renders inner panel ─────────────────────
 
-const WastewaterTreatmentPanel = ({ scenario, onDirtyChange }) => {
+const WastewaterTreatmentPanel = ({ scenario, onDirtyChange, onSaved }) => {
   const [state, setState] = useState({ status: 'loading' });
 
   useEffect(() => {
@@ -710,6 +711,7 @@ const WastewaterTreatmentPanel = ({ scenario, onDirtyChange }) => {
       isoRows={state.isoRows ?? []}
       isoFieldnames={state.isoFieldnames ?? []}
       onDirtyChange={onDirtyChange}
+      onSaved={onSaved}
     />
   );
 };

@@ -1,5 +1,5 @@
 ﻿import React, { useMemo, useState, useCallback, useRef, useEffect } from 'react';
-import { Users, ChevronDown, ChevronUp, TableProperties, Plus, Minus, RotateCcw, Save } from 'lucide-react';
+import { Users, ChevronDown, ChevronUp, TableProperties, Info, Plus, Minus, RotateCcw, Save } from 'lucide-react';
 import axios from 'axios';
 import DataGridView from './DataGridView';
 
@@ -88,8 +88,9 @@ const Stepper = ({ value, onChange, step, min, max, format }) => {
 const RAW_COLS = ['subarea', 'population', 'fraction_urban_pop', 'fraction_pop_under5', 'hdi'];
 
 // ─── Inner panel: receives already-parsed rows, manages editing state ────────
-const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange }) => {
+const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange, onSaved, assumptions }) => {
   const [showFullData, setShowFullData] = useState(false);
+  const [showAssumptions, setShowAssumptions] = useState(true);
 
   const parseRows = (rows) =>
     rows.map((r) => ({
@@ -174,12 +175,13 @@ const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange
       setChangedRows(new Set());
       setIsDirty(false);
       onDirtyChange?.(false);
+      onSaved?.();
     } catch (e) {
       alert('Failed to save: ' + (e.response?.data?.error || e.message));
     } finally {
       setIsSaving(false);
     }
-  }, [localRows, scenario.id, onDirtyChange]);
+  }, [localRows, scenario.id, onDirtyChange, onSaved]);
 
   const markDirty = useCallback((next) => {
     const newChanged = new Set();
@@ -355,6 +357,33 @@ const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange
         </div>
       </div>
 
+      {assumptions && assumptions.length > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+          <button
+            onClick={() => setShowAssumptions((v) => !v)}
+            className="w-full flex items-center justify-between px-5 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <Info size={16} className="text-gray-400" />
+              <span>Assumptions ({assumptions.length})</span>
+            </div>
+            {showAssumptions ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+          </button>
+          {showAssumptions && (
+            <div className="border-t border-gray-100 px-5 py-3">
+              <ul className="space-y-2">
+                {assumptions.map(({ key, value }) => (
+                  <li key={key} className="text-sm text-gray-600 flex items-start gap-2">
+                    <span className="mt-1 w-1.5 h-1.5 rounded-full bg-wpBlue/40 flex-shrink-0" />
+                    <span>{value}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
         <button
           onClick={() => setShowFullData((v) => !v)}
@@ -379,7 +408,7 @@ const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange
 // ─── Outer wrapper: fetches isodata from backend, then renders inner panel ───
 // Note: this component is always mounted with key={scenario.id} by its parent,
 // so it reliably remounts (and re-fetches) when the selected scenario changes.
-const PopulationPanel = ({ scenario, onDirtyChange }) => {
+const PopulationPanel = ({ scenario, onDirtyChange, onSaved, assumptions }) => {
   const [fetchState, setFetchState] = useState({ status: 'loading', rows: [], fieldnames: [] });
 
   useEffect(() => {
@@ -444,6 +473,8 @@ const PopulationPanel = ({ scenario, onDirtyChange }) => {
       initialRows={fetchState.rows}
       fieldnames={fetchState.fieldnames}
       onDirtyChange={onDirtyChange}
+      onSaved={onSaved}
+      assumptions={assumptions}
     />
   );
 };

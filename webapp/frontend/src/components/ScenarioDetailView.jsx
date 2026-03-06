@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Edit3, Trash2, BarChart3, Play, RefreshCw, Loader2, ScrollText, BarChart2, CheckCircle, AlertTriangle } from 'lucide-react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import useScenarioStore from '../store/scenarioStore';
+import useSettingsStore from '../store/settingsStore';
 import DataGridView from './DataGridView';
 import ScenarioMetadataDialog from './ScenarioMetadataDialog';
 import PopulationPanel from './PopulationPanel';
@@ -134,25 +135,58 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
   const validSub = (catId, subId) => CATEGORIES.find((c) => c.id === catId && isCategoryEnabled(c.id))?.subcategories.find((s) => s.id === subId);
 
   const [isMetadataDialogOpen, setIsMetadataDialogOpen] = useState(false);
+
+  // ── Projection summary / assumptions ──────────────────────────────────────
+  const [summaryData, setSummaryData] = useState(null); // { [schema]: { assumptions, ... } }
+
+  useEffect(() => {
+    if (!scenarioId || scenario?.isTemp) return;
+    axios.get(`/api/scenarios/${scenarioId}/summary`)
+      .then((res) => setSummaryData(res.data))
+      .catch(() => setSummaryData(null));
+  }, [scenarioId, scenario?.isTemp]);
+
   // Default to first *enabled* category
   const firstEnabled = CATEGORIES.find(c => isCategoryEnabled(c.id));
   const [activeCategory,    setActiveCategory]    = useState(() => validCat(initialCategory)                      ? initialCategory    : firstEnabled?.id);
   const [activeSubcategory, setActiveSubcategory] = useState(() => validSub(initialCategory, initialSubcategory)  ? initialSubcategory : firstEnabled?.subcategories[0]?.id);
+
+  // Derive assumption entries for the active category (passed to relevant panels)
+  const assumptionEntries = useMemo(() => {
+    const CATEGORY_SCHEMA_MAP = { 'human-emissions': ['population'] };
+    const schemas = CATEGORY_SCHEMA_MAP[activeCategory] ?? [];
+    return schemas.flatMap((schema) => {
+      // summaryData is an array of schema objects [{schema, assumptions, ...}, ...]
+      const s = Array.isArray(summaryData)
+        ? summaryData.find(item => item.schema === schema)
+        : summaryData?.[schema];
+      if (!s?.assumptions) return [];
+      const raw = s.assumptions;
+      if (Array.isArray(raw)) {
+        return raw
+          .filter(item => typeof item === 'object' && item !== null && item.assumption)
+          .map(item => ({ key: item.id || String(raw.indexOf(item) + 1), value: item.assumption }));
+      }
+      return Object.entries(raw).filter(([, v]) => v).map(([k, v]) => ({ key: k, value: String(v) }));
+    });
+  }, [summaryData, activeCategory]);
 
   // Track which subcategories have unsaved changes
   const [dirtySubcategories, setDirtySubcategories] = useState({});
 
   const handleSubcatDirtyChange = useCallback((subcategoryId, isDirty) => {
     setDirtySubcategories((prev) => {
-      const wasDirty = prev[subcategoryId];
       const next = { ...prev, [subcategoryId]: isDirty };
       const hasAnyDirty = Object.values(next).some(Boolean);
       setScenarioDirty(scenarioId, hasAnyDirty);
-      // Transitioning dirty→clean means a save just happened
-      if (wasDirty && !isDirty) setNeedsRerun(scenarioId, true);
       return next;
     });
-  }, [scenarioId, setScenarioDirty, setNeedsRerun]);
+  }, [scenarioId, setScenarioDirty]);
+
+  // Called by panels only when a save actually reached the server (not on Reset).
+  const handleSubcatSaved = useCallback(() => {
+    setNeedsRerun(scenarioId, true);
+  }, [scenarioId, setNeedsRerun]);
 
   const isCategoryDirty = (categoryId) => {
     const cat = availableCategories.find((c) => c.id === categoryId);
@@ -222,7 +256,8 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
     setShowOutput(false);
     setShowLog(false);
     try {
-      const res = await axios.post(`/api/scenarios/${scenarioId}/run-model`);
+      const { debugMode } = useSettingsStore.getState();
+      const res = await axios.post(`/api/scenarios/${scenarioId}/run-model`, { debug_mode: debugMode });
       setRunId(res.data.run_id);
       setRunMode(res.data.mode);
     } catch (err) {
@@ -529,6 +564,7 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
               </button>
             ))}
           </div>
+
         </div>
 
         {/* Right Content Area */}
@@ -542,18 +578,22 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
               key={scenario.id}
               scenario={scenario}
               onDirtyChange={(d) => handleSubcatDirtyChange('population', d)}
+              onSaved={handleSubcatSaved}
+              assumptions={assumptionEntries}
             />
           ) : activeSubcategory === 'sanitation' ? (
             <SanitationLadderPanel
               key={scenario.id}
               scenario={scenario}
               onDirtyChange={(d) => handleSubcatDirtyChange('sanitation', d)}
+              onSaved={handleSubcatSaved}
             />
           ) : activeSubcategory === 'wastewater-treatment' ? (
             <WastewaterTreatmentPanel
               key={scenario.id}
               scenario={scenario}
               onDirtyChange={(d) => handleSubcatDirtyChange('wastewater-treatment', d)}
+              onSaved={handleSubcatSaved}
             />
           ) : (
             <div className="bg-white rounded-lg border border-gray-200 p-6">

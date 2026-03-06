@@ -166,7 +166,7 @@ function Dashboard() {
     setScenarioDirty,
   } = useScenarioStore();
 
-  const { heatmapView, setHeatmapView } = useSettingsStore();
+  const { heatmapView, setHeatmapView, fixedColorScale, setFixedColorScale, debugMode, setDebugMode } = useSettingsStore();
 
   // Effect to sync activeSection with URL changes
   useEffect(() => {
@@ -179,6 +179,7 @@ function Dashboard() {
     const parts = location.pathname.split('/').filter(Boolean);
     if (parts[0] !== 'scenarios') return;
     const csSlug = parts[1];
+    const scenSlug = parts[2]; // present when inside a specific scenario
 
     if (csSlug && caseStudies.length) {
       const matchedCs = caseStudies.find(
@@ -194,6 +195,10 @@ function Dashboard() {
         // Propagate to model and analytics screens
         setAnalyticsCaseStudy(matchedCs);
         setResultsState(prev => ({ ...prev, caseStudyId: matchedCs.id }));
+      } else if (matchedCs && !scenSlug) {
+        // Same case study, but user navigated back to the root page – re-fetch
+        // to pick up any server-side changes (e.g. newly created scenarios).
+        fetchScenarios(matchedCs.id);
       }
     } else if (!csSlug) {
       if (selectedCaseStudyRef.current) {
@@ -220,19 +225,6 @@ function Dashboard() {
     if (matched && activeTab !== matched.id) setActiveTab(matched.id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname, scenarios, tempScenarios]);
-
-  // Effect 3: auto-navigate to single scenario on /scenarios
-  useEffect(() => {
-    const parts = location.pathname.split('/').filter(Boolean);
-    if (parts[0] !== 'scenarios') return;
-    if (parts[2]) return; // already on a specific scenario
-    if (!selectedCaseStudy) return;
-    const allS = getAllScenarios(selectedCaseStudy.id);
-    if (allS.length === 1) {
-      navigate(`/scenarios/${toCsSlug(selectedCaseStudy)}/${toScenSlug(allS[0].name)}`);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname, scenarios, tempScenarios, selectedCaseStudy]);
 
   // Unsaved-changes guard
   // pendingNavAction stored as { fn } to prevent React treating it as a state updater
@@ -598,7 +590,7 @@ function Dashboard() {
       id: 'scenarios', 
       label: 'Scenario editor', 
       icon: ChartColumn, 
-      description: 'Manage scenario data' 
+      description: 'Manage and run scenarios' 
     },
     { 
       id: 'analytics', 
@@ -967,7 +959,7 @@ function Dashboard() {
                   <div>
                     <p className="text-sm font-medium text-gray-800">Enable raster smoothing</p>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      When off (default), each grid cell is rendered as a crisp pixel block — no resampling or interpolation. When on, the browser applies bilinear smoothing between cells (nearest-neighbour-style).
+                      When on (default), the browser applies bilinear smoothing between cells, which also enables the continuous colour gradient on the legend and map. When off, each grid cell is rendered as a crisp pixel block with a discrete categorical colour palette.
                     </p>
                   </div>
                   <button
@@ -982,6 +974,56 @@ function Dashboard() {
                     <span
                       className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
                         heatmapView ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
+                <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
+                  <div>
+                    <p className="text-sm font-medium text-gray-800">Consistent colour scale across case studies</p>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      When on (default), the map colour scale maximum is fixed at log₁₀ = 17 so that maps from different case studies are directly comparable. When off, the maximum is derived from the loaded raster file, using the full colour range for each map individually.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setFixedColorScale(!fixedColorScale)}
+                    className={`ml-6 relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-wpBlue focus:ring-offset-2 ${
+                      fixedColorScale ? 'bg-wpBlue' : 'bg-gray-300'
+                    }`}
+                    role="switch"
+                    aria-checked={fixedColorScale}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                        fixedColorScale ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+            </DashboardCard>
+            <DashboardCard title="Developer">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
+                  <div>
+                    <p className="text-sm font-medium text-gray-800">Debug mode — keep generated RDS files</p>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      When on, the <code className="font-mono text-xs">.RDS</code> files generated during a model run are kept on disk instead of being automatically deleted. Useful for inspecting or reusing converted data.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setDebugMode(!debugMode)}
+                    className={`ml-6 relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-wpBlue focus:ring-offset-2 ${
+                      debugMode ? 'bg-wpBlue' : 'bg-gray-300'
+                    }`}
+                    role="switch"
+                    aria-checked={debugMode}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                        debugMode ? 'translate-x-6' : 'translate-x-1'
                       }`}
                     />
                   </button>
