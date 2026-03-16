@@ -899,6 +899,13 @@ function Dashboard() {
             {scenariosHeader}
             <div className="flex-1 overflow-auto">
               <DashboardCard>
+            {selectedCaseStudy && (
+              <div className="mb-12 px-4 py-3 rounded-xl bg-wpBrown/40 text-xs text-wpBlue space-y-1.5">
+                <p><span className="font-semibold">Scenarios</span> represent a specific combination of population, sanitation, and livestock assumptions for a given year. Each scenario produces its own model output that can be compared in Analytics.</p>
+                <p><span className="font-semibold">Baseline</span> is the reference scenario that reflects current conditions. All other scenarios (e.g., SSP projections) are compared against it.</p>
+                <p><span className="font-semibold">Pathogen</span> must be set on every scenario before running the model. It determines which excretion and survival parameters are used (e.g., Rotavirus, Cryptosporidium).</p>
+              </div>
+            )}
                 {!selectedCaseStudy ? (
                   <div className="text-center py-12 text-gray-500">
                     <FolderOpen className="mx-auto mb-4 text-gray-300" size={48} />
@@ -957,9 +964,9 @@ function Dashboard() {
               <div className="space-y-4">
                 <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
                   <div>
-                    <p className="text-sm font-medium text-gray-800">Enable raster smoothing</p>
+                    <p className="text-sm font-medium text-gray-800">Continuous colour gradient</p>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      When on (default), the browser applies bilinear smoothing between cells, which also enables the continuous colour gradient on the legend and map. When off, each grid cell is rendered as a crisp pixel block with a discrete categorical colour palette.
+                      When on (default), each grid cell is coloured from the full continuous YlOrRd gradient, providing a precise colour for every emission value. When off, values are snapped to the nearest discrete log₁₀ magnitude class — useful for reading exact categories.
                     </p>
                   </div>
                   <button
@@ -1007,9 +1014,9 @@ function Dashboard() {
               <div className="space-y-4">
                 <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
                   <div>
-                    <p className="text-sm font-medium text-gray-800">Debug mode — keep generated RDS files</p>
+                    <p className="text-sm font-medium text-gray-800">Development mode — preserve RDS files</p>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      When on, the <code className="font-mono text-xs">.RDS</code> files generated during a model run are kept on disk instead of being automatically deleted. Useful for inspecting or reusing converted data.
+                      When on, the <code className="font-mono text-xs">.RDS</code> files generated during a model run are kept on disk instead of being automatically deleted. Useful for inspecting or reusing converted data between runs.
                     </p>
                   </div>
                   <button

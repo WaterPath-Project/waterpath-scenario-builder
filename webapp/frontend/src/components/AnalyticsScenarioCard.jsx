@@ -118,6 +118,7 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
   const [runMode, setRunMode] = useState(null);
   const [runStatus, setRunStatus] = useState('idle');
   const [runOutput, setRunOutput] = useState({ stdout: '', stderr: '' });
+  const [runOutputFiles, setRunOutputFiles] = useState([]);
   const [runLoading, setRunLoading] = useState(false);
   const [showOutput, setShowOutput] = useState(false);
   const pollRef = useRef(null);
@@ -146,6 +147,7 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
         if (['success', 'error', 'timeout'].includes(data.status)) {
           clearInterval(pollRef.current);
           setRunLoading(false);
+          if (Array.isArray(data.output_files)) setRunOutputFiles(data.output_files);
           onRunEnd?.();
           onRunComplete?.(scenario.id, data.status);
         }
@@ -163,6 +165,7 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
     setRunLoading(true);
     setRunStatus('pending');
     setShowOutput(true);
+    setRunOutputFiles([]);
     onRunStart?.();
     try {
       const res = await axios.post(`/api/scenarios/${scenario.id}/run-model`);
@@ -299,6 +302,20 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
           {showLog ? 'Hide log' : 'Execution log'}
         </button>
       </div>
+
+      {/* Output files summary (shown after run completes) */}
+      {['success', 'error'].includes(runStatus) && (
+        <div className="mt-2">
+          {runOutputFiles.length > 0 ? (
+            <p className="text-xs text-gray-500">
+              <span className="font-semibold text-gray-700">Output files:</span>{' '}
+              {runOutputFiles.join(', ')}
+            </p>
+          ) : (
+            <p className="text-xs text-orange-500">No output files were generated in the output folder.</p>
+          )}
+        </div>
+      )}
 
       {/* Run output */}
       {showOutput && (runOutput.stdout || runOutput.stderr) && (

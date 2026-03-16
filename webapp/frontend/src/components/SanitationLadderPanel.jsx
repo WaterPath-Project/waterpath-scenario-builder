@@ -1,5 +1,5 @@
 ﻿import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import { RotateCcw, Save, ChevronDown, ChevronRight, ChevronUp, AlertTriangle, TableProperties, Layers } from 'lucide-react';
+import { RotateCcw, Save, ChevronDown, ChevronRight, ChevronUp, AlertTriangle, TableProperties, ChartBarStacked } from 'lucide-react';
 import axios from 'axios';
 import DataGridView from './DataGridView';
 
@@ -445,6 +445,7 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
   const [activeSfxTab, setActiveSfxTab] = useState('_urb');
   const [showFullData, setShowFullData] = useState(false);
   const [showJMPLadder, setShowJMPLadder] = useState(false);
+  const [mgmtExpanded, setMgmtExpanded] = useState(false);
 
   // Which suffixes have unsaved changes (for orange dot on tab)
   const dirtySuffixes = useMemo(() => {
@@ -810,8 +811,8 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
                         : 'text-gray-500 border-gray-300 hover:bg-gray-100'
                     }`}
                   >
-                    <Layers size={11} />
-                    <span>View Sanitation Ladder</span>
+                    <ChartBarStacked size={11} />
+                    <span>Estimate Sanitation Ladder</span>
                   </button>
                   <div className="flex gap-0.5 p-0.5 bg-gray-200 rounded-lg">
                     {SUFFIXES.map((s) => {
@@ -932,33 +933,44 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
                             );
                           })}
                           <div className="mt-3 pt-3 border-t" style={{ borderColor: COLORS.safelyManaged + '33' }}>
-                            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">
+                            <button
+                              type="button"
+                              onClick={() => setMgmtExpanded((v) => !v)}
+                              className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 hover:text-wpBlue transition-colors"
+                            >
+                              <svg viewBox="0 0 16 16" fill="currentColor" className={`w-3 h-3 transition-transform ${mgmtExpanded ? 'rotate-90' : ''}`}>
+                                <path fillRule="evenodd" d="M6.22 4.22a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1 0 1.06l-3.25 3.25a.75.75 0 0 1-1.06-1.06L8.94 8 6.22 5.28a.75.75 0 0 1 0-1.06Z"/>
+                              </svg>
                               Management options
-                            </p>
-                            <div className="pt-1">
-                              {BOOLEAN_FIELDS.map((f) => {
-                                const key = `${f}${sfx}`;
-                                if (!(key in displayVals)) return null;
-                                return (
-                                  <IndependentSliderRow
-                                    key={key}
-                                    label={FIELD_LABELS[f]}
-                                    value={displayVals[key] ?? 0}
-                                    fieldKey={key}
-                                    accentColor={COLORS.notContributing}
-                                    onChange={makeChange}
-                                  />
-                                );
-                              })}
-                            </div>
-                            {`emptyFrequency${sfx}` in displayVals && (
-                              <div className="pt-2 mt-1 border-t border-gray-100">
-                                <IntegerField
-                                  label={FIELD_LABELS.emptyFrequency}
-                                  value={displayVals[`emptyFrequency${sfx}`]}
-                                  onChange={(v) => updateField(editIndices, `emptyFrequency${sfx}`, v)}
-                                />
-                              </div>
+                            </button>
+                            {mgmtExpanded && (
+                              <>
+                                <div className="pt-1">
+                                  {BOOLEAN_FIELDS.map((f) => {
+                                    const key = `${f}${sfx}`;
+                                    if (!(key in displayVals)) return null;
+                                    return (
+                                      <IndependentSliderRow
+                                        key={key}
+                                        label={FIELD_LABELS[f]}
+                                        value={displayVals[key] ?? 0}
+                                        fieldKey={key}
+                                        accentColor={COLORS.notContributing}
+                                        onChange={makeChange}
+                                      />
+                                    );
+                                  })}
+                                </div>
+                                {`emptyFrequency${sfx}` in displayVals && (
+                                  <div className="pt-2 mt-1 border-t border-gray-100">
+                                    <IntegerField
+                                      label={FIELD_LABELS.emptyFrequency}
+                                      value={displayVals[`emptyFrequency${sfx}`]}
+                                      onChange={(v) => updateField(editIndices, `emptyFrequency${sfx}`, v)}
+                                    />
+                                  </div>
+                                )}
+                              </>
                             )}
                           </div>
                         </>

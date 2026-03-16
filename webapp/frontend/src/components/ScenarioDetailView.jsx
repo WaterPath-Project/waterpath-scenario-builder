@@ -9,6 +9,7 @@ import ScenarioMetadataDialog from './ScenarioMetadataDialog';
 import PopulationPanel from './PopulationPanel';
 import SanitationLadderPanel from './SanitationLadderPanel';
 import WastewaterTreatmentPanel from './WastewaterTreatmentPanel';
+import LivestockEditorPanel from './LivestockEditorPanel';
 
 // Import category icons
 import HumanEmissionsIcon from '../../assets/icons/human_emissions.svg';
@@ -86,6 +87,16 @@ const CATEGORIES = [
   }
 ];
 
+// Flat list of emission driver subcategories shown in the side panel (human + livestock)
+const DRIVER_SUBCATEGORIES = [
+  { id: 'population',           label: 'Population',            icon: HumanPopulationIcon,    categoryId: 'human-emissions' },
+  { id: 'sanitation',           label: 'Sanitation',            icon: SanitationIcon,         categoryId: 'human-emissions' },
+  { id: 'wastewater-treatment', label: 'Wastewater Treatment',  icon: WastewaterTreatmentIcon, categoryId: 'human-emissions' },
+  { id: 'livestock-population', label: 'Livestock Population',  icon: LivestockPopulationIcon, categoryId: 'livestock-emissions' },
+  { id: 'manure-management',    label: 'Manure Management',     icon: ManureManagementIcon,   categoryId: 'livestock-emissions' },
+  { id: 'production-systems',   label: 'Production Systems',    icon: ProductionSystemsIcon,  categoryId: 'livestock-emissions' },
+];
+
 const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '', initialCategory, initialSubcategory, onViewResults }) => {
   const { 
     scenarios, 
@@ -111,6 +122,7 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
   const [runStatus, setRunStatus] = useState('idle');
   const [runLoading, setRunLoading] = useState(false);
   const [runOutput,  setRunOutput]  = useState({ stdout: '', stderr: '' });
+  const [runOutputFiles, setRunOutputFiles] = useState([]);
   const [showOutput, setShowOutput] = useState(false);
   const [glowpaLog,  setGlowpaLog]  = useState(null);
   const [logLoading, setLogLoading] = useState(false);
@@ -127,6 +139,12 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
   const isCategoryEnabled = (id) => !enabledCategoryIds || enabledCategoryIds.includes(id);
   // All categories are shown; only enabled ones are interactive
   const availableCategories = CATEGORIES;
+
+  // Hide livestock driver subcategories when the scenario has no livestock data
+  const hasLivestock = scenarioInfo?.has_livestock === true;
+  const visibleDriverSubcategories = DRIVER_SUBCATEGORIES.filter(
+    (sub) => sub.categoryId !== 'livestock-emissions' || hasLivestock
+  );
 
   // Find the scenario (either temp or persistent)
   const scenario = [...scenarios, ...tempScenarios].find(s => s.id === scenarioId);
@@ -188,6 +206,27 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
     setNeedsRerun(scenarioId, true);
   }, [scenarioId, setNeedsRerun]);
 
+  // If the active subcategory is a livestock one but livestock is absent, reset to the first human sub
+  useEffect(() => {
+    if (scenarioInfo && !scenarioInfo.has_livestock) {
+      const isLivestockActive = DRIVER_SUBCATEGORIES.find(
+        (s) => s.id === activeSubcategory && s.categoryId === 'livestock-emissions'
+      );
+      if (isLivestockActive) {
+        const firstHuman = DRIVER_SUBCATEGORIES.find((s) => s.categoryId === 'human-emissions');
+        if (firstHuman) {
+          setActiveSubcategory(firstHuman.id);
+          setActiveCategory(firstHuman.categoryId);
+        }
+      }
+    }
+  }, [scenarioInfo?.has_livestock]);
+
+  const handleLivestockDirtyChange = useCallback(
+    (d) => handleSubcatDirtyChange(activeSubcategory, d),
+    [handleSubcatDirtyChange, activeSubcategory]
+  );
+
   const isCategoryDirty = (categoryId) => {
     const cat = availableCategories.find((c) => c.id === categoryId);
     return cat?.subcategories.some((sub) => dirtySubcategories[sub.id]) ?? false;
@@ -228,6 +267,7 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
         if (['success', 'error', 'timeout'].includes(data.status)) {
           clearInterval(pollRef.current);
           setRunLoading(false);
+          if (Array.isArray(data.output_files)) setRunOutputFiles(data.output_files);
           if (data.status === 'success') setNeedsRerun(scenarioId, false);
           // Refresh scenario info so has_outputs is up to date
           if (selectedCaseStudy?.id) {
@@ -460,6 +500,20 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
           </div>
         )}
 
+        {/* Output files summary (shown after run completes) */}
+        {['success', 'error'].includes(runStatus) && (
+          <div className="mx-6 mb-2">
+            {runOutputFiles.length > 0 ? (
+              <p className="text-xs text-gray-500">
+                <span className="font-semibold text-gray-700">Output files:</span>{' '}
+                {runOutputFiles.join(', ')}
+              </p>
+            ) : (
+              <p className="text-xs text-orange-500">No output files were generated in the output folder.</p>
+            )}
+          </div>
+        )}
+
         {/* Run output console */}
         {showOutput && (runOutput.stdout || runOutput.stderr) && (
           <div className="mx-6 mb-3 bg-gray-900 rounded-lg p-3 text-xs font-outfit text-gray-100 max-h-48 overflow-y-auto">
@@ -488,81 +542,47 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
         )}
       </div>
 
-      {/* Category Tabs */}
-      <div className="bg-white flex-shrink-0">
-        <div className="px-6">
-          <h3 className="font-medium text-wpBlue pt-4 pb-2">Changes per category</h3>
-          <div className="flex space-x-2 w-full">
-            {CATEGORIES.map((category) => {
-              const enabled = isCategoryEnabled(category.id);
-              return (
-              <button
-                key={category.id}
-                disabled={!enabled}
-                onClick={() => {
-                  if (!enabled) return;
-                  const cat = CATEGORIES.find((c) => c.id === category.id);
-                  const firstSub = cat?.subcategories[0]?.id ?? activeSubcategory;
-                  setActiveCategory(category.id);
-                  setActiveSubcategory(firstSub);
-                  if (scenario?.name) {
-                    const prefix = caseStudySlug ? `/scenarios/${caseStudySlug}` : '/scenarios';
-                    navigate(`${prefix}/${toSlug(scenario.name)}/${category.id}/${firstSub}`);
-                  }
-                }}
-                className={`
-                  relative flex flex-1 items-center gap-3 px-6 py-3 mb-3 rounded-xl transition-colors justify-center
-                  ${!enabled
-                    ? 'bg-gray-100 text-gray-400 opacity-40 cursor-not-allowed'
-                    : activeCategory === category.id
-                      ? 'bg-white text-wpBlue hover:bg-gray-50 shadow-md shadow-wpGray-500/50'
-                      : 'bg-gray-100 text-wpBlue hover:bg-gray-200'
-                  }
-                `}
-              >
-                <img src={category.icon} alt={category.label} className="w-12 h-12" />
-                <span className="font-semibold font-outfit">{category.label}</span>
-                {enabled && isCategoryDirty(category.id) && (
-                  <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-orange-400" title="Unsaved changes" />
-                )}
-              </button>
-              );
-            })}
-          </div>
-        </div>
-      </div>
+      {/* Category Tabs — hidden; Drivers panel in sidebar replaces top-level categories */}
 
       {/* Split View: Subcategories Sidebar + Content */}
       <div className="flex flex-1 overflow-hidden ">
-        {/* Left Sidebar - Subcategories */}
+        {/* Left Sidebar - Drivers */}
         <div className="w-80 bg-white p-6 overflow-y-auto">
-          <h3 className="text-sm font-medium text-wpBlue mb-4">Subcategories</h3>
+          <h3 className="text-sm font-medium text-wpBlue mb-4">Drivers</h3>
           <div className="space-y-2">
-            {currentCategory?.subcategories.map((subcategory) => (
-              <button
-                key={subcategory.id}
-                onClick={() => {
-                  setActiveSubcategory(subcategory.id);
-                  if (scenario?.name) {
-                    const prefix = caseStudySlug ? `/scenarios/${caseStudySlug}` : '/scenarios';
-                    navigate(`${prefix}/${toSlug(scenario.name)}/${activeCategory}/${subcategory.id}`);
-                  }
-                }}
-                className={`
-                  w-full flex items-center gap-3 px-4 py-1 rounded-xl transition-colors text-left
-                  ${activeSubcategory === subcategory.id
-                    ? 'bg-gray-100 text-wpBlue-600'
-                    : 'text-gray-700 hover:bg-gray-50'
-                  }
-                `}
-              >
-                <img src={subcategory.icon} alt={subcategory.label} className="w-10 h-10" />
-                <span className="text-sm font-medium">{subcategory.label}</span>
-                {dirtySubcategories[subcategory.id] && (
-                  <span className="ml-auto w-2 h-2 rounded-full bg-orange-400 flex-shrink-0" title="Unsaved changes" />
-                )}
-              </button>
-            ))}
+            {visibleDriverSubcategories.map((subcategory) => {
+              const enabled = isCategoryEnabled(subcategory.categoryId);
+              return (
+                <button
+                  key={subcategory.id}
+                  disabled={!enabled}
+                  onClick={() => {
+                    if (!enabled) return;
+                    setActiveCategory(subcategory.categoryId);
+                    setActiveSubcategory(subcategory.id);
+                    if (scenario?.name) {
+                      const prefix = caseStudySlug ? `/scenarios/${caseStudySlug}` : '/scenarios';
+                      navigate(`${prefix}/${toSlug(scenario.name)}/${subcategory.categoryId}/${subcategory.id}`);
+                    }
+                  }}
+                  className={`
+                    w-full flex items-center gap-3 px-4 py-1 rounded-xl transition-colors text-left
+                    ${!enabled
+                      ? 'opacity-40 cursor-not-allowed text-gray-400'
+                      : activeSubcategory === subcategory.id
+                        ? 'bg-gray-100 text-wpBlue-600'
+                        : 'text-gray-700 hover:bg-gray-50'
+                    }
+                  `}
+                >
+                  <img src={subcategory.icon} alt={subcategory.label} className="w-10 h-10" />
+                  <span className="text-sm font-medium">{subcategory.label}</span>
+                  {dirtySubcategories[subcategory.id] && (
+                    <span className="ml-auto w-2 h-2 rounded-full bg-orange-400 flex-shrink-0" title="Unsaved changes" />
+                  )}
+                </button>
+              );
+            })}
           </div>
 
         </div>
@@ -570,7 +590,8 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
         {/* Right Content Area */}
         <div className="flex-1 bg-gray-50 p-6 overflow-y-auto">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">
-            {currentCategory?.subcategories.find(sub => sub.id === activeSubcategory)?.label}
+            {visibleDriverSubcategories.find(sub => sub.id === activeSubcategory)?.label
+              || currentCategory?.subcategories.find(sub => sub.id === activeSubcategory)?.label}
           </h3>
 
           {activeSubcategory === 'population' ? (
@@ -593,6 +614,14 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
               key={scenario.id}
               scenario={scenario}
               onDirtyChange={(d) => handleSubcatDirtyChange('wastewater-treatment', d)}
+              onSaved={handleSubcatSaved}
+            />
+          ) : activeSubcategory === 'livestock-population' || activeSubcategory === 'manure-management' || activeSubcategory === 'production-systems' ? (
+            <LivestockEditorPanel
+              key={`${scenario.id}-${activeSubcategory}`}
+              scenario={scenario}
+              subcategoryId={activeSubcategory}
+              onDirtyChange={handleLivestockDirtyChange}
               onSaved={handleSubcatSaved}
             />
           ) : (

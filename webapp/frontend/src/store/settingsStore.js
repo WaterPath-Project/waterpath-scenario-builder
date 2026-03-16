@@ -38,6 +38,7 @@ const useSettingsStore = create(
        * When true: skip deletion of .RDS files after a model run so they can
        * be inspected for debugging.  When false (default), RDS files are
        * removed automatically once the run completes.
+       * Display name: "Development mode — preserve RDS files"
        */
       debugMode: false,
 

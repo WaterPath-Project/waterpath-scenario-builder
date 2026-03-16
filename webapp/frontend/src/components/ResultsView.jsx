@@ -8,10 +8,16 @@ import 'leaflet/dist/leaflet.css';
 import axios from 'axios';
 import { RefreshCw, BarChart2, AlertTriangle, ArrowRight, X, Droplets, Trees, ArrowUpRight, ArrowDownRight, Minus, Maximize2, Minimize2, Download, Printer } from 'lucide-react';
 
-import HumanEmissionsIcon    from '../../assets/icons/human_emissions.svg';
 import LivestockEmissionsIcon from '../../assets/icons/livestock_emissions.svg';
-import ConcentrationsIcon    from '../../assets/icons/concentrations.svg';
-import RiskIcon              from '../../assets/icons/risk.svg';
+import AssesIcon      from '../../assets/icons/asses.svg';
+import CattleIcon  from '../../assets/icons/cattle.svg';
+import CamelsIcon     from '../../assets/icons/camels.svg';
+import GoatsIcon      from '../../assets/icons/goats.svg';
+import HorsesIcon     from '../../assets/icons/horses.svg';
+import MulesIcon      from '../../assets/icons/mules.svg';
+import PigsIcon       from '../../assets/icons/pigs.svg';
+import PoultryIcon    from '../../assets/icons/poultry.svg';
+import SheepIcon      from '../../assets/icons/sheep.svg';
 import useSettingsStore      from '../store/settingsStore';
 
 // Make proj4 available globally so georaster-layer-for-leaflet can reproject
@@ -28,12 +34,17 @@ const TILE_URL        = 'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x
 const TILE_LABELS_URL = 'https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png';
 const TILE_ATTR       = '&copy; <a href="https://carto.com/">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>';
 
-const RESULT_CATEGORIES = [
-  { id: 'human-emissions',     label: 'Human Emissions',     icon: HumanEmissionsIcon },
-  { id: 'livestock-emissions', label: 'Livestock Emissions', icon: LivestockEmissionsIcon },
-  { id: 'concentrations',      label: 'Concentrations',      icon: ConcentrationsIcon },
-  { id: 'risk',                label: 'Risk',                icon: RiskIcon },
-];
+const LIVESTOCK_ICONS = {
+  asses:     AssesIcon,
+  camels:    CamelsIcon,
+  cattle:    CattleIcon,
+  goats:     GoatsIcon,
+  horses:    HorsesIcon,
+  mules:     MulesIcon,
+  pigs:      PigsIcon,
+  poultry:   PoultryIcon,
+  sheep:     SheepIcon,
+};
 
 const SOURCE_COLORS = {
   flushSewer: '#2E7D32', flushSeptic: '#388E3C', flushPit: '#43A047',
@@ -307,9 +318,9 @@ function AreaDialog({ area, waterStats, landStats, onClose }) {
 // ─── GeoTiffLayer: renders a GeoTIFF via georaster-layer-for-leaflet ─────────────────────────────
 // Uses proj4 for CRS reprojection so TIFs in any projection (e.g. UTM) are
 // placed correctly on the Web-Mercator base map.
-// Smoothing (heatmapView setting):
-//   false (default) → image-rendering: pixelated  – crisp grid-cell boundaries
-//   true            → image-rendering: high-quality – browser bilinear/cubic interpolation
+// Smoothing (heatmapView setting) controls colour mapping only — rendering is always crisp:
+//   true  (default) → emissionColor()          – continuous YlOrRd gradient per pixel value
+//   false            → emissionColorQuantized() – value snapped to nearest discrete log₁₀ stop
 
 function GeoTiffLayer({ url }) {
   const map = useMap();
@@ -338,10 +349,9 @@ function GeoTiffLayer({ url }) {
         // Publish the effective max to the store so <Legend> can display matching tick marks.
         setDynamicLogMax(fixedColorScale ? null : logMax);
 
-        // Resolution controls the number of pixels per tile canvas.
-        // Smoothing on  → low resolution (64px) tile is CSS-scaled up to 256px with bilinear interpolation.
-        // Smoothing off → full resolution (256px) tile is shown crisp (1:1), pixelated style applied.
-        const tileResolution = smoothing ? 64 : 256;
+        // Always use full-resolution 256px tiles with pixelated rendering.
+        // The smoothing flag only switches between the continuous and quantized colour functions.
+        const tileResolution = 256;
 
         layer = new GeoRasterLayer({
           georaster: gr,
@@ -358,8 +368,8 @@ function GeoTiffLayer({ url }) {
 
         layer.on('tileload', (e) => {
           if (!e.tile) return;
-          // Allow browser bilinear up-scaling when smoothing; force nearest-neighbour when off.
-          e.tile.style.imageRendering = smoothing ? 'auto' : 'pixelated';
+          // Always crisp — cells should not blur into each other regardless of colour mode.
+          e.tile.style.imageRendering = 'pixelated';
         });
 
         map.addLayer(layer);
@@ -619,9 +629,9 @@ function EmissionMapPanel({
               {isComparison && totalDiffPct !== null ? (
                 <div>
                   <div className="flex items-baseline gap-1.5 mb-0.5">
-                    <span className="text-5xl font-outfit tabular-nums text-gray-400">{formatScientific(priTotal)}</span>
-                    <span className="text-5xl font-outfit"><ArrowRight size={36}/></span>
-                    <span className="text-5xl font-outfit tabular-nums font-bold text-wpBlue">{formatScientific(secTotal)}</span>
+                    <span className="text-4xl font-outfit tabular-nums text-gray-400">{formatScientific(priTotal)}</span>
+                    <span className="text-4xl font-outfit"><ArrowRight size={36}/></span>
+                    <span className="text-4xl font-outfit tabular-nums font-bold text-wpBlue">{formatScientific(secTotal)}</span>
                   </div>
                   <p className={`flex items-center gap-0.5 text-xl font-outfit font-semibold ${totalDiffPct > 0 ? 'text-red-600' : totalDiffPct < 0 ? 'text-green-700' : 'text-gray-500'}`}>
                     {totalDiffPct > 1 ? <ArrowUpRight size={24}/> : totalDiffPct < -1 ? <ArrowDownRight size={24}/> : <Minus size={13}/>}
@@ -632,6 +642,7 @@ function EmissionMapPanel({
               ) : (
                 <p className="text-5xl font-bold font-outfit tabular-nums text-wpBlue">{formatScientific(priTotal)}</p>
               )}
+              <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">Combined viral particle emissions across all areas, sanitation technologies, and emission pathways (viral particles / year).</p>
             </div>
 
             {/* Emissions by area */}
@@ -685,35 +696,6 @@ function groupColorForSource(src) {
   return g?.color || '#6B7280';
 }
 
-// ─── Stats cards ───────────────────────────────────────────────────────────────────────────────────
-
-function StatCard({ label, value, secValue, color, isComparison, children }) {
-  const pct = isComparison && value > 0 ? ((secValue - value) / value) * 100 : null;
-  return (
-    <div className="bg-white rounded-lg border border-gray-200 p-3 flex flex-col gap-1.5">
-      <div className="flex items-center gap-2">
-        {color && <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: color }}/>}
-        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{label}</p>
-      </div>
-      <div className="flex items-end gap-2 flex-wrap">
-        <span className={`text-lg font-bold tabular-nums ${isComparison ? 'opacity-40' : ''}`}>
-          {formatScientific(value)}
-        </span>
-        {isComparison && (
-          <span className="text-lg font-bold tabular-nums">{formatScientific(secValue)}</span>
-        )}
-        {pct !== null && (
-          <span className={`flex items-center gap-0.5 text-sm font-semibold ${pct > 0 ? 'text-red-600' : pct < 0 ? 'text-green-600' : 'text-gray-500'}`}>
-            {pct > 1 ? <ArrowUpRight size={14}/> : pct < -1 ? <ArrowDownRight size={14}/> : <Minus size={14}/>}
-            {fmtPct(pct)}
-          </span>
-        )}
-      </div>
-      {children}
-    </div>
-  );
-}
-
 function StatsSection({ primaryData, secondaryData, isComparison, selectedAreas, emissionType }) {
   // Use human_sources CSV data for sanitation group breakdown and top-tech
   const priSrcData = emissionType === 'water' ? primaryData?.waterSources  : primaryData?.landSources;
@@ -732,6 +714,24 @@ function StatsSection({ primaryData, secondaryData, isComparison, selectedAreas,
 
   const priSrc = useMemo(() => computeSourceTotals(priSrcData?.iso_rows), [priSrcData, selectedAreas]);
   const secSrc = useMemo(() => computeSourceTotals(secSrcData?.iso_rows), [secSrcData, selectedAreas]);
+
+  // ── Livestock data ────────────────────────────────────────────────────────────
+  const priLsData = emissionType === 'water' ? primaryData?.livestockWaterSources : primaryData?.livestockLandSources;
+  const secLsData = isComparison ? (emissionType === 'water' ? secondaryData?.livestockWaterSources : secondaryData?.livestockLandSources) : null;
+
+  const computeLsAnimalTotals = useCallback((isoRows) => {
+    if (!isoRows) return {};
+    const out = {};
+    const relevant = selectedAreas ? [...selectedAreas] : Object.keys(isoRows);
+    relevant.forEach(iso => {
+      if (!isoRows[iso]) return;
+      Object.entries(isoRows[iso]).forEach(([animal, v]) => { out[animal] = (out[animal] || 0) + v; });
+    });
+    return out;
+  }, [selectedAreas]);
+
+  const priLsAnimalTotals = useMemo(() => computeLsAnimalTotals(priLsData?.iso_rows), [priLsData, selectedAreas]);
+  const secLsAnimalTotals = useMemo(() => computeLsAnimalTotals(secLsData?.iso_rows), [secLsData, selectedAreas]);
 
   // ── Land + WWTP totals from surface_water_emissions CSV (water mode only) ─────────────────────
   const computeColTotal = useCallback((isoRows, col) => {
@@ -779,173 +779,291 @@ function StatsSection({ primaryData, secondaryData, isComparison, selectedAreas,
     return keys.reduce((sum, iso) => sum + (secEmIsoTotals[iso] || 0), 0);
   }, [secEmIsoTotals, selectedAreas, isComparison, secHumTotal]);
 
+  const lsAnimalEntries = useMemo(() =>
+    Object.entries(priLsAnimalTotals).filter(([, v]) => v > 0).sort(([, a], [, b]) => b - a),
+    [priLsAnimalTotals]
+  );
+  const priLsTotal = useMemo(() => lsAnimalEntries.reduce((s, [, v]) => s + v, 0), [lsAnimalEntries]);
+  const secLsTotal = useMemo(() => Object.values(secLsAnimalTotals).reduce((s, v) => s + v, 0), [secLsAnimalTotals]);
+  const hasLivestock = lsAnimalEntries.length > 0;
+
   if (!priSrcData) return null;
 
-  const topEntry    = priSrcEntries[0] || null;
-  const secTopEntry = isComparison ? Object.entries(secSrc).filter(([,v]) => v > 0).sort(([,a],[,b]) => b - a)[0] : null; // eslint-disable-line no-unused-vars
+  const topEntry = priSrcEntries[0] || null;
 
-  return (
-    <div className="space-y-4 pt-6">
-      {/* Human emissions: Total | By Toilet Category | Contributing Technologies */}
-      {emissionType === 'water' && (
-        <p className="text-md font-semibold text-wpBlue uppercase font-outfit tracking-wide">Humans</p>
-      )}
-      <div className="flex gap-4 min-h-0">
+  // ── Shared render fragments ────────────────────────────────────────────────
 
-        {/* Column 1: Total */}
-        {(() => {
-          const pct = isComparison && priGrandTotal > 0 ? ((secGrandTotal - priGrandTotal) / priGrandTotal) * 100 : null;
+
+  const toiletCategoryCol = (
+    <div className="flex-shrink-0 w-40">
+      <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-1.5">By Toilet Category</p>
+      <div className="space-y-2">
+        {SANITATION_GROUPS.map(g => {
+          const pv = g.sources.reduce((s, src) => s + (priSrc[src] || 0), 0);
+          const sv = g.sources.reduce((s, src) => s + (secSrc[src] || 0), 0);
+          if (pv === 0 && sv === 0) return null;
+          const pct = humTotal > 0 ? (pv / humTotal) * 100 : 0;
+          const secPct = secHumTotal > 0 ? (sv / secHumTotal) * 100 : 0;
           return (
-            <div className="flex-shrink-0 w-28">
-              <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-1">Total</p>
-              <p className={`text-xl font-bold text-wpBlue tabular-nums leading-tight ${isComparison ? 'opacity-40' : ''}`}>
-                {formatScientific(priGrandTotal)}
-              </p>
+            <div key={g.id}>
+              <div className="flex items-center gap-1.5 mb-0.5">
+                <span className="w-2 h-2 rounded-sm flex-shrink-0" style={{ backgroundColor: g.color }} />
+                <span className="text-sm text-gray-600 truncate">{g.label}</span>
+                <span className="ml-auto text-sm text-gray-500 tabular-nums">{pct.toFixed(0)}%</span>
+              </div>
+              <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                <div className="h-full rounded-full" style={{ width: `${pct.toFixed(1)}%`, backgroundColor: g.color }} />
+              </div>
               {isComparison && (
-                <p className="text-xl font-bold tabular-nums">{formatScientific(secGrandTotal)}</p>
-              )}
-              {pct !== null && (
-                <span className={`flex items-center gap-0.5 text-sm font-semibold mt-0.5 ${pct > 0 ? 'text-red-600' : pct < 0 ? 'text-green-600' : 'text-gray-500'}`}>
-                  {pct > 1 ? <ArrowUpRight size={14}/> : pct < -1 ? <ArrowDownRight size={14}/> : <Minus size={14}/>}
-                  {fmtPct(pct)}
-                </span>
+                <div className="h-1 bg-gray-50 rounded-full overflow-hidden mt-0.5">
+                  <div className="h-full rounded-full opacity-60" style={{ width: `${secPct.toFixed(1)}%`, backgroundColor: g.color }} />
+                </div>
               )}
             </div>
           );
-        })()}
+        })}
+      </div>
 
-        <div className="w-px self-stretch bg-gray-100 flex-shrink-0" />
+    </div>
+  );
 
-        {/* Column 2: By Toilet Category */}
-        <div className="flex-shrink-0 w-40">
-          <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-1.5">By Toilet Category</p>
-          <div className="space-y-2">
-            {SANITATION_GROUPS.map(g => {
-              const pv = g.sources.reduce((s, src) => s + (priSrc[src] || 0), 0);
-              const sv = g.sources.reduce((s, src) => s + (secSrc[src] || 0), 0);
-              if (pv === 0 && sv === 0) return null;
-              const pct = humTotal > 0 ? (pv / humTotal) * 100 : 0;
-              const secPct = secHumTotal > 0 ? (sv / secHumTotal) * 100 : 0;
-              return (
-                <div key={g.id}>
-                  <div className="flex items-center gap-1.5 mb-0.5">
-                    <span className="w-2 h-2 rounded-sm flex-shrink-0" style={{ backgroundColor: g.color }} />
-                    <span className="text-sm text-gray-600 truncate">{g.label}</span>
-                    <span className="ml-auto text-sm text-gray-500 tabular-nums">{pct.toFixed(0)}%</span>
-                  </div>
-                  <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                    <div className="h-full rounded-full" style={{ width: `${pct.toFixed(1)}%`, backgroundColor: g.color }} />
-                  </div>
-                  {isComparison && (
-                    <div className="h-1 bg-gray-50 rounded-full overflow-hidden mt-0.5">
-                      <div className="h-full rounded-full opacity-60" style={{ width: `${secPct.toFixed(1)}%`, backgroundColor: g.color }} />
+  const contribTechCol = (
+    <div className="flex-1 min-w-0">
+      {priSrcEntries.length > 0 ? (
+        <div>
+          <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Contributing technologies</p>
+          {(() => {
+            const overallMaxV = topEntry
+              ? (isComparison
+                  ? Math.max(topEntry[1], ...priSrcEntries.map(([s]) => secSrc[s] || 0), 1)
+                  : topEntry[1])
+              : 1;
+            return (
+              <div className="space-y-1">
+                {priSrcEntries.map(([src, val]) => {
+                  const secVal = secSrc[src] || 0;
+                  const diffPct = isComparison && val > 0 ? ((secVal - val) / val) * 100 : null;
+                  return (
+                    <div key={src} className="flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-sm flex-shrink-0" style={{ backgroundColor: groupColorForSource(src) }}/>
+                      <span className="text-xs text-gray-500 flex-shrink-0" style={{ width: 110 }}>{formatSourceName(src)}</span>
+                      <div className="flex-1 relative h-2 bg-gray-100 rounded-full">
+                        <div className="absolute top-0 h-2 rounded-full bg-wpBlue/20"
+                          style={{ width:`${Math.min(94,(Math.max(val, isComparison ? secVal : 0)/overallMaxV)*100).toFixed(1)}%`, left:0 }}/>
+                        <div className="absolute w-2.5 h-2.5 rounded-full bg-wpBlue border-2 border-white shadow-sm"
+                          style={{ left:`${Math.min(94,(val/overallMaxV)*100).toFixed(1)}%`, top:'50%', transform:'translate(-50%,-50%)' }}/>
+                        {isComparison && (
+                          <div className="absolute w-2.5 h-2.5 rounded-full bg-wpCypress border-2 border-white shadow-sm"
+                            style={{ left:`${Math.min(94,(secVal/overallMaxV)*100).toFixed(1)}%`, top:'50%', transform:'translate(-50%,-50%)' }}/>
+                        )}
+                      </div>
+                      {diffPct !== null ? (
+                        <span className={`text-xs font-inter flex-shrink-0 w-12 text-right ${diffPct>0?'text-red-600':'text-green-600'}`}>
+                          {diffPct>=0?'+':''}{diffPct.toFixed(0)}%
+                        </span>
+                      ) : (
+                        <span className="text-xs text-gray-500 font-inter flex-shrink-0 w-12 text-right">
+                          {formatScientific(val)}
+                        </span>
+                      )}
                     </div>
-                  )}
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </div>
+      ) : (
+        <p className="text-xs text-gray-400 italic">No source data available</p>
+      )}
+    </div>
+  );
+
+  // ── Livestock column ───────────────────────────────────────────────────────
+
+  const lsMaxVal = lsAnimalEntries[0]?.[1] || 1;
+  const lsDiffPct = isComparison && priLsTotal > 0 ? ((secLsTotal - priLsTotal) / priLsTotal) * 100 : null;
+
+  const livestockCol = hasLivestock && (
+    <div className="space-y-4">
+      <p className="text-md font-semibold text-wpBlue uppercase font-outfit tracking-wide">Livestock</p>
+      <p className="text-xs text-gray-400 -mt-2">Emissions from livestock manure deposited on land and transported to water, broken down by animal species.</p>
+      <div className="flex gap-4 min-h-0">
+        <div className="w-px self-stretch bg-gray-100 flex-shrink-0" />
+        {/* Per-animal breakdown */}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">By Animal</p>
+          <div className="space-y-2">
+            {lsAnimalEntries.map(([animal, val]) => {
+              const icon = LIVESTOCK_ICONS[animal] || LivestockEmissionsIcon;
+              const secVal = secLsAnimalTotals[animal] || 0;
+              const barPct = (val / lsMaxVal) * 100;
+              const secBarPct = (isComparison && secVal > 0) ? (secVal / Math.max(lsMaxVal, secVal)) * 100 : 0;
+              const diffPct = isComparison && val > 0 ? ((secVal - val) / val) * 100 : null;
+              return (
+                <div key={animal}>
+                  <div className="flex items-center gap-1.5 mb-0.5">
+                    <img src={icon} alt={animal} className="w-4 h-4 flex-shrink-0"/>
+                    <span className="text-xs text-gray-600 flex-shrink-0 capitalize" style={{ width: 64 }}>{animal}</span>
+                    <div className="flex-1 relative h-2 bg-gray-100 rounded-full">
+                      <div className="absolute top-0 h-2 rounded-full bg-amber-500/20"
+                        style={{ width:`${Math.min(94, Math.max(barPct, isComparison ? secBarPct : 0)).toFixed(1)}%`, left:0 }}/>
+                      <div className="absolute w-2.5 h-2.5 rounded-full bg-amber-600 border-2 border-white shadow-sm"
+                        style={{ left:`${Math.min(94, barPct).toFixed(1)}%`, top:'50%', transform:'translate(-50%,-50%)' }}/>
+                      {isComparison && (
+                        <div className="absolute w-2.5 h-2.5 rounded-full bg-wpCypress border-2 border-white shadow-sm"
+                          style={{ left:`${Math.min(94, secBarPct).toFixed(1)}%`, top:'50%', transform:'translate(-50%,-50%)' }}/>
+                      )}
+                    </div>
+                    {diffPct !== null ? (
+                      <span className={`text-xs font-inter flex-shrink-0 w-12 text-right ${diffPct > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                        {diffPct >= 0 ? '+' : ''}{diffPct.toFixed(0)}%
+                      </span>
+                    ) : (
+                      <span className="text-xs text-gray-500 font-inter flex-shrink-0 w-12 text-right">
+                        {formatScientific(val)}
+                      </span>
+                    )}
+                  </div>
                 </div>
               );
             })}
           </div>
         </div>
+      </div>
+    </div>
+  );
 
-        <div className="w-px self-stretch bg-gray-100 flex-shrink-0" />
+  // ── Layout ─────────────────────────────────────────────────────────────────
 
-        {/* Column 3: Contributing technologies */}
-        <div className="flex-1 min-w-0">
-          {priSrcEntries.length > 0 ? (
-            <div>
-              <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Contributing technologies</p>
-              {(() => {
-                const overallMaxV = topEntry
-                  ? (isComparison
-                      ? Math.max(topEntry[1], ...priSrcEntries.map(([s]) => secSrc[s] || 0), 1)
-                      : topEntry[1])
-                  : 1;
-                return (
-                  <div className="space-y-1">
-                    {priSrcEntries.map(([src, val]) => {
-                      const secVal = secSrc[src] || 0;
-                      const diffPct = isComparison && val > 0 ? ((secVal - val) / val) * 100 : null;
-                      return (
-                        <div key={src} className="flex items-center gap-1.5">
-                          <span className="w-2 h-2 rounded-sm flex-shrink-0" style={{ backgroundColor: groupColorForSource(src) }}/>
-                          <span className="text-xs text-gray-500 flex-shrink-0" style={{ width: 110 }}>{formatSourceName(src)}</span>
-                          <div className="flex-1 relative h-2 bg-gray-100 rounded-full">
-                            <div className="absolute top-0 h-2 rounded-full bg-wpBlue/20"
-                              style={{ width:`${Math.min(94,(Math.max(val, isComparison ? secVal : 0)/overallMaxV)*100).toFixed(1)}%`, left:0 }}/>
-                            <div className="absolute w-2.5 h-2.5 rounded-full bg-wpBlue border-2 border-white shadow-sm"
-                              style={{ left:`${Math.min(94,(val/overallMaxV)*100).toFixed(1)}%`, top:'50%', transform:'translate(-50%,-50%)' }}/>
-                            {isComparison && (
-                              <div className="absolute w-2.5 h-2.5 rounded-full bg-wpCypress border-2 border-white shadow-sm"
-                                style={{ left:`${Math.min(94,(secVal/overallMaxV)*100).toFixed(1)}%`, top:'50%', transform:'translate(-50%,-50%)' }}/>
-                            )}
-                          </div>
-                          {diffPct !== null ? (
-                            <span className={`text-xs font-inter flex-shrink-0 w-12 text-right ${diffPct>0?'text-red-600':'text-green-600'}`}>
-                              {diffPct>=0?'+':''}{diffPct.toFixed(0)}%
-                            </span>
-                          ) : (
-                            <span className="text-xs text-gray-500 font-inter flex-shrink-0 w-12 text-right">
-                              {formatScientific(val)}
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })()}
-            </div>
-          ) : (
-            <p className="text-xs text-gray-400 italic">No source data available</p>
+  if (hasLivestock) {
+    return (
+      <div className="grid grid-cols-2 gap-0 pt-6 divide-x divide-gray-100">
+        {/* Left column: Humans + Land + WWTP */}
+        <div className="space-y-4 pr-6">
+          {emissionType === 'water' && (
+            <>
+              <p className="text-md font-semibold text-wpBlue uppercase font-outfit tracking-wide">Humans</p>
+              <p className="text-xs text-gray-400 -mt-2">Emissions originating from human sanitation systems, broken down by technology and toilet category.</p>
+            </>
           )}
+          <div className="flex gap-4 min-h-0">
+            <div className="w-px self-stretch bg-gray-100 flex-shrink-0" />
+            {toiletCategoryCol}
+            <div className="w-px self-stretch bg-gray-100 flex-shrink-0" />
+            {contribTechCol}
+          </div>
+        </div>
+        {/* Right column: Livestock */}
+        <div className="pl-6">
+          {livestockCol}
         </div>
       </div>
+    );
+  }
 
-      {/* Land + Wastewater Treatment Plants */}
-      {emissionType === 'water' && (priLand > 0 || priWwtp > 0) && (
-        <div className="grid grid-cols-2 gap-4 pt-3 border-t border-gray-100">
-          {priLand > 0 && (() => {
-            const pct = isComparison && priLand > 0 ? ((secLand - priLand) / priLand) * 100 : null;
-            return (
-              <div className="space-y-1">
-                <p className="text-md font-semibold text-wpBlue font-outift uppercase tracking-wide">Land</p>
-                <div className="flex items-end gap-2 flex-wrap">
-                  <span className={`text-lg font-bold tabular-nums ${isComparison ? 'opacity-40' : ''}`}>
-                    {formatScientific(priLand)}
-                  </span>
-                  {isComparison && <span className="text-lg font-bold tabular-nums">{formatScientific(secLand)}</span>}
-                  {pct !== null && (
-                    <span className={`flex items-center gap-0.5 text-sm font-semibold ${pct > 0 ? 'text-red-600' : pct < 0 ? 'text-green-600' : 'text-gray-500'}`}>
-                      {pct > 1 ? <ArrowUpRight size={14}/> : pct < -1 ? <ArrowDownRight size={14}/> : <Minus size={14}/>}
-                      {fmtPct(pct)}
-                    </span>
-                  )}
-                </div>
-              </div>
-            );
-          })()}
-          {priWwtp > 0 && (() => {
-            const pct = isComparison && priWwtp > 0 ? ((secWwtp - priWwtp) / priWwtp) * 100 : null;
-            return (
-              <div className="space-y-1">
-                <p className="text-md font-semibold text-wpBlue font-outfit uppercase tracking-wide">Wastewater Treatment Plants</p>
-                <div className="flex items-end gap-2 flex-wrap">
-                  <span className={`text-lg font-bold tabular-nums ${isComparison ? 'opacity-40' : ''}`}>
-                    {formatScientific(priWwtp)}
-                  </span>
-                  {isComparison && <span className="text-lg font-bold tabular-nums">{formatScientific(secWwtp)}</span>}
-                  {pct !== null && (
-                    <span className={`flex items-center gap-0.5 text-sm font-semibold ${pct > 0 ? 'text-red-600' : pct < 0 ? 'text-green-600' : 'text-gray-500'}`}>
-                      {pct > 1 ? <ArrowUpRight size={14}/> : pct < -1 ? <ArrowDownRight size={14}/> : <Minus size={14}/>}
-                      {fmtPct(pct)}
-                    </span>
-                  )}
-                </div>
-              </div>
-            );
-          })()}
-        </div>
+  // Original single-column layout (no livestock data)
+  return (
+    <div className="space-y-4 pt-6">
+      {emissionType === 'water' && (
+        <>
+          <p className="text-md font-semibold text-wpBlue uppercase font-outfit tracking-wide">Humans</p>
+          <p className="text-xs text-gray-400 -mt-2">Emissions originating from human sanitation systems, broken down by technology and toilet category.</p>
+        </>
       )}
+      <div className="flex gap-4 min-h-0">
+        <div className="w-px self-stretch bg-gray-100 flex-shrink-0" />
+        {toiletCategoryCol}
+        <div className="w-px self-stretch bg-gray-100 flex-shrink-0" />
+        {contribTechCol}
+      </div>
+    </div>
+  );
+}
+
+function PathwaysSection({ primaryData, secondaryData, isComparison, selectedAreas }) {
+  const sumIsoRows = useCallback((isoRows) => {
+    if (!isoRows) return 0;
+    const keys = selectedAreas ? [...selectedAreas] : Object.keys(isoRows);
+    return keys.reduce((sum, iso) => {
+      const row = isoRows[iso] || {};
+      const rowTotal = Object.values(row).reduce((acc, v) => acc + (Number(v) || 0), 0);
+      return sum + rowTotal;
+    }, 0);
+  }, [selectedAreas]);
+
+  const sumCol = useCallback((isoRows, col) => {
+    if (!isoRows) return 0;
+    const keys = selectedAreas ? [...selectedAreas] : Object.keys(isoRows);
+    return keys.reduce((sum, iso) => sum + (isoRows[iso]?.[col] || 0), 0);
+  }, [selectedAreas]);
+
+  const priHumanToWater = sumIsoRows(primaryData?.waterSources?.iso_rows);
+  const secHumanToWater = sumIsoRows(secondaryData?.waterSources?.iso_rows);
+
+  const priHumanToLand = sumIsoRows(primaryData?.landSources?.iso_rows);
+  const secHumanToLand = sumIsoRows(secondaryData?.landSources?.iso_rows);
+
+  const priLivestockToLand = sumIsoRows(primaryData?.livestockLandSources?.iso_rows);
+  const secLivestockToLand = sumIsoRows(secondaryData?.livestockLandSources?.iso_rows);
+
+  const priLandToWater = sumCol(primaryData?.waterEmissions?.iso_rows, 'land');
+  const secLandToWater = sumCol(secondaryData?.waterEmissions?.iso_rows, 'land');
+
+  const priWwtpToWater = sumCol(primaryData?.waterEmissions?.iso_rows, 'wwtp');
+  const secWwtpToWater = sumCol(secondaryData?.waterEmissions?.iso_rows, 'wwtp');
+
+  const PATHWAY_DESCRIPTIONS = {
+    h2w:  'Pathogens from human sanitation discharged directly into surface water bodies.',
+    h2l:  'Pathogens deposited on land through open defecation and on-site sanitation systems.',
+    ls2l: 'Pathogens from livestock manure deposited on agricultural, pasture, and rangelands.',
+    l2w:  'Pathogens transported from land to surface water via runoff.',
+    w2w:  'Pathogens remaining in wastewater treatment plant effluent discharged to surface water.',
+  };
+
+  const flows = [
+    { id: 'h2w', from: 'Humans', to: 'Surface Water', label: 'Direct discharge', value: priHumanToWater, secValue: secHumanToWater },
+    { id: 'h2l', from: 'Humans', to: 'Land', label: 'On-land emissions', value: priHumanToLand, secValue: secHumanToLand },
+    { id: 'l2w', from: 'Land', to: 'Surface Water', label: 'Runoff transport', value: priLandToWater, secValue: secLandToWater },
+    { id: 'w2w', from: 'WWTP', to: 'Surface Water', label: 'Treated effluent', value: priWwtpToWater, secValue: secWwtpToWater },
+  ];
+
+  if (priLivestockToLand > 0 || secLivestockToLand > 0) {
+    flows.splice(2, 0, {
+      id: 'ls2l', from: 'Livestock', to: 'Land', label: 'Manure loading', value: priLivestockToLand, secValue: secLivestockToLand,
+    });
+  }
+
+  const visibleFlows = flows.filter(f => (f.value || 0) > 0 || (f.secValue || 0) > 0);
+  if (visibleFlows.length === 0) return null;
+
+  return (
+    <div className="space-y-2.5">
+      {visibleFlows.map(flow => {
+        const pct = isComparison && flow.value > 0 ? ((flow.secValue - flow.value) / flow.value) * 100 : null;
+        const desc = PATHWAY_DESCRIPTIONS[flow.id];
+        return (
+          <div key={flow.id} className="flex items-center gap-2.5 p-2.5 rounded-lg border border-gray-100 bg-white">
+            <div className="px-2.5 py-1 rounded bg-wpBlue/10 text-wpBlue text-xs font-semibold min-w-[96px] text-center">{flow.from}</div>
+            <ArrowRight size={14} className="text-gray-300 flex-shrink-0"/>
+            <div className="px-2.5 py-1 rounded bg-wpTeal/10 text-wpTeal text-xs font-semibold min-w-[116px] text-center">{flow.to}</div>
+            {desc && (
+              <p className="text-xs text-gray-400 flex-1 leading-snug hidden sm:block">{desc}</p>
+            )}
+            <div className="ml-auto text-right flex-shrink-0">
+              <div className="flex items-center justify-end gap-2">
+                <span className={`text-sm font-bold tabular-nums ${isComparison ? 'opacity-40' : ''}`}>{formatScientific(flow.value)}</span>
+                {isComparison && <span className="text-sm font-bold tabular-nums text-wpBlue">{formatScientific(flow.secValue)}</span>}
+                {pct !== null && (
+                  <span className={`text-xs font-semibold ${pct > 0 ? 'text-red-600' : pct < 0 ? 'text-green-600' : 'text-gray-500'}`}>
+                    {fmtPct(pct)}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -959,30 +1077,36 @@ async function loadScenarioOutputs(scId) {
   const landEmFile   = files.find(f => f.includes('land_emissions')          && f.endsWith('.csv'));
   const waterSrcFile = files.find(f => f.includes('human_sources_water')     && f.endsWith('.csv'));
   const landSrcFile  = files.find(f => f.includes('human_sources_land')      && f.endsWith('.csv'));
+  const waterLsFile  = files.find(f => f.includes('livestock_sources_water') && f.endsWith('.csv'));
+  const landLsFile   = files.find(f => f.includes('livestock_sources_land')  && f.endsWith('.csv'));
   const waterTifFile = files.find(f => f.includes('surface_water_emissions') && f.endsWith('.tif'));
   const landTifFile  = files.find(f => f.includes('land_emissions')          && f.endsWith('.tif'));
 
-  const [geoRes, wEmRes, lEmRes, wSrcRes, lSrcRes, wStatsRes, lStatsRes] = await Promise.all([
+  const [geoRes, wEmRes, lEmRes, wSrcRes, lSrcRes, wLsRes, lLsRes, wStatsRes, lStatsRes] = await Promise.all([
     axios.get(`/api/scenarios/${scId}/geodata`),
     waterEmFile  ? axios.get(`/api/scenarios/${scId}/output-csv-data/${waterEmFile}`)  : Promise.resolve(null),
     landEmFile   ? axios.get(`/api/scenarios/${scId}/output-csv-data/${landEmFile}`)   : Promise.resolve(null),
     waterSrcFile ? axios.get(`/api/scenarios/${scId}/output-csv-data/${waterSrcFile}`) : Promise.resolve(null),
     landSrcFile  ? axios.get(`/api/scenarios/${scId}/output-csv-data/${landSrcFile}`)  : Promise.resolve(null),
+    waterLsFile  ? axios.get(`/api/scenarios/${scId}/output-csv-data/${waterLsFile}`)  : Promise.resolve(null),
+    landLsFile   ? axios.get(`/api/scenarios/${scId}/output-csv-data/${landLsFile}`)   : Promise.resolve(null),
     waterTifFile ? axios.get(`/api/scenarios/${scId}/raster-area-stats/${waterTifFile}`).catch(() => null) : Promise.resolve(null),
     landTifFile  ? axios.get(`/api/scenarios/${scId}/raster-area-stats/${landTifFile}`).catch(() => null)  : Promise.resolve(null),
   ]);
 
   return {
-    geojson:           geoRes?.data    || null,
-    waterEmissions:    wEmRes?.data    || null,
-    landEmissions:     lEmRes?.data    || null,
-    waterSources:      wSrcRes?.data   || null,
-    landSources:       lSrcRes?.data   || null,
-    waterTif:          waterTifFile    || null,
-    landTif:           landTifFile     || null,
-    waterRasterStats:  wStatsRes?.data || null,
-    landRasterStats:   lStatsRes?.data || null,
-    loadedAt:          Date.now(),
+    geojson:                geoRes?.data   || null,
+    waterEmissions:         wEmRes?.data   || null,
+    landEmissions:          lEmRes?.data   || null,
+    waterSources:           wSrcRes?.data  || null,
+    landSources:            lSrcRes?.data  || null,
+    livestockWaterSources:  wLsRes?.data   || null,
+    livestockLandSources:   lLsRes?.data   || null,
+    waterTif:               waterTifFile   || null,
+    landTif:                landTifFile    || null,
+    waterRasterStats:       wStatsRes?.data || null,
+    landRasterStats:        lStatsRes?.data || null,
+    loadedAt:               Date.now(),
   };
 }
 
@@ -996,7 +1120,6 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
   // Up to 2 selected scenario IDs.  index 0 = primary, index 1 = secondary
   const [selectedScIds, setSelectedScIds] = useState(initialScenarioId ? [initialScenarioId] : []);
   const [emissionType,  setEmissionType]  = useState('water');
-  const [selectedCategory, setSelectedCategory] = useState('human-emissions');
 
   // Cached data keyed by scenario id.  Value: output object | 'loading' | 'error'
   const [scenarioData, setScenarioData] = useState({});
@@ -1126,9 +1249,6 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
   };
 
   // ── Selectors
-  const selectedCs      = caseStudies.find(c => c.id === selectedCsId);
-  const enabledCatIds   = selectedCs?.enabled_categories ?? null;
-  const isCatEnabled    = (id) => !enabledCatIds || enabledCatIds.includes(id);
   const primaryScenario   = availableScenarios.find(s => s.id === primaryScId);
   const secondaryScenario = availableScenarios.find(s => s.id === secondaryScId);
 
@@ -1197,27 +1317,7 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
         </div>
       </div>
 
-      {/* Category tabs */}
-      <div className="flex-shrink-0 -mx-6 px-6 mt-2">
-        <div className="flex space-x-2 rounded-xl">
-          {RESULT_CATEGORIES.map(cat => {
-            const enabled = isCatEnabled(cat.id);
-            const active  = selectedCategory === cat.id;
-            return (
-              <button key={cat.id} disabled={!enabled}
-                onClick={() => { if (enabled) setSelectedCategory(cat.id); }}
-                className={`relative flex flex-1 items-center gap-3 px-6 py-3 rounded-xl transition-colors justify-center ${
-                  !enabled ? 'bg-white-100 text-gray-400 opacity-40 cursor-not-allowed' :
-                  active   ? 'bg-white text-wpBlue shadow-md shadow-wpGray-500/50' :
-                             'bg-gray-100 text-wpBlue hover:bg-gray-200'
-                }`}>
-                <img src={cat.icon} alt={cat.label} className="w-10 h-10"/>
-                <span className="font-semibold font-outfit">{cat.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      {/* Category tabs — hidden; only human-emissions view is currently active */}
 
       {/* Empty state */}
       {!primaryScId && (
@@ -1230,19 +1330,8 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
         </div>
       )}
 
-      {/* Category: coming soon */}
-      {primaryScId && selectedCategory !== 'human-emissions' && (
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-center text-gray-400">
-            <BarChart2 size={48} className="mx-auto mb-3 text-gray-200"/>
-            <p className="text-lg font-medium text-gray-300">Coming soon</p>
-            <p className="text-sm mt-1">Results for <span className="font-medium">{RESULT_CATEGORIES.find(c=>c.id===selectedCategory)?.label}</span> are not yet available.</p>
-          </div>
-        </div>
-      )}
-
       {/* Human emissions */}
-      {primaryScId && selectedCategory === 'human-emissions' && (
+      {primaryScId && (
         <div className="space-y-4 mt-2 pb-6 pt-3">
 
           {/* Scenario info + emission-type toggle bar */}
@@ -1299,36 +1388,35 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
             onAreaSelect={handleAreaSelect}
           />
 
-          {/* Filter by area + analytics — single panel */}
-          {(areaOptions.length > 0 || primaryData) && (
-            <div className="bg-white rounded-lg border border-gray-200 px-4 py-4 space-y-4">
-              {primaryScenario?.pathogen && (
-                <p className="text-md font-semibold text-wpBlue uppercase tracking-wide mr-6">
-                  {primaryScenario.pathogen.charAt(0).toUpperCase() + primaryScenario.pathogen.slice(1)} Emissions by Source
-                  {isComparison && <span className="ml-1 text-xs font-normal text-wpTeal bg-wpTeal/10 px-1.5 py-0.5 rounded">comparison</span>}
+          {/* Section 1: area filter for map/area breakdown */}
+          {areaOptions.length > 0 && (
+            <div className="bg-white rounded-lg border border-gray-200 px-4 py-3">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Filter by area</p>
+              <div className="flex flex-wrap gap-1">
+                {areaOptions.map(({ iso, name }) => {
+                  const isActive = selectedAreas?.has(iso);
+                  return (
+                    <button key={iso} onClick={() => handleAreaSelect(iso)}
+                      className={`px-3 py-1 text-xs rounded-full font-medium transition-colors ${
+                        isActive
+                          ? 'bg-wpBlue text-white'
+                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                      }`}>
+                      {name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
-                </p>
-              )}
-              {areaOptions.length > 0 && (
-                <div>
-                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Filter by area</p>
-                  <div className="flex flex-wrap gap-1">
-                    {areaOptions.map(({ iso, name }) => {
-                      const isActive = selectedAreas?.has(iso);
-                      return (
-                        <button key={iso} onClick={() => handleAreaSelect(iso)}
-                          className={`px-3 py-1 text-xs rounded-full font-medium transition-colors ${
-                            isActive
-                              ? 'bg-wpBlue text-white'
-                              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                          }`}>
-                          {name}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
+          {/* Section 2: most contributing sources */}
+          {primaryData && (
+            <div className="bg-white rounded-lg border border-gray-200 px-4 py-4 space-y-4">
+              <p className="text-md font-semibold text-wpBlue uppercase tracking-wide mr-6">
+                Most Contributing Sources
+                {isComparison && <span className="ml-1 text-xs font-normal text-wpTeal bg-wpTeal/10 px-1.5 py-0.5 rounded">comparison</span>}
+              </p>
               <StatsSection
                 primaryData={primaryData}
                 secondaryData={secondaryData}
@@ -1336,6 +1424,24 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
                 selectedAreas={selectedAreas}
                 emissionType={emissionType}
               />
+            </div>
+          )}
+
+          {/* Section 3: simple high-level pathways — constrained to 50% width */}
+          {emissionType === 'water' && primaryData && (
+            <div className="w-1/2">
+              <div className="bg-white rounded-lg border border-gray-200 px-4 py-4 space-y-3">
+                <p className="text-md font-semibold text-wpBlue uppercase tracking-wide mr-6">
+                  Emission Pathways
+                  {isComparison && <span className="ml-1 text-xs font-normal text-wpTeal bg-wpTeal/10 px-1.5 py-0.5 rounded">comparison</span>}
+                </p>
+                <PathwaysSection
+                  primaryData={primaryData}
+                  secondaryData={secondaryData}
+                  isComparison={isComparison}
+                  selectedAreas={selectedAreas}
+                />
+              </div>
             </div>
           )}
 

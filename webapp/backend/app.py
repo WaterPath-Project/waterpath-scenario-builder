@@ -8,6 +8,7 @@ import uuid
 import zipfile
 import json
 import shutil
+import struct
 import subprocess
 import docker
 import csv
@@ -540,6 +541,8 @@ def generate_yaml_content(folder, pathogen, flat=False, cs_path=None, wwtp_mode=
     """
     p = (pathogen or 'unknown').lower().strip()
     slug = folder
+    ls = _detect_livestock_module(cs_path, folder) if cs_path else None
+
     if flat:
         out_dir  = 'output'
         log_file = 'output/glowpa.log'
@@ -552,6 +555,12 @@ def generate_yaml_content(folder, pathogen, flat=False, cs_path=None, wwtp_mode=
                 rel  = os.path.relpath(full, base).replace(os.sep, '/')
                 return f'input/{rel}'
             return f'input/{fname}'
+
+        def ls_path(sub):
+            """YAML path for a file relative to livestock_emissions/."""
+            abs_p = os.path.join(ls['dir'], sub)
+            base  = os.path.join(cs_path, 'input', folder)
+            return 'input/' + os.path.relpath(abs_p, base).replace(os.sep, '/')
     else:
         out_dir  = f'output/{folder}'
         log_file = f'output/{folder}/glowpa.log'
@@ -562,6 +571,51 @@ def generate_yaml_content(folder, pathogen, flat=False, cs_path=None, wwtp_mode=
                 full = _resolve_data_path(cs_path, folder, fname)
                 return os.path.relpath(full, cs_path).replace(os.sep, '/')
             return f'input/{folder}/{fname}'
+
+        def ls_path(sub):
+            """YAML path for a file relative to livestock_emissions/."""
+            abs_p = os.path.join(ls['dir'], sub)
+            return os.path.relpath(abs_p, cs_path).replace(os.sep, '/')
+
+    # ── Livestock input section ───────────────────────────────────────────────
+    livestock_input_yaml = ''
+    if ls:
+        if ls['has_manure_management']:
+            livestock_input_yaml += (
+                f"  manure:\n"
+                f"    management_systems: {ls_path('manure_management.RDS')}\n"
+            )
+        if ls['temperature_tif']:
+            temp_sub = os.path.relpath(ls['temperature_tif'], ls['dir']).replace(os.sep, '/')
+            livestock_input_yaml += (
+                f"  temperature:\n"
+                f"    year: {ls_path(temp_sub)}\n"
+            )
+        ls_subtree = ''
+        if ls['has_animal_isoraster']:
+            ls_subtree += f"    animal_isoraster: {ls_path('animal_isoraster.tif')}\n"
+        if ls['has_production_systems']:
+            ls_subtree += f"    production_systems: {ls_path('production_systems.RDS')}\n"
+        if ls['has_manure_fractions']:
+            ls_subtree += f"    manure_fractions: {ls_path('manure_fractions.RDS')}\n"
+        if ls['animals']:
+            ls_subtree += "    animals:\n"
+            for animal, info in ls['animals'].items():
+                if info['has_isodata'] and info['has_heads']:
+                    ls_subtree += (
+                        f"      {animal}:\n"
+                        f"        isodata: {ls_path(f'animals/isodata_{animal}.RDS')}\n"
+                        f"        heads: {ls_path(f'animals/{animal}_heads.tif')}\n"
+                    )
+        if ls_subtree:
+            livestock_input_yaml += f"  livestock:\n{ls_subtree}"
+
+    livestock_option_yaml = "livestock:\n  enabled: TRUE\n" if ls else ""
+    livestock_output_yaml = (
+        f"    livestock:\n"
+        f"      land: livestock_sources_land_{p}_{slug}.csv\n"
+        f"      surface_water: livestock_sources_water_{p}_{slug}.csv\n"
+    ) if ls else ""
 
     return (
         f"logger:\n"
@@ -576,9 +630,11 @@ def generate_yaml_content(folder, pathogen, flat=False, cs_path=None, wwtp_mode=
         + f"  population:\n"
         f"    urban: {inp_path('popurban.tif')}\n"
         f"    rural: {inp_path('poprural.tif')}\n"
-        f"wwtp:\n"
+        + livestock_input_yaml
+        + f"wwtp:\n"
         f"  treatment: {wwtp_mode}\n"
-        f"population:\n"
+        + livestock_option_yaml
+        + f"population:\n"
         f"  correct: TRUE\n"
         f"pathogen: {p}\n"
         f"output:\n"
@@ -587,7 +643,8 @@ def generate_yaml_content(folder, pathogen, flat=False, cs_path=None, wwtp_mode=
         f"    human:\n"
         f"      land: human_sources_land_{p}_{slug}.csv\n"
         f"      surface_water: human_sources_water_{p}_{slug}.csv\n"
-        f"  sinks:\n"
+        + livestock_output_yaml
+        + f"  sinks:\n"
         f"    surface_water:\n"
         f"      table: surface_water_emissions_{p}_{slug}.csv\n"
         f"      grid: surface_water_emissions_{p}_{slug}.tif\n"
@@ -628,6 +685,115 @@ def _detect_wwtp_mode(cs_path, folder):
     return 'POINT'
 
 
+def _tif_pixel_dimensions(path):
+    """Return (width, height) read directly from a TIFF header, or None on failure."""
+    try:
+        with open(path, 'rb') as f:
+            raw = f.read(8)
+        if len(raw) < 8:
+            return None
+        bo = '<' if raw[:2] == b'II' else '>'
+        ifd_offset = struct.unpack_from(bo + 'I', raw, 4)[0]
+        with open(path, 'rb') as f:
+            f.seek(ifd_offset)
+            entry_count = struct.unpack_from(bo + 'H', f.read(2))[0]
+            entries = f.read(entry_count * 12)
+        width = height = None
+        for i in range(entry_count):
+            tag, typ = struct.unpack_from(bo + 'HH', entries, i * 12)
+            val_off = i * 12 + 8
+            decode = bo + ('H' if typ == 3 else 'I')
+            if tag == 256:
+                width = struct.unpack_from(decode, entries, val_off)[0]
+            elif tag == 257:
+                height = struct.unpack_from(decode, entries, val_off)[0]
+        return (width, height) if width and height else None
+    except Exception:
+        return None
+
+
+# GloWPa-recognised animal types (per model documentation).
+_GLOWPA_ANIMALS = [
+    'asses', 'buffaloes', 'camels', 'cattle', 'chickens',
+    'ducks', 'goats', 'horses', 'mules', 'pigs', 'sheep',
+]
+
+
+def _detect_livestock_module(cs_path, folder):
+    """Return livestock input metadata for a scenario, or None if absent.
+
+    Checks for a livestock_emissions/ sub-folder inside the scenario input
+    directory.  When present, returns a dict:
+      dir                   - absolute path to livestock_emissions/
+      animals_dir           - absolute path to livestock_emissions/animals/
+      has_animal_isoraster  - bool
+      has_production_systems - bool
+      has_manure_fractions  - bool
+      has_manure_management - bool
+      temperature_tif       - absolute path to yearly temperature raster or None
+      animals               - {animal: {'has_isodata': bool, 'has_heads': bool}}
+    """
+    livestock_dir = os.path.join(cs_path, 'input', folder, 'livestock_emissions')
+    if not os.path.isdir(livestock_dir):
+        return None
+
+    animals_dir = os.path.join(livestock_dir, 'animals')
+    animals = {}
+    if os.path.isdir(animals_dir):
+        for animal in _GLOWPA_ANIMALS:
+            isodata_csv = os.path.join(animals_dir, f'isodata_{animal}.csv')
+            heads_tif   = os.path.join(animals_dir, f'{animal}_heads.tif')
+            if os.path.exists(isodata_csv) or os.path.exists(heads_tif):
+                animals[animal] = {
+                    'has_isodata': os.path.exists(isodata_csv),
+                    'has_heads':   os.path.exists(heads_tif),
+                }
+
+    # Look for a yearly temperature raster (several common naming conventions).
+    temperature_tif = None
+    for tname in ('temperature_year.tif', 'temperature.tif', 'Tair_year.tif'):
+        candidate = os.path.join(livestock_dir, tname)
+        if os.path.exists(candidate):
+            temperature_tif = candidate
+            break
+    if temperature_tif is None:
+        temp_subdir = os.path.join(livestock_dir, 'temperature')
+        if os.path.isdir(temp_subdir):
+            for fname in sorted(os.listdir(temp_subdir)):
+                if fname.lower().endswith('.tif'):
+                    temperature_tif = os.path.join(temp_subdir, fname)
+                    break
+
+    # Validate that the temperature raster is not a placeholder too small to cover
+    # the analysis domain.  Compare pixel area against animal_isoraster.tif; if the
+    # temperature raster is less than 25 % of the reference area, discard it so the
+    # model does not crash silently.
+    if temperature_tif:
+        ref_raster = os.path.join(livestock_dir, 'animal_isoraster.tif')
+        temp_dims = _tif_pixel_dimensions(temperature_tif)
+        ref_dims  = _tif_pixel_dimensions(ref_raster) if os.path.exists(ref_raster) else None
+        if temp_dims and ref_dims:
+            if (temp_dims[0] * temp_dims[1]) < (ref_dims[0] * ref_dims[1]) * 0.25:
+                print(
+                    f"WARNING: temperature raster {temperature_tif} "
+                    f"({temp_dims[0]}x{temp_dims[1]} px) is too small relative to "
+                    f"the analysis domain ({ref_dims[0]}x{ref_dims[1]} px); "
+                    "ignoring it to prevent a silent model crash."
+                )
+                temperature_tif = None
+
+    return {
+        'dir':                    livestock_dir,
+        'animals_dir':            animals_dir,
+        'has_animal_isoraster':   os.path.exists(os.path.join(livestock_dir, 'animal_isoraster.tif')),
+        'has_production_systems': os.path.exists(os.path.join(livestock_dir, 'production_systems.csv')),
+        'has_manure_fractions':   os.path.exists(os.path.join(livestock_dir, 'manure_fractions.csv')),
+        'has_manure_management':  os.path.exists(os.path.join(livestock_dir, 'manure_management.csv')),
+        'temperature_tif':        temperature_tif,
+        'animals':                animals,
+    }
+
+
 def _r_csv_to_rds_snippet(csv_path, rds_path):
     """R code fragment: idempotently convert csv_path → rds_path."""
     return (
@@ -645,8 +811,10 @@ def _r_iso_csv_to_rds_snippet(csv_path, rds_path, treatment_csv_path=None):
 
     Strategy (in order):
       1. If FractionPrimarytreatment present in isodata.csv → weighted sum per row.
-      2. Else if treatment_csv_path provided and exists → capacity-weighted average
-         from WWTP POINT facilities (treatment_type: Primary/Secondary/Tertiary).
+      2a. Else if treatment_csv_path exists and has FractionPrimarytreatment (AREA
+          mode) → mean weighted sum across rows.
+      2b. Else if treatment_csv_path exists and has capacity/treatment_type (POINT
+          mode) → capacity-weighted average from WWTP facilities.
       3. If neither source available → default to Primary-only values.
 
     Constants match prepare.R:
@@ -664,7 +832,7 @@ def _r_iso_csv_to_rds_snippet(csv_path, rds_path, treatment_csv_path=None):
         f"  if (file.exists(csv) && (!file.exists(rds) || file.mtime(csv) > file.mtime(rds))) {{ "
         f"    message(paste('Converting', csv, 'to', rds)); "
         f"    df <- read.csv(csv, stringsAsFactors=FALSE); "
-        # --- Strategy 1: fraction columns already in isodata (FRACTIONS WWTP mode) ---
+        # --- Strategy 1: fraction columns already in isodata (AREA WWTP mode cols in isodata) ---
         f"    if (!'fEmitted_inEffluent_after_treatment_virus' %in% names(df) && "
         f"        'FractionPrimarytreatment' %in% names(df)) {{ "
         f"      df$fEmitted_inEffluent_after_treatment_virus <- "
@@ -676,22 +844,35 @@ def _r_iso_csv_to_rds_snippet(csv_path, rds_path, treatment_csv_path=None):
         f"        df$FractionSecondarytreatment * (0.20 - 0.20*0.90) + "
         f"        df$FractionTertiarytreatment  * (0.25 - 0.25*0.92); "
         f"    }}; "
-        # --- Strategy 2: derive from treatment.csv POINT WWTP facilities ---
+        # --- Strategy 2 (treatment.csv): AREA or POINT mode ---
         f"    if (!'fEmitted_inEffluent_after_treatment_virus' %in% names(df)) {{ "
         f"      .tr_path <- {tr_path_r}; "
         f"      if (!is.null(.tr_path) && file.exists(.tr_path)) {{ "
         f"        .tr <- read.csv(.tr_path, stringsAsFactors=FALSE); "
-        f"        .tot <- sum(.tr$capacity, na.rm=TRUE); "
-        f"        if (.tot > 0) {{ "
-        f"          .fp <- sum(.tr$capacity[.tr$treatment_type=='Primary'],   na.rm=TRUE) / .tot; "
-        f"          .fs <- sum(.tr$capacity[.tr$treatment_type=='Secondary'], na.rm=TRUE) / .tot; "
-        f"          .ft <- sum(.tr$capacity[.tr$treatment_type=='Tertiary'],  na.rm=TRUE) / .tot; "
-        f"        }} else {{ .fp <- 1; .fs <- 0; .ft <- 0 }}; "
-        f"        .fem_v <- .fp*0.2425 + .fs*0.025 + .ft*0.004; "
-        f"        .fem_p <- .fp*0.425  + .fs*0.02  + .ft*0.02; "
-        f"        message(paste('fEmitted from WWTP: virus=', round(.fem_v,4), 'protozoa=', round(.fem_p,4))); "
-        f"        df$fEmitted_inEffluent_after_treatment_virus    <- .fem_v; "
-        f"        df$fEmitted_inEffluent_after_treatment_protozoa <- .fem_p; "
+        # --- Strategy 2a: AREA mode treatment.csv (has FractionPrimarytreatment) ---
+        f"        if ('FractionPrimarytreatment' %in% names(.tr)) {{ "
+        f"          .fp <- mean(.tr$FractionPrimarytreatment,   na.rm=TRUE); "
+        f"          .fs <- mean(.tr$FractionSecondarytreatment, na.rm=TRUE); "
+        f"          .ft <- mean(.tr$FractionTertiarytreatment,  na.rm=TRUE); "
+        f"          message(paste('fEmitted from AREA treatment.csv: fp=', round(.fp,4), 'fs=', round(.fs,4), 'ft=', round(.ft,4))); "
+        f"          df$fEmitted_inEffluent_after_treatment_virus    <- "
+        f"            .fp*(0.97-0.97*0.75) + .fs*(0.50-0.50*0.95) + .ft*(0.40-0.40*0.99); "
+        f"          df$fEmitted_inEffluent_after_treatment_protozoa <- "
+        f"            .fp*(0.85-0.85*0.50) + .fs*(0.20-0.20*0.90) + .ft*(0.25-0.25*0.92); "
+        # --- Strategy 2b: POINT mode treatment.csv (has capacity/treatment_type) ---
+        f"        }} else {{ "
+        f"          .tot <- sum(.tr$capacity, na.rm=TRUE); "
+        f"          if (isTRUE(.tot > 0)) {{ "
+        f"            .fp <- sum(.tr$capacity[.tr$treatment_type=='Primary'],   na.rm=TRUE) / .tot; "
+        f"            .fs <- sum(.tr$capacity[.tr$treatment_type=='Secondary'], na.rm=TRUE) / .tot; "
+        f"            .ft <- sum(.tr$capacity[.tr$treatment_type=='Tertiary'],  na.rm=TRUE) / .tot; "
+        f"          }} else {{ .fp <- 1; .fs <- 0; .ft <- 0 }}; "
+        f"          .fem_v <- .fp*0.2425 + .fs*0.025 + .ft*0.004; "
+        f"          .fem_p <- .fp*0.425  + .fs*0.02  + .ft*0.02; "
+        f"          message(paste('fEmitted from POINT treatment.csv: virus=', round(.fem_v,4), 'protozoa=', round(.fem_p,4))); "
+        f"          df$fEmitted_inEffluent_after_treatment_virus    <- .fem_v; "
+        f"          df$fEmitted_inEffluent_after_treatment_protozoa <- .fem_p; "
+        f"        }} "
         f"      }} else {{ "
         # --- Strategy 3: fallback — assume all Primary ---
         f"        message('fEmitted fallback: assuming all Primary treatment'); "
@@ -764,19 +945,78 @@ def build_r_expr_exec(cs_folder_name, folder, yaml_filename, cs_path=None, wwtp_
         iso_rds = f'input/{folder}/isodata.RDS'
         tr_csv  = f'input/{folder}/treatment.csv'
         tr_rds  = f'input/{folder}/treatment.RDS'
+
+    # Livestock CSV→RDS conversions (paths relative to case-study root)
+    ls = _detect_livestock_module(cs_path, folder) if cs_path else None
+    livestock_rds_snippets = []
+    if ls:
+        def _ls_rel(sub):
+            return os.path.relpath(os.path.join(ls['dir'], sub), cs_path).replace(os.sep, '/')
+        for fname in ('manure_management', 'production_systems', 'manure_fractions'):
+            if os.path.exists(os.path.join(ls['dir'], f'{fname}.csv')):
+                livestock_rds_snippets.append(
+                    _r_csv_to_rds_snippet(_ls_rel(f'{fname}.csv'), _ls_rel(f'{fname}.RDS'))
+                )
+        for animal, info in ls['animals'].items():
+            if info['has_isodata']:
+                livestock_rds_snippets.append(
+                    _r_csv_to_rds_snippet(
+                        _ls_rel(f'animals/isodata_{animal}.csv'),
+                        _ls_rel(f'animals/isodata_{animal}.RDS'),
+                    )
+                )
+    livestock_rds_block = ('; '.join(livestock_rds_snippets) + '; ') if livestock_rds_snippets else ''
+
     return (
         f"setwd('/app/data/{cs_folder_name}'); "
         f"local({{"
         f"{_r_iso_csv_to_rds_snippet(iso_csv, iso_rds, tr_csv)}; "
         f"if (file.exists('{tr_csv}')) {{ {_r_csv_to_rds_snippet(tr_csv, tr_rds)} }}"
-        f"}}); "
+        + (f'; {livestock_rds_block}' if livestock_rds_block else '')
+        + f"}}); "
         f"library(glowpa); "
+        # GloWPa 0.2.1 ships with broken rotavirus livestock pathogen data:
+        #   - storage_time / storage_time_low are NA  -> causes validate_pathogen crash
+        #   - Tcoeff_1 = +0.0089 (positive) -> pathogen_decay_rate() requires negative
+        #   - Tcoeff_2 = 0.0397 (near-zero) -> yields sub-day t90 at any real temperature
+        # No livestock+rotavirus example exists in the package; the only validated
+        # livestock Tcoeff values are those for cryptosporidium (-2.5586, 119.63).
+        # We fall back to those values so the manure-storage survival calculation runs.
+        f"local({{p <- as.data.frame(glowpa:::pathogens); "
+        f"p[is.na(p[,'storage_time']),'storage_time'] <- 274L; "
+        f"p[is.na(p[,'storage_time_low']),'storage_time_low'] <- 30L; "
+        f"p[p[,'name']=='rotavirus','Tcoeff_1'] <- -2.5586; "
+        f"p[p[,'name']=='rotavirus','Tcoeff_2'] <- 119.63; "
+        f"utils::assignInNamespace('pathogens', p, ns='glowpa')}}); "
+        # GloWPa 0.2.1 calls sym() (from rlang) without the rlang:: qualifier inside
+        # group_modify / group_map lambdas in pathways_land, output_table_livestock,
+        # and several other functions.  With dplyr >= 1.1.x the lambda closures no
+        # longer inherit rlang's namespace, so sym() is not found at call time,
+        # causing a silent crash after "Finished livestock emissions".
+        # Fix: set each affected function's environment to a child env that
+        # provides sym = rlang::sym, so the lookup succeeds.
+        f"local({{"
+        f".patch <- function(fn_name) {{"
+        f"  env <- asNamespace('glowpa'); fn <- get(fn_name, envir=env); "
+        f"  ne <- new.env(parent=environment(fn)); ne$sym <- rlang::sym; "
+        f"  environment(fn) <- ne; "
+        f"  base::unlockBinding(fn_name, env); "
+        f"  assign(fn_name, fn, envir=env); "
+        f"  base::lockBinding(fn_name, env)"
+        f"}}; "
+        f"for (.fn in c('pathways_land','output_table_livestock','output_table_human',"
+        f"'animal_emission','livstock_manure_frac_to_grid','output_sink_table',"
+        f"'pathways_humans_rast','prepare_livestock_vermeulen','routing',"
+        f"'wwtp_area_emissions_to_grid')) {{"
+        f"  tryCatch(.patch(.fn), error=function(e) NULL)"
+        f"}}"
+        f"}}); "
         f"glowpa_init('config/{yaml_filename}'); "
         f"glowpa_start()"
     )
 
 
-def build_r_expr_run(yaml_filename, cs_path=None, folder=None):
+def build_r_expr_run(yaml_filename, cs_path=None, folder=None, wwtp_mode='POINT'):
     """R expression for docker run mode.
 
     The scenario input dir is already mounted at /app/input, so absolute paths
@@ -784,6 +1024,7 @@ def build_r_expr_run(yaml_filename, cs_path=None, folder=None):
 
     cs_path + folder: when supplied, resolves paths relative to the mount point
         so category sub-folders (e.g. human_emissions/) are handled correctly.
+    wwtp_mode: 'POINT' builds treatment.RDS; 'AREA' skips it.
     """
     if cs_path and folder:
         def _rel(fname):
@@ -799,11 +1040,61 @@ def build_r_expr_run(yaml_filename, cs_path=None, folder=None):
         iso_rds = '/app/input/isodata.RDS'
         tr_csv  = '/app/input/treatment.csv'
         tr_rds  = '/app/input/treatment.RDS'
+
+    # Livestock CSV→RDS conversions (absolute /app/input/ paths)
+    ls = _detect_livestock_module(cs_path, folder) if (cs_path and folder) else None
+    livestock_rds_snippets = []
+    if ls:
+        def _ls_flat(sub):
+            abs_p = os.path.join(ls['dir'], sub)
+            base  = os.path.join(cs_path, 'input', folder)
+            return '/app/input/' + os.path.relpath(abs_p, base).replace(os.sep, '/')
+        for fname in ('manure_management', 'production_systems', 'manure_fractions'):
+            if os.path.exists(os.path.join(ls['dir'], f'{fname}.csv')):
+                livestock_rds_snippets.append(
+                    _r_csv_to_rds_snippet(_ls_flat(f'{fname}.csv'), _ls_flat(f'{fname}.RDS'))
+                )
+        for animal, info in ls['animals'].items():
+            if info['has_isodata']:
+                livestock_rds_snippets.append(
+                    _r_csv_to_rds_snippet(
+                        _ls_flat(f'animals/isodata_{animal}.csv'),
+                        _ls_flat(f'animals/isodata_{animal}.RDS'),
+                    )
+                )
+    livestock_rds_block = ('; '.join(livestock_rds_snippets) + '; ') if livestock_rds_snippets else ''
+
     return (
         f"local({{"
         f"{_r_iso_csv_to_rds_snippet(iso_csv, iso_rds, tr_csv)}; "
         + (f"if (file.exists('{tr_csv}')) {{ {_r_csv_to_rds_snippet(tr_csv, tr_rds)} }}" if wwtp_mode == 'POINT' else "")
+        + (f'; {livestock_rds_block}' if livestock_rds_block else '')
         + f"}}); "
+        f"library(glowpa); "
+        f"local({{p <- as.data.frame(glowpa:::pathogens); "
+        f"p[is.na(p[,'storage_time']),'storage_time'] <- 274L; "
+        f"p[is.na(p[,'storage_time_low']),'storage_time_low'] <- 30L; "
+        f"p[p[,'name']=='rotavirus','Tcoeff_1'] <- -2.5586; "
+        f"p[p[,'name']=='rotavirus','Tcoeff_2'] <- 119.63; "
+        f"utils::assignInNamespace('pathogens', p, ns='glowpa')}}); "
+        f"local({{"
+        f".patch <- function(fn_name) {{"
+        f"  env <- asNamespace('glowpa'); fn <- get(fn_name, envir=env); "
+        f"  ne <- new.env(parent=environment(fn)); ne$sym <- rlang::sym; "
+        f"  environment(fn) <- ne; "
+        f"  base::unlockBinding(fn_name, env); "
+        f"  assign(fn_name, fn, envir=env); "
+        f"  base::lockBinding(fn_name, env)"
+        f"}}; "
+        f"for (.fn in c('pathways_land','output_table_livestock','output_table_human',"
+        f"'animal_emission','livstock_manure_frac_to_grid','output_sink_table',"
+        f"'pathways_humans_rast','prepare_livestock_vermeulen','routing',"
+        f"'wwtp_area_emissions_to_grid')) {{"
+        f"  tryCatch(.patch(.fn), error=function(e) NULL)"
+        f"}}"
+        f"}}); "
+        f"glowpa_init('/app/config/{yaml_filename}'); "
+        f"glowpa_start()"
     )
 
 
@@ -841,28 +1132,47 @@ def build_model_cmd(cs_path, cs_folder_name, folder, yaml_filename, wwtp_mode='P
                    mounts; used when the persistent container is not running.
                    Uses flat /app/input paths in YAML.
     wwtp_mode: 'POINT' or 'AREA'; controls YAML and RDS conversion.
+
+    In both modes the R expression is written to a temporary .R script file
+    rather than passed via 'Rscript -e <expr>'.  Passing long expressions via
+    -e is unreliable: the Docker exec API may truncate or mangle multi-KB
+    argument strings.  Writing to a file avoids all command-length and
+    character-encoding issues, and makes the script inspectable for debugging.
     """
     if _glowpa_container_running():
         r_expr = build_r_expr_exec(cs_folder_name, folder, yaml_filename, cs_path=cs_path, wwtp_mode=wwtp_mode)
+        # Write script to the case-study root so both host and container can access it
+        script_host = os.path.join(cs_path, 'glowpa_run.R')
+        script_cont = f'/app/data/{cs_folder_name}/glowpa_run.R'
+        with open(script_host, 'w', encoding='utf-8') as _sf:
+            _sf.write(r_expr + '\n')
         return {
             'type': 'exec',
             'container': 'glowpa-container',
-            'command': ['Rscript', '-e', r_expr],
+            'command': ['Rscript', script_cont],
+            'script_host': script_host,
         }, 'exec'
     else:
         input_path  = os.path.join(cs_path, 'input', folder)
         output_path = os.path.join(cs_path, 'output', folder)
         config_path = os.path.join(cs_path, 'config')
         r_expr = build_r_expr_run(yaml_filename, cs_path=cs_path, folder=folder, wwtp_mode=wwtp_mode)
+        # Write script to output dir so container can access it via /app/output
+        os.makedirs(output_path, exist_ok=True)
+        script_host = os.path.join(output_path, 'glowpa_run.R')
+        script_cont = '/app/output/glowpa_run.R'
+        with open(script_host, 'w', encoding='utf-8') as _sf:
+            _sf.write(r_expr + '\n')
         return {
             'type': 'run',
             'image': GLOWPA_IMAGE,
-            'command': ['Rscript', '-e', r_expr],
+            'command': ['Rscript', script_cont],
             'volumes': {
-                input_path:  {'bind': '/app/input',  'mode': 'ro'},
+                input_path:  {'bind': '/app/input',  'mode': 'rw'},
                 output_path: {'bind': '/app/output', 'mode': 'rw'},
                 config_path: {'bind': '/app/config', 'mode': 'ro'},
             },
+            'script_host': script_host,
         }, 'run'
 
 
@@ -905,10 +1215,67 @@ def _execute_model_run(run_id, params):
         model_runs[run_id]['stdout'] = stdout
         model_runs[run_id]['stderr'] = stderr
         model_runs[run_id]['return_code'] = exit_code
-        simulation_complete = ('Finished GloWPa simulation' in stdout
-                               or 'Finished GloWPa simulation' in stderr)
+
+        # Read the glowpa.log file from disk — more reliable than stdout alone
+        # because the TEE appender writes to both, but long runs may have
+        # truncated or buffered stdout in exec mode.
+        cs_path = model_runs[run_id].get('cs_path', '')
+        folder = model_runs[run_id].get('folder', '')
+        log_file_content = ''
+        if cs_path and folder:
+            log_path = os.path.join(cs_path, 'output', folder, 'glowpa.log')
+            try:
+                with open(log_path, 'r', encoding='utf-8', errors='replace') as _lf:
+                    log_file_content = _lf.read()
+            except OSError:
+                pass
+
+        combined = stdout + '\n' + stderr + '\n' + log_file_content
+
+        # Primary completion signal (human-only and combined runs)
+        finished_simulation = 'Finished GloWPa simulation' in combined
+
+        # Scan the output directory for generated result files
+        output_files = []
+        if cs_path and folder:
+            output_dir = os.path.join(cs_path, 'output', folder)
+            if os.path.isdir(output_dir):
+                output_files = sorted(
+                    f for f in os.listdir(output_dir)
+                    if not f.endswith('.log')
+                )
+        model_runs[run_id]['output_files'] = output_files
+
+        # For livestock-enabled runs the simulation may end with
+        # "Finished livestock emissions" without logging the combined
+        # "Finished GloWPa simulation" line. Treat that as complete when
+        # at least one output file was actually produced.
+        finished_livestock = (
+            'Finished livestock emissions' in combined
+            and len(output_files) > 0
+        )
+
+        simulation_complete = finished_simulation or finished_livestock
         model_runs[run_id]['simulation_complete'] = simulation_complete
         model_runs[run_id]['status'] = 'success' if (exit_code == 0 and simulation_complete) else 'error'
+
+        # When GloWPa never created its own glowpa.log (i.e. R crashed before
+        # glowpa_init), persist the R session's stdout+stderr to a fallback
+        # log file so it survives page refreshes and is visible via the log endpoint.
+        if cs_path and folder:
+            exec_log = os.path.join(cs_path, 'output', folder, 'glowpa.log')
+            if not os.path.exists(exec_log):
+                run_log = os.path.join(cs_path, 'output', folder, 'glowpa.log')
+                r_output = (stdout or '') + ('\n' + stderr if stderr else '')
+                if r_output.strip():
+                    try:
+                        os.makedirs(os.path.dirname(run_log), exist_ok=True)
+                        with open(run_log, 'w', encoding='utf-8') as _lf:
+                            _lf.write('[R session output — GloWPa log not created; R crashed before glowpa_init]\n\n')
+                            _lf.write(r_output)
+                    except OSError:
+                        pass
+
         # Clean up RDS files after run (unless debug mode is enabled)
         if not model_runs[run_id].get('debug_mode', False):
             _cleanup_rds_files(run_id)
@@ -920,6 +1287,13 @@ def _execute_model_run(run_id, params):
         model_runs[run_id]['status'] = 'error'
         model_runs[run_id]['stderr'] = str(exc)
     finally:
+        # Always remove the temporary R script file written by build_model_cmd
+        script_host = params.get('script_host')
+        if script_host and os.path.exists(script_host):
+            try:
+                os.remove(script_host)
+            except OSError:
+                pass
         model_runs[run_id]['finished_at'] = datetime.now().isoformat()
         if client:
             try:
@@ -935,14 +1309,25 @@ def _cleanup_rds_files(run_id):
     folder = run.get('folder', '')
     if not (cs_path and folder):
         return
-    for rds_name in ['isodata.RDS', 'treatment.RDS']:
-        rds_path = _resolve_data_path(cs_path, folder, rds_name)
-        if os.path.exists(rds_path):
+    def _del(path):
+        if os.path.exists(path):
             try:
-                os.remove(rds_path)
-                print(f'[model-run] Deleted {rds_path}')
+                os.remove(path)
+                print(f'[model-run] Deleted {path}')
             except Exception as e:
-                print(f'[model-run] Could not delete {rds_path}: {e}')
+                print(f'[model-run] Could not delete {path}: {e}')
+
+    for rds_name in ['isodata.RDS', 'treatment.RDS']:
+        _del(_resolve_data_path(cs_path, folder, rds_name))
+    # Also clean up livestock RDS files if present
+    ls = _detect_livestock_module(cs_path, folder)
+    if ls:
+        for fname in ('manure_management.RDS', 'production_systems.RDS', 'manure_fractions.RDS'):
+            _del(os.path.join(ls['dir'], fname))
+        if os.path.isdir(ls['animals_dir']):
+            for fname in os.listdir(ls['animals_dir']):
+                if fname.lower().endswith('.rds'):
+                    _del(os.path.join(ls['animals_dir'], fname))
 
 
 # In-memory storage for case studies and scenarios (in production, use a database)
@@ -1295,6 +1680,227 @@ def _locate_scenario(scenario_id):
     raise ValueError(f'Scenario {scenario_id} not found')
 
 
+_LIVESTOCK_EDITABLE_CSVS = {
+    'manure_management.csv',
+    'manure_fractions.csv',
+    'production_systems.csv',
+}
+
+
+def _livestock_dir_for_scenario(scenario_id):
+    """Return (case_study, folder, livestock_dir) for a scenario, or raise ValueError."""
+    cs, folder = _locate_scenario(scenario_id)
+    ls_dir = os.path.join(cs['folder_path'], 'input', folder, 'livestock_emissions')
+    if not os.path.isdir(ls_dir):
+        raise ValueError('livestock_emissions folder not found for this scenario')
+    return cs, folder, ls_dir
+
+
+def _read_csv_table(path):
+    """Return {'data': [...], 'fieldnames': [...]} for a CSV file path."""
+    with open(path, 'r', newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        fieldnames = list(reader.fieldnames or [])
+        data = [dict(row) for row in reader]
+    return {'data': data, 'fieldnames': fieldnames}
+
+
+@frontend_app.route('/api/scenarios/<scenario_id>/livestock-population', methods=['GET'])
+def frontend_get_livestock_population(scenario_id):
+    """Return a table view over livestock animals/isodata_<animal>.csv files.
+
+    Response schema:
+      {
+        data: [{ animal, <isodata columns...> }, ...],
+        fieldnames: [<isodata columns...>]
+      }
+    """
+    try:
+        _, _, ls_dir = _livestock_dir_for_scenario(scenario_id)
+        animals_dir = os.path.join(ls_dir, 'animals')
+        if not os.path.isdir(animals_dir):
+            return jsonify({'data': [], 'fieldnames': []}), 200
+
+        isodata_files = sorted(
+            f for f in os.listdir(animals_dir)
+            if f.startswith('isodata_') and f.lower().endswith('.csv')
+        )
+        if not isodata_files:
+            return jsonify({'data': [], 'fieldnames': []}), 200
+
+        data = []
+        fieldnames = []
+        for fname in isodata_files:
+            animal = fname[len('isodata_'):-4]
+            table = _read_csv_table(os.path.join(animals_dir, fname))
+            row = dict(table['data'][0]) if table['data'] else {}
+            for col in table['fieldnames']:
+                if col not in fieldnames:
+                    fieldnames.append(col)
+            row['animal'] = animal
+            data.append(row)
+
+        # Keep common identifiers at the left when present.
+        preferred = ['iso', 'gid']
+        ordered = [c for c in preferred if c in fieldnames] + [c for c in fieldnames if c not in preferred]
+
+        return jsonify({'data': data, 'fieldnames': ordered}), 200
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@frontend_app.route('/api/scenarios/<scenario_id>/livestock-population', methods=['PUT'])
+def frontend_update_livestock_population(scenario_id):
+    """Update values in animals/isodata_<animal>.csv files from table rows.
+
+    For safety, identifier fields ('iso', 'gid') are never overwritten.
+    If an animal CSV has multiple rows, edited values are applied to all rows.
+    """
+    try:
+        _, _, ls_dir = _livestock_dir_for_scenario(scenario_id)
+        animals_dir = os.path.join(ls_dir, 'animals')
+        if not os.path.isdir(animals_dir):
+            return jsonify({'error': 'animals folder not found'}), 404
+
+        payload = request.get_json() or {}
+        rows = payload.get('rows', [])
+        by_animal = {str(r.get('animal', '')).strip(): r for r in rows if str(r.get('animal', '')).strip()}
+        if not by_animal:
+            return jsonify({'error': 'No animal rows provided'}), 400
+
+        readonly = {'animal', 'iso', 'gid'}
+        updated_files = 0
+        for animal, src_row in by_animal.items():
+            csv_path = os.path.join(animals_dir, f'isodata_{animal}.csv')
+            if not os.path.exists(csv_path):
+                continue
+
+            table = _read_csv_table(csv_path)
+            fieldnames = table['fieldnames']
+            rows_existing = table['data']
+            if not rows_existing:
+                rows_existing = [{k: '' for k in fieldnames}]
+
+            for row in rows_existing:
+                for k, v in src_row.items():
+                    if k in readonly:
+                        continue
+                    if k in fieldnames:
+                        row[k] = '' if v is None else str(v)
+
+            with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for r in rows_existing:
+                    writer.writerow({k: r.get(k, '') for k in fieldnames})
+            updated_files += 1
+
+        return jsonify({'message': 'Livestock population updated', 'updated_files': updated_files}), 200
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@frontend_app.route('/api/scenarios/<scenario_id>/livestock-available-animals', methods=['GET'])
+def frontend_livestock_available_animals(scenario_id):
+    """Return animals whose heads TIF has a non-zero grid sum.
+
+    Response: { animals: { <animal>: <total_pixel_sum> | null }, error: null }
+    Animals with no TIF file are omitted.  The sum is null when rasterio is
+    unavailable (treat as present in that case).
+    """
+    try:
+        _, _, ls_dir = _livestock_dir_for_scenario(scenario_id)
+        animals_dir = os.path.join(ls_dir, 'animals')
+        if not os.path.isdir(animals_dir):
+            return jsonify({'animals': {}}), 200
+
+        result = {}
+        for animal in _GLOWPA_ANIMALS:
+            tif_path = os.path.join(animals_dir, f'{animal}_heads.tif')
+            if not os.path.exists(tif_path):
+                continue
+            try:
+                import numpy as np
+                import rasterio
+                with rasterio.open(tif_path) as src:
+                    data = src.read(1).astype(float)
+                    nd = src.nodata
+                if nd is not None:
+                    data[data == float(nd)] = np.nan
+                data[data < 0] = np.nan
+                total = float(np.nansum(data))
+                result[animal] = total
+            except Exception:
+                # rasterio unavailable or TIF unreadable — treat as present
+                result[animal] = None
+
+        return jsonify({'animals': result}), 200
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@frontend_app.route('/api/scenarios/<scenario_id>/livestock-csv/<path:filename>', methods=['GET'])
+def frontend_get_livestock_csv(scenario_id, filename):
+    """Return rows for an editable livestock_emissions CSV file."""
+    try:
+        _, _, ls_dir = _livestock_dir_for_scenario(scenario_id)
+        name = os.path.basename(filename)
+        if name not in _LIVESTOCK_EDITABLE_CSVS:
+            return jsonify({'error': f'Unsupported livestock CSV: {name}'}), 400
+
+        csv_path = os.path.join(ls_dir, name)
+        if not os.path.exists(csv_path):
+            return jsonify({'data': [], 'fieldnames': []}), 200
+
+        table = _read_csv_table(csv_path)
+        return jsonify(table), 200
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@frontend_app.route('/api/scenarios/<scenario_id>/livestock-csv/<path:filename>', methods=['PUT'])
+def frontend_update_livestock_csv(scenario_id, filename):
+    """Write rows to an editable livestock_emissions CSV file."""
+    try:
+        _, _, ls_dir = _livestock_dir_for_scenario(scenario_id)
+        name = os.path.basename(filename)
+        if name not in _LIVESTOCK_EDITABLE_CSVS:
+            return jsonify({'error': f'Unsupported livestock CSV: {name}'}), 400
+
+        payload = request.get_json() or {}
+        rows = payload.get('rows', [])
+        fieldnames = payload.get('fieldnames', [])
+
+        # If caller omitted fieldnames, preserve existing order.
+        csv_path = os.path.join(ls_dir, name)
+        if not fieldnames and os.path.exists(csv_path):
+            table = _read_csv_table(csv_path)
+            fieldnames = table['fieldnames']
+        if not fieldnames and rows:
+            fieldnames = list(rows[0].keys())
+
+        os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for r in rows:
+                writer.writerow({k: r.get(k, '') for k in fieldnames})
+
+        return jsonify({'message': f'{name} updated', 'rows': len(rows)}), 200
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @frontend_app.route('/api/scenarios/<scenario_id>/treatment', methods=['GET'])
 def frontend_get_treatment(scenario_id):
     """Return treatment.csv rows for a scenario."""
@@ -1394,19 +2000,29 @@ def frontend_update_treatment_fractions(scenario_id):
         if not os.path.exists(csv_path):
             return jsonify({'error': 'isodata.csv not found'}), 404
         data = request.get_json() or {}
-        fractions   = data.get('fractions',   {})
-        init_fields = data.get('init_fields', {})
+        fractions         = data.get('fractions',         {})
+        init_fields       = data.get('init_fields',       {})
+        indexed_fractions = data.get('indexed_fractions', None)  # list of dicts, one per row by index
         with open(csv_path, 'r', newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             fieldnames = list(reader.fieldnames or [])
             rows = list(reader)
-        # Always-write fields (fractions)
+        # Always-write fields (uniform across all rows)
         for k in fractions:
             if k not in fieldnames:
                 fieldnames.append(k)
         for row in rows:
             for k, v in fractions.items():
                 row[k] = str(v)
+        # Per-row fractions (index-matched to isodata row order)
+        if indexed_fractions is not None:
+            for frac_dict in indexed_fractions:
+                for k in frac_dict:
+                    if k not in fieldnames:
+                        fieldnames.append(k)
+            for i, (row, frac_dict) in enumerate(zip(rows, indexed_fractions)):
+                for k, v in frac_dict.items():
+                    row[k] = str(v)
         # Init-only fields: add column + default value only if column is absent
         for k, v in init_fields.items():
             if k not in fieldnames:
@@ -1552,6 +2168,22 @@ def get_geodata(scenario_id):
 @app.route('/api/scenarios/<scenario_id>/treatment-fractions', methods=['PUT'])
 def update_treatment_fractions(scenario_id):
     return frontend_update_treatment_fractions(scenario_id)
+
+@app.route('/api/scenarios/<scenario_id>/livestock-population', methods=['GET'])
+def get_livestock_population(scenario_id):
+    return frontend_get_livestock_population(scenario_id)
+
+@app.route('/api/scenarios/<scenario_id>/livestock-population', methods=['PUT'])
+def update_livestock_population(scenario_id):
+    return frontend_update_livestock_population(scenario_id)
+
+@app.route('/api/scenarios/<scenario_id>/livestock-csv/<path:filename>', methods=['GET'])
+def get_livestock_csv(scenario_id, filename):
+    return frontend_get_livestock_csv(scenario_id, filename)
+
+@app.route('/api/scenarios/<scenario_id>/livestock-csv/<path:filename>', methods=['PUT'])
+def update_livestock_csv(scenario_id, filename):
+    return frontend_update_livestock_csv(scenario_id, filename)
 
 @app.route('/api/config/pathogens')
 def get_pathogens():
@@ -2336,6 +2968,8 @@ def frontend_get_analytics(case_study_id):
                     for f in os.listdir(output_dir)
                     if not f.endswith('.log'))
             )
+            ls = _detect_livestock_module(cs_path, folder)
+            scenario['has_livestock'] = ls is not None and bool(ls.get('animals'))
             result.append(scenario)
         return jsonify({'scenarios': result, 'case_study': cs}), 200
     except Exception as exc:
@@ -2595,10 +3229,30 @@ def frontend_raster_diff():
                 np.nan)
 
         l, b_b2, r, t = bounds_a
-        geo_bounds = {'south': float(b_b2), 'west': float(l),
-                      'north': float(t),    'east': float(r)}
 
-        rgba      = _apply_diverg(diff_pct)
+        # Reproject the diff image to Web Mercator (EPSG:3857) so that it aligns
+        # correctly with Leaflet's Mercator base map via ImageOverlay.
+        # A plain WGS-84 pixel grid displayed with lat/lon bounds on a Mercator map
+        # appears shifted northward for large study areas because Mercator stretches
+        # higher latitudes more than lower ones.  Pre-distorting to EPSG:3857 here
+        # compensates for that linear-stretch artefact.
+        merc3857 = CRS.from_epsg(3857)
+        merc_tf, merc_w, merc_h = calculate_default_transform(
+            wgs84, merc3857, data_a.shape[1], data_a.shape[0],
+            left=l, bottom=b_b2, right=r, top=t)
+        diff_merc = np.full((merc_h, merc_w), np.nan, dtype=float)
+        reproject(
+            source=diff_pct, destination=diff_merc,
+            src_transform=tf_a, src_crs=wgs84,
+            dst_transform=merc_tf, dst_crs=merc3857,
+            resampling=Resampling.nearest,
+            src_nodata=np.nan, dst_nodata=np.nan)
+        merc_b = rasterio.transform.array_bounds(merc_h, merc_w, merc_tf)
+        wgs_b  = transform_bounds(merc3857, wgs84, *merc_b)
+        geo_bounds = {'south': float(wgs_b[1]), 'west': float(wgs_b[0]),
+                      'north': float(wgs_b[3]), 'east': float(wgs_b[2])}
+
+        rgba      = _apply_diverg(diff_merc)
         png_bytes = _png_from_rgba(rgba)
         b64       = base64.b64encode(png_bytes).decode()
         return jsonify({'image': b64, 'bounds': geo_bounds}), 200
@@ -2727,6 +3381,58 @@ def frontend_generate_yaml(scenario_id):
         return jsonify({'error': str(exc)}), 500
 
 
+@frontend_app.route('/api/scenarios/<scenario_id>/diagnose', methods=['GET'])
+def frontend_diagnose_scenario(scenario_id):
+    """Return diagnostic info for a scenario: detected mode, YAML, and the R
+    expression that would be executed — without actually running the model.
+    Useful for debugging silent R crashes where glowpa.log is never created.
+    """
+    try:
+        cs, folder = _locate_scenario(scenario_id)
+        cs_path = cs['folder_path']
+        cs_folder_name = cs.get('folder_name', '')
+        pathogen = ''
+        meta_path = os.path.join(cs_path, 'config', 'scenario_metadata.csv')
+        with open(meta_path, 'r', newline='', encoding='utf-8') as f:
+            for row in csv.DictReader(f):
+                if row['scenario_id'] == scenario_id:
+                    pathogen = row.get('pathogen', '')
+                    break
+        yaml_filename = f"{folder}_config.yaml"
+        mode = 'exec' if _glowpa_container_running() else 'run'
+        wwtp_mode = _detect_wwtp_mode(cs_path, folder)
+        yaml_content = generate_yaml_content(folder, pathogen, flat=(mode == 'run'), cs_path=cs_path, wwtp_mode=wwtp_mode)
+        ls = _detect_livestock_module(cs_path, folder)
+        if mode == 'exec':
+            r_expr = build_r_expr_exec(cs_folder_name, folder, yaml_filename, cs_path=cs_path, wwtp_mode=wwtp_mode)
+        else:
+            r_expr = build_r_expr_run(yaml_filename, cs_path=cs_path, folder=folder, wwtp_mode=wwtp_mode)
+        # Check existing files
+        rds_files = {}
+        for fname in ['isodata.RDS', 'treatment.RDS']:
+            p = _resolve_data_path(cs_path, folder, fname)
+            rds_files[fname] = {'exists': os.path.exists(p), 'path': p}
+        log_path = os.path.join(cs_path, 'output', folder, 'glowpa.log')
+        return jsonify({
+            'mode': mode,
+            'wwtp_mode': wwtp_mode,
+            'pathogen': pathogen,
+            'folder': folder,
+            'yaml_content': yaml_content,
+            'r_expression': r_expr,
+            'livestock_detected': ls is not None,
+            'livestock_animals': list(ls['animals'].keys()) if ls else [],
+            'temperature_tif': ls['temperature_tif'] if ls else None,
+            'rds_files': rds_files,
+            'log_exists': os.path.exists(log_path),
+            'log_path': log_path,
+        }), 200
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 500
+
+
 @frontend_app.route('/api/scenarios/<scenario_id>/run-model', methods=['POST'])
 def frontend_run_model(scenario_id):
     """Start the glowpa model for a scenario.
@@ -2773,6 +3479,7 @@ def frontend_run_model(scenario_id):
             'stderr': '',
             'return_code': None,
             'simulation_complete': False,
+            'output_files': [],
         }
         threading.Thread(target=_execute_model_run, args=(run_id, params), daemon=True).start()
         return jsonify({'status': 'started', 'run_id': run_id, 'mode': mode}), 202
@@ -2799,6 +3506,10 @@ def main_get_analytics(case_study_id):
 @app.route('/api/scenarios/<scenario_id>/generate-yaml', methods=['POST'])
 def main_generate_yaml(scenario_id):
     return frontend_generate_yaml(scenario_id)
+
+@app.route('/api/scenarios/<scenario_id>/diagnose', methods=['GET'])
+def main_diagnose_scenario(scenario_id):
+    return frontend_diagnose_scenario(scenario_id)
 
 @app.route('/api/scenarios/<scenario_id>/run-model', methods=['POST'])
 def main_run_model(scenario_id):

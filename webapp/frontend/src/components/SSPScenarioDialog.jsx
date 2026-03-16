@@ -23,6 +23,8 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
 
   const [errors, setErrors] = useState({});
   const [isLoadingISIMIP, setIsLoadingISIMIP] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const isBusy = isLoadingISIMIP || isSubmitting;
 
   const sspOptions = [
     { value: '1', label: 'SSP1 - Sustainability' },
@@ -135,8 +137,13 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
         }
       } else {
         // Custom assumptions – copy baseline and submit immediately
-        await onSubmit(formData);
-        handleReset();
+        setIsSubmitting(true);
+        try {
+          await onSubmit(formData);
+        } finally {
+          setIsSubmitting(false);
+          handleReset();
+        }
       }
     }
   };
@@ -153,6 +160,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
     });
     setErrors({});
     setIsLoadingISIMIP(false);
+    setIsSubmitting(false);
     setStep(1); // Reset to first step
   };
 
@@ -162,7 +170,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
+    <Dialog open={isOpen} onOpenChange={(open) => { if (!open && !isBusy) onClose(); }}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>
@@ -449,7 +457,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
             <button
               type="button"
               onClick={handleBack}
-              disabled={isLoadingISIMIP}
+              disabled={isBusy}
               className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-wpBlue disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <ChevronLeft size={16} />
@@ -459,17 +467,17 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
               <button
                 type="button"
                 onClick={handleCancel}
-                disabled={isLoadingISIMIP}
+                disabled={isBusy}
                 className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-wpBlue disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                disabled={isLoadingISIMIP}
+                disabled={isBusy}
                 className="px-4 py-2 text-sm font-medium text-white bg-wpBlue border border-transparent rounded-lg hover:bg-wpBlue-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-wpBlue disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {isLoadingISIMIP ? 'Applying projections…' : 'Create Scenario'}
+                {isBusy ? 'Creating scenario…' : 'Create Scenario'}
               </button>
             </div>
           </div>

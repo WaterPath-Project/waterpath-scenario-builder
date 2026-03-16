@@ -5,6 +5,7 @@ import axios from 'axios';
 import { adjustSlider } from './SanitationPanel';
 import DataGridView from './DataGridView';
 import useConfigStore from '../store/configStore';
+import AreaSelector from './AreaSelector';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -157,7 +158,9 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
   const initialMode = initialWwtp.length > 0 ? 'facilities' : 'fractions';
   const [mode, setMode] = useState(initialMode);
   const [wwtp, setWwtp] = useState(initialWwtp);
+  // fractions is now [[FP, FS, FT], ...] — one array per isodata row
   const [fractions, setFractions] = useState(initialFractions);
+  const [selectedIndices, setSelectedIndices] = useState(new Set());
   const [geodata, setGeodata] = useState(null);
   const [projConfig, setProjConfig] = useState({ center: [0, 0], scale: 200 });
   const [geoLoading, setGeoLoading] = useState(true);
@@ -197,13 +200,52 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
     onDirtyChange?.(dirty);
   }, [onDirtyChange]);
 
+  // Area labels for the AreaSelector pill bar
+  const areaLabels = useMemo(() =>
+    isoRows.map((r, i) => r.subarea || r.NAME_3 || r.NAME_2 || r.NAME_1 || r.NAME_0 || `Area ${i + 1}`),
+  [isoRows]);
+
+  // Fractions to display — average across all areas when selectedIndices is empty, else per selected areas
+  const displayFractions = useMemo(() => {
+    if (!fractions.length) return [0, 0, 0];
+    if (fractions.length === 1) return fractions[0] || [0, 0, 0];
+    if (selectedIndices.size === 1) {
+      const idx = [...selectedIndices][0];
+      return fractions[idx] || [0, 0, 0];
+    }
+    // Average over selected rows (or all rows if none selected)
+    const pool = selectedIndices.size === 0 ? fractions : [...selectedIndices].map(i => fractions[i]).filter(Boolean);
+    if (!pool.length) return [0, 0, 0];
+    return FRACTION_FIELDS.map((_, typeIdx) => {
+      const sum = pool.reduce((acc, f) => acc + (f[typeIdx] || 0), 0);
+      return Math.round((sum / pool.length) * 1000) / 1000;
+    });
+  }, [fractions, selectedIndices]);
+
   const handleModeSwitch = (newMode) => {
     setMode(newMode);
     markDirty(wwtp, fractions, newMode);
   };
 
-  const handleFractionChange = (idx, val) => {
-    const next = fractions.map((v, i) => i === idx ? Math.round(val * 1000) / 1000 : v);
+  const handleFractionChange = (typeIdx, val) => {
+    const rounded = Math.round(val * 1000) / 1000;
+    let next;
+    if (fractions.length <= 1 || selectedIndices.size === 1) {
+      // Single-area mode: update only the active row
+      const aIdx = selectedIndices.size === 1 ? [...selectedIndices][0] : 0;
+      next = fractions.map((f, i) => i === aIdx ? f.map((v, j) => j === typeIdx ? rounded : v) : f);
+    } else {
+      // Multi-area or "All" mode: additive delta across targeted rows
+      const avgVal = displayFractions[typeIdx];
+      const delta = rounded - avgVal;
+      const targets = selectedIndices.size === 0 ? null : selectedIndices;
+      next = fractions.map((f, i) => {
+        if (targets && !targets.has(i)) return f;
+        const updated = [...f];
+        updated[typeIdx] = Math.max(0, Math.min(1, Math.round((f[typeIdx] + delta) * 1000) / 1000));
+        return updated;
+      });
+    }
     setFractions(next);
     markDirty(wwtp, next, mode);
   };
@@ -237,18 +279,29 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      // ── Compute fEmitted constants (match prepare.R / _r_iso_csv_to_rds_snippet) ──
-      // fEmitted = Fraction_type * (liquid  -  liquid * removal)
-      // Primary:   virus  0.97*(1-0.75)=0.2425   protozoa 0.85*(1-0.50)=0.425
-      // Secondary: virus  0.50*(1-0.95)=0.025    protozoa 0.20*(1-0.90)=0.02
-      // Tertiary:  virus  0.40*(1-0.99)=0.004    protozoa 0.25*(1-0.92)=0.02
-      let FP, FS, FT;
       if (mode === 'fractions') {
-        [FP, FS, FT] = fractions;
+        // Save per-area fraction sliders + per-area fEmitted → isodata.csv; clear treatment.csv
+        const indexedFractions = fractions.map(([FP, FS, FT]) => {
+          const fEmittedVirus    = FP * 0.2425 + FS * 0.025 + FT * 0.004;
+          const fEmittedProtozoa = FP * 0.425  + FS * 0.02  + FT * 0.02;
+          return {
+            FractionPrimarytreatment:   FP,
+            FractionSecondarytreatment: FS,
+            FractionTertiarytreatment:  FT,
+            fEmitted_inEffluent_after_treatment_virus:    parseFloat(fEmittedVirus.toFixed(6)),
+            fEmitted_inEffluent_after_treatment_protozoa: parseFloat(fEmittedProtozoa.toFixed(6)),
+          };
+        });
+        await axios.put(`/api/scenarios/${scenario.id}/treatment-fractions`, { indexed_fractions: indexedFractions });
+        await axios.put(`/api/scenarios/${scenario.id}/treatment`, { rows: [] });
       } else {
-        // Capacity-weighted effective fractions from WWTP point facilities
+        // ── Capacity-weighted effective fractions from WWTP point facilities ──
+        // fEmitted = Fraction_type * (liquid  -  liquid * removal)
+        // Primary:   virus  0.97*(1-0.75)=0.2425   protozoa 0.85*(1-0.50)=0.425
+        // Secondary: virus  0.50*(1-0.95)=0.025    protozoa 0.20*(1-0.90)=0.02
+        // Tertiary:  virus  0.40*(1-0.99)=0.004    protozoa 0.25*(1-0.92)=0.02
         const totalCap = wwtp.reduce((a, r) => a + (parseFloat(r.capacity) || 0), 0);
-        FP = 0; FS = 0; FT = 0;
+        let FP = 0, FS = 0, FT = 0;
         if (totalCap > 0) {
           wwtp.forEach(r => {
             const c = (parseFloat(r.capacity) || 0) / totalCap;
@@ -257,30 +310,16 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
             else if (r.treatment_type === 'Tertiary')  FT += c;
           });
         } else {
-          FP = 1; // default: all primary
+          FP = 1;
         }
-      }
-      const fEmittedVirus    = FP * 0.2425 + FS * 0.025 + FT * 0.004;
-      const fEmittedProtozoa = FP * 0.425  + FS * 0.02  + FT * 0.02;
-      const fEmittedFields = {
-        fEmitted_inEffluent_after_treatment_virus:    parseFloat(fEmittedVirus.toFixed(6)),
-        fEmitted_inEffluent_after_treatment_protozoa: parseFloat(fEmittedProtozoa.toFixed(6)),
-      };
-
-      if (mode === 'fractions') {
-        // Save fraction sliders + fEmitted → isodata.csv; clear treatment.csv
-        const fractionPayload = {
-          ...Object.fromEntries(FRACTION_FIELDS.map((key, i) => [key, fractions[i]])),
-          ...fEmittedFields,
-        };
-        await axios.put(`/api/scenarios/${scenario.id}/treatment-fractions`, { fractions: fractionPayload });
-        await axios.put(`/api/scenarios/${scenario.id}/treatment`, { rows: [] });
-      } else {
-        // Save WWTP facilities → treatment.csv; zero fraction columns but store fEmitted
+        const fEmittedVirus    = FP * 0.2425 + FS * 0.025 + FT * 0.004;
+        const fEmittedProtozoa = FP * 0.425  + FS * 0.02  + FT * 0.02;
+        // Save WWTP facilities → treatment.csv; zero fraction columns but store fEmitted uniformly
         await axios.put(`/api/scenarios/${scenario.id}/treatment`, { rows: wwtp });
         const zeroPayload = {
           ...Object.fromEntries(FRACTION_FIELDS.map(k => [k, 0])),
-          ...fEmittedFields,
+          fEmitted_inEffluent_after_treatment_virus:    parseFloat(fEmittedVirus.toFixed(6)),
+          fEmitted_inEffluent_after_treatment_protozoa: parseFloat(fEmittedProtozoa.toFixed(6)),
         };
         await axios.put(`/api/scenarios/${scenario.id}/treatment-fractions`, { fractions: zeroPayload });
       }
@@ -303,7 +342,7 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
     [wwtp]
   );
 
-  const fractionSum = fractions.reduce((a, b) => a + b, 0);
+  const fractionSum = displayFractions.reduce((a, b) => a + b, 0);
   const canSave = true;
 
   // ── Raw data view ────────────────────────────────────────────────────────────
@@ -321,10 +360,11 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
 
   const rawData = useMemo(() => {
     if (mode === 'fractions') {
-      return isoRows.map(row => {
+      return isoRows.map((row, i) => {
+        const rowFrac = fractions[i] || [0, 0, 0];
         const out = {};
         if (subareaKey) out[subareaKey] = row[subareaKey] ?? '';
-        FRACTION_FIELDS.forEach((field, i) => { out[field] = fractions[i]; });
+        FRACTION_FIELDS.forEach((field, j) => { out[field] = rowFrac[j]; });
         return out;
       });
     }
@@ -382,10 +422,14 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
           )}
         </div>
         <div className="px-5 py-4 space-y-3">
+          {areaLabels.length > 1 && (
+            <div className="pb-2 border-b border-gray-100">
+              <AreaSelector labels={areaLabels} selectedIndices={selectedIndices} onChange={setSelectedIndices} />
+            </div>
+          )}
           {FRACTION_LABELS.map((label, i) => (
-            <FractionSlider key={i} label={label} value={fractions[i]} color={FRACTION_COLORS[i]} onChange={val => handleFractionChange(i, val)} />
+            <FractionSlider key={i} label={label} value={displayFractions[i]} color={FRACTION_COLORS[i]} onChange={val => handleFractionChange(i, val)} />
           ))}
-
         </div>
       </div>
       )}
@@ -653,30 +697,49 @@ const WastewaterTreatmentPanel = ({ scenario, onDirtyChange, onSaved }) => {
               treatment_type: r.treatment_type || 'Primary',
             }));
 
-        // Fractions: prefer isodata.csv (already migrated), then fall back to treatment.csv rows
-        const firstRow = isoRes.data.data?.[0] ?? {};
-        const isoFractions = FRACTION_FIELDS.map(k =>
-          firstRow[k] !== undefined ? parseFloat(firstRow[k]) || 0 : 0
-        );
-        const isoSum = isoFractions.reduce((a, b) => a + b, 0);
-
+        // Fractions: per-area from treatment.csv keyed by gid (when isFractionsCsv),
+        // with a fallback to the treatment.csv average when a gid is not found.
+        const allIsoRows = isoRes.data.data ?? [];
         let normFractions;
-        if (isoSum > 0.001) {
-          normFractions = isoFractions.map(v => Math.round(v * 1000) / 1000);
-        } else if (isFractionsCsv && treatRes.data.data?.length > 0) {
-          // Average per-country/area fractions from the imported treatment.csv
-          const treatRows = treatRes.data.data;
-          const avg = FRACTION_FIELDS.map(k => {
-            const vals = treatRows.map(r => parseFloat(r[k]) || 0);
-            return vals.reduce((a, b) => a + b, 0) / vals.length;
+        if (allIsoRows.length > 0) {
+          // Build a gid→fracs lookup from treatment.csv when it is a fractions CSV
+          let gidMap = null;
+          let treatAvg = [1, 0, 0];
+          if (isFractionsCsv && treatRes.data.data?.length > 0) {
+            const treatRows = treatRes.data.data;
+            gidMap = new Map();
+            treatRows.forEach(r => {
+              const key = r.gid || r.iso;
+              if (key) gidMap.set(String(key), FRACTION_FIELDS.map(k => parseFloat(r[k]) || 0));
+            });
+            const avg = FRACTION_FIELDS.map(k => {
+              const vals = treatRows.map(r => parseFloat(r[k]) || 0);
+              return vals.reduce((a, b) => a + b, 0) / vals.length;
+            });
+            const avgSum = avg.reduce((a, b) => a + b, 0);
+            treatAvg = avgSum > 0.001 ? avg.map(v => Math.round(v * 1000) / 1000) : [1, 0, 0];
+          }
+          normFractions = allIsoRows.map(row => {
+            // 1. Try gid-matched row from treatment.csv
+            if (gidMap) {
+              const key = String(row.gid || row.iso || '');
+              const f = gidMap.get(key);
+              if (f) {
+                const s = f.reduce((a, b) => a + b, 0);
+                return s > 0.001 ? f.map(v => Math.round(v * 1000) / 1000) : treatAvg;
+              }
+              return treatAvg;
+            }
+            // 2. Fraction columns embedded in isodata rows (legacy)
+            const rowFracs = FRACTION_FIELDS.map(k => parseFloat(row[k]) || 0);
+            const rowSum = rowFracs.reduce((a, b) => a + b, 0);
+            return rowSum > 0.001 ? rowFracs.map(v => Math.round(v * 1000) / 1000) : [1, 0, 0];
           });
-          const avgSum = avg.reduce((a, b) => a + b, 0);
-          normFractions = avgSum > 0.001 ? avg.map(v => Math.round(v * 1000) / 1000) : [1, 0, 0];
         } else {
-          normFractions = [1, 0, 0];
+          normFractions = [[1, 0, 0]];
         }
 
-        setState({ status: 'done', wwtp, fractions: normFractions, isoRows: isoRes.data.data ?? [], isoFieldnames: isoRes.data.fieldnames ?? [] });
+        setState({ status: 'done', wwtp, fractions: normFractions, isoRows: allIsoRows, isoFieldnames: isoRes.data.fieldnames ?? [] });
       })
       .catch(e => {
         if (!cancelled) setState({ status: 'error', error: e.response?.data?.error || e.message });
