@@ -2,6 +2,8 @@
 import { Users, ChevronDown, ChevronUp, TableProperties, Info, Plus, Minus, RotateCcw, Save } from 'lucide-react';
 import axios from 'axios';
 import DataGridView from './DataGridView';
+import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle } from './Dialog';
+import { PopulationMap } from './LivestockEditorPanel';
 
 // helpers
 const fmt = (n, decimals = 0) =>
@@ -286,6 +288,19 @@ const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange
           <h4 className="text-sm font-semibold text-wpBlue">Summary by area</h4>
           <span className="ml-2 text-xs text-gray-400">Click a value or use +/− to edit</span>
           <div className="ml-auto" />
+          <Dialog>
+            <DialogTrigger asChild>
+              <button className="flex items-center gap-1 px-2 py-1 text-xs text-wpBlue border border-wpBlue/40 rounded hover:bg-wpBlue/5 transition font-medium">
+                View summary data
+              </button>
+            </DialogTrigger>
+            <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>Population rasters</DialogTitle>
+              </DialogHeader>
+              <PopulationMap scenarioId={scenario.id} />
+            </DialogContent>
+          </Dialog>
           {isDirty && (
             <>
               <button

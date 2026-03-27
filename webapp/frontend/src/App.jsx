@@ -138,6 +138,7 @@ function Dashboard() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
   const [isSSPDialogOpen, setIsSSPDialogOpen] = useState(false);
+  const [pendingSSPData, setPendingSSPData] = useState(null);
 
   // Baseline-missing-pathogen prompt
   const [baselineWithoutPathogen, setBaselineWithoutPathogen] = useState(null);
@@ -887,6 +888,11 @@ function Dashboard() {
                     setResultsState({ caseStudyId: selectedCaseStudy?.id, scenarioId: sc.id });
                     handleNavigation('analytics');
                   }}
+                  onCloneScenario={(cloneData) => {
+                    setIsSSPDialogOpen(true);
+                    // Pre-fill the SSP dialog with the clone data on next render
+                    setPendingSSPData(cloneData);
+                  }}
                 />
               </div>
             </div>
@@ -1228,8 +1234,12 @@ function Dashboard() {
       {/* SSP Scenario Dialog */}
       <SSPScenarioDialog
         isOpen={isSSPDialogOpen}
-        onClose={() => setIsSSPDialogOpen(false)}
+        onClose={() => { setIsSSPDialogOpen(false); setPendingSSPData(null); }}
         onSubmit={handleSSPScenarioSubmit}
+        defaultPathogen={scenarios.find(
+          (s) => s.case_study_id === selectedCaseStudy?.id && String(s.is_baseline).toLowerCase() === 'true'
+        )?.pathogen || ''}
+        prefillData={pendingSSPData}
       />
 
       {/* Baseline missing-pathogen prompt */}

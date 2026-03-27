@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Plus, Minus, ChevronLeft, ChevronRight } from 'lucide-react';
 import {
   Dialog,
@@ -9,13 +9,13 @@ import {
 } from './Dialog';
 import useConfigStore from '../store/configStore';
 
-const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
+const SSPScenarioDialog = ({ isOpen, onClose, onSubmit, defaultPathogen = '', prefillData = null }) => {
   const { pathogenOptions } = useConfigStore();
   const [step, setStep] = useState(1); // 1: Basic Info, 2: Configuration
   const [formData, setFormData] = useState({
     scenarioName: '',
     sspScenario: '1',
-    pathogen: '',
+    pathogen: defaultPathogen,
     year: '2030',
     projectionMethod: 'isimip',
     modifiers: []
@@ -23,6 +23,28 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
 
   const [errors, setErrors] = useState({});
   const [isLoadingISIMIP, setIsLoadingISIMIP] = useState(false);
+
+  // Keep pathogen in sync with the baseline's pathogen when the dialog opens
+  useEffect(() => {
+    if (defaultPathogen) {
+      setFormData((prev) => ({ ...prev, pathogen: defaultPathogen }));
+    }
+  }, [defaultPathogen]);
+
+  // Apply clone prefill data when provided
+  useEffect(() => {
+    if (prefillData) {
+      setFormData({
+        scenarioName:     prefillData.scenarioName     ?? '',
+        sspScenario:      prefillData.sspScenario      ?? '1',
+        pathogen:         prefillData.pathogen         ?? defaultPathogen,
+        year:             prefillData.year             ?? '2030',
+        projectionMethod: prefillData.projectionMethod ?? 'isimip',
+        modifiers:        prefillData.modifiers        ?? [],
+      });
+      setStep(1);
+    }
+  }, [prefillData]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const isBusy = isLoadingISIMIP || isSubmitting;
 
@@ -153,7 +175,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit }) => {
     setFormData({
       scenarioName: '',
       sspScenario: '1',
-      pathogen: '',
+      pathogen: defaultPathogen,
       year: '2030',
       projectionMethod: 'isimip',
       modifiers: []

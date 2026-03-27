@@ -2,6 +2,17 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import axios from 'axios';
 import { RotateCcw, Save, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
 import AreaSelector from './AreaSelector';
+import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle } from './Dialog';
+import useScenarioStore from '../store/scenarioStore';
+import { MapContainer, TileLayer, useMap, GeoJSON as LeafletGeoJSON } from 'react-leaflet';
+import GeoRasterLayer from 'georaster-layer-for-leaflet';
+import parseGeoraster from 'georaster';
+import proj4 from 'proj4';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+
+// Required by georaster-layer-for-leaflet to reproject TIFs not in WGS84
+window.proj4 = proj4;
 
 import AssesIcon from '../../assets/icons/asses.svg';
 import CamelsIcon from '../../assets/icons/camels.svg';
@@ -73,6 +84,9 @@ const MANURE_FRAC_LABELS = {
   foe: 'Other, extensive',
 };
 
+// Animals excluded from Livestock Population and Production Systems views by default
+const EXCLUDED_BY_DEFAULT = new Set(['poultry', 'meat', 'dairy']);
+
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
@@ -81,6 +95,12 @@ function asText(v) { return v == null ? '' : String(v); }
 
 function titleCase(s) {
   return String(s || '').replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
+function fmtInt(n) {
+  const v = Number(n);
+  if (!isFinite(v)) return '0';
+  return Math.round(v).toLocaleString();
 }
 
 function animalLabel(k) {
@@ -224,7 +244,7 @@ function RawDataView({ rows, fieldnames }) {
 // ---------------------------------------------------------------------------
 // SaveResetBar
 // ---------------------------------------------------------------------------
-function SaveResetBar({ title, hint, isDirty, isSaving, onSave, onReset, validationErrors = [] }) {
+function SaveResetBar({ title, hint, isDirty, isSaving, onSave, onReset, validationErrors = [], rightSlot }) {
   return (
     <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2 flex-wrap">
       <p className="text-sm font-semibold text-wpBlue">{title}</p>
@@ -233,6 +253,7 @@ function SaveResetBar({ title, hint, isDirty, isSaving, onSave, onReset, validat
         <span className="text-xs text-red-500 ml-1">{validationErrors[0]}{validationErrors.length > 1 ? ` (+${validationErrors.length - 1} more)` : ''}</span>
       )}
       <div className="ml-auto flex items-center gap-2">
+        {rightSlot}
         {isDirty && (
           <>
             <button onClick={onReset}
@@ -268,6 +289,411 @@ function ErrorState({ label, error }) {
 }
 
 // ---------------------------------------------------------------------------
+// AreaOverlay — fetches scenario geodata and renders area borders + labels
+// ---------------------------------------------------------------------------
+function AreaOverlay({ scenarioId }) {
+  const map = useMap();
+  const [geojson, setGeojson] = useState(null);
+
+  useEffect(() => {
+    axios.get(`/api/scenarios/${scenarioId}/geodata`)
+      .then(r => setGeojson(r.data))
+      .catch(() => {});
+  }, [scenarioId]);
+
+  useEffect(() => {
+    if (!geojson?.features?.length || !map) return;
+    try {
+      const bounds = L.geoJSON(geojson).getBounds();
+      if (bounds.isValid()) map.fitBounds(bounds, { padding: [20, 20] });
+    } catch (_) {}
+  }, [geojson, map]);
+
+  if (!geojson?.features?.length) return null;
+
+  const areaStyle = () => ({
+    fill: false,
+    fillOpacity: 0,
+    color: '#1e293b',
+    weight: 1.5,
+    opacity: 0.75,
+  });
+
+  return (
+    <LeafletGeoJSON
+      key={scenarioId}
+      data={geojson}
+      style={areaStyle}
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// HeadsRasterLayer — child of MapContainer; uses useMap() to load TIF layers
+// ---------------------------------------------------------------------------
+function HeadsRasterLayer({ tifUrl }) {
+  const map = useMap();
+  const layerRef = useRef(null);
+
+  useEffect(() => {
+    if (!tifUrl || !map) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const ab = await fetch(tifUrl).then(r => r.arrayBuffer());
+        const gr = await parseGeoraster(ab);
+        if (cancelled) return;
+
+        const nd = gr.noDataValue;
+        const maxVal = gr.maxs?.[0] || 1;
+
+        const newLayer = new GeoRasterLayer({
+          georaster: gr,
+          opacity: 0.85,
+          resolution: 256,
+          caching: false,
+          pixelValuesToColorFn: ([v]) => {
+            if (v == null || v === nd || v <= 0) return null;
+            const norm = Math.min(1, v / maxVal);
+            const r = Math.round(255 * (1 - norm));
+            const g = Math.round(100 + 155 * (1 - norm));
+            return `rgba(255,${g},${r},0.85)`;
+          },
+        });
+
+        if (layerRef.current) { try { map.removeLayer(layerRef.current); } catch (_) {} }
+        newLayer.addTo(map);
+        layerRef.current = newLayer;
+
+        try {
+          const bounds = newLayer.getBounds();
+          if (bounds?.isValid?.()) map.fitBounds(bounds, { padding: [16, 16] });
+        } catch (_) {}
+      } catch (_) {}
+    })();
+
+    return () => {
+      cancelled = true;
+      if (layerRef.current) {
+        try { map.removeLayer(layerRef.current); } catch (_) {}
+        layerRef.current = null;
+      }
+    };
+  }, [tifUrl, map]);
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// AnimalHeadsMap — species selector + MapContainer
+// ---------------------------------------------------------------------------
+function AnimalHeadsMap({ scenarioId, animals }) {
+  const safeAnimals = animals || [];
+  const [selectedAnimal, setSelectedAnimal] = useState(() => safeAnimals[0] || '');
+
+  // Sync when animals list arrives/changes after initial mount
+  useEffect(() => {
+    if (safeAnimals.length > 0 && !safeAnimals.includes(selectedAnimal)) {
+      setSelectedAnimal(safeAnimals[0]);
+    }
+  }, [safeAnimals.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const tifUrl = selectedAnimal
+    ? `/api/scenarios/${scenarioId}/livestock-tif/${selectedAnimal}_heads.tif`
+    : null;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <label className="text-xs font-semibold text-gray-700">Animal species:</label>
+        <select
+          value={selectedAnimal}
+          onChange={e => setSelectedAnimal(e.target.value)}
+          className="border border-gray-300 rounded px-2 py-1 text-xs"
+        >
+          {safeAnimals.map(animal => (
+            <option key={animal} value={animal}>{animalLabel(animal)}</option>
+          ))}
+        </select>
+      </div>
+      <MapContainer
+        center={[0, 0]}
+        zoom={2}
+        style={{ height: 380, width: '100%', borderRadius: 8 }}
+      >
+        <TileLayer
+          url="https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png"
+          attribution='&copy; CARTO &copy; OSM'
+        />
+        <HeadsRasterLayer key={selectedAnimal} tifUrl={tifUrl} />
+        <AreaOverlay scenarioId={scenarioId} />
+        <TileLayer
+          url="https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png"
+          attribution=''
+          zIndex={650}
+          pane="overlayPane"
+        />
+      </MapContainer>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PopRasterLayer — renders isoraster / popurban / poprural TIFs with a
+// log-scale blue gradient suited to population density values
+// ---------------------------------------------------------------------------
+function PopRasterLayer({ tifUrl, mode }) {
+  const map = useMap();
+  const layerRef = useRef(null);
+
+  useEffect(() => {
+    if (!tifUrl || !map) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const ab = await fetch(tifUrl).then(r => r.arrayBuffer());
+        const gr = await parseGeoraster(ab);
+        if (cancelled) return;
+
+        const nd = gr.noDataValue;
+
+        const colorFn = mode === 'domain'
+          ? ([v]) => {
+              if (v == null || v === nd || v <= 0) return null;
+              return 'rgba(11,65,89,0.35)';
+            }
+          : ([v]) => {
+              if (v == null || v === nd || v <= 0) return null;
+              const norm = Math.min(1, Math.log10(Math.max(1, v)) / 5);
+              const r = Math.round(230 * (1 - norm));
+              const g = Math.round(240 * (1 - norm) + 50 * norm);
+              const b = Math.round(255 * (1 - norm * 0.3) + 107 * norm * 0.3);
+              return `rgba(${r},${g},${b},0.82)`;
+            };
+
+        const newLayer = new GeoRasterLayer({
+          georaster: gr,
+          opacity: 1,
+          resolution: 256,
+          caching: false,
+          pixelValuesToColorFn: colorFn,
+        });
+
+        if (layerRef.current) { try { map.removeLayer(layerRef.current); } catch (_) {} }
+        newLayer.addTo(map);
+        layerRef.current = newLayer;
+
+        try {
+          const bounds = newLayer.getBounds();
+          if (bounds?.isValid?.()) map.fitBounds(bounds, { padding: [16, 16] });
+        } catch (_) {}
+      } catch (_) {}
+    })();
+
+    return () => {
+      cancelled = true;
+      if (layerRef.current) {
+        try { map.removeLayer(layerRef.current); } catch (_) {}
+        layerRef.current = null;
+      }
+    };
+  }, [tifUrl, map, mode]);
+
+  return null;
+}
+
+const POP_LAYERS = [
+  { id: 'isoraster', label: 'Analysis domain', hint: 'Grid cells included in the model' },
+  { id: 'popurban',  label: 'Urban population', hint: 'Urban population per cell' },
+  { id: 'poprural', label: 'Rural population', hint: 'Rural population per cell' },
+];
+
+// ---------------------------------------------------------------------------
+// PopulationMap — shows urban population raster with area overlay.
+// The layer switcher is intentionally hidden; only the urban raster is shown.
+// ---------------------------------------------------------------------------
+export function PopulationMap({ scenarioId }) {
+  const tifUrl = `/api/scenarios/${scenarioId}/input-raster/popurban.tif`;
+
+  return (
+    <div className="space-y-2">
+      <MapContainer
+        center={[0, 0]}
+        zoom={2}
+        style={{ height: 420, width: '100%', borderRadius: 8 }}
+      >
+        <TileLayer
+          url="https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png"
+          attribution='&copy; CARTO &copy; OSM'
+        />
+        <PopRasterLayer key="popurban" tifUrl={tifUrl} mode="population" />
+        <AreaOverlay scenarioId={scenarioId} />
+        <TileLayer
+          url="https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png"
+          attribution=''
+          zIndex={650}
+          pane="overlayPane"
+        />
+      </MapContainer>
+      <p className="text-xs text-gray-400">Urban population per cell</p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// HeadsSummaryDialogContent — standalone dialog body with per-scenario selector
+// ---------------------------------------------------------------------------
+function HeadsSummaryDialogContent({ activeScenario }) {
+  const { scenarios, tempScenarios } = useScenarioStore();
+  const allScenarios = useMemo(
+    () => [...scenarios, ...tempScenarios].filter((s) => !s.isTemp),
+    [scenarios, tempScenarios],
+  );
+
+  const [selectedScenarioId, setSelectedScenarioId] = useState(activeScenario.id);
+  const [selectedAreaIndices, setSelectedAreaIndices] = useState(new Set());
+  const [headsData, setHeadsData] = useState({
+    status: 'loading', error: '', areas: [], animals: [], byArea: {}, totalsByAnimal: {},
+  });
+
+  useEffect(() => {
+    setHeadsData({ status: 'loading', error: '', areas: [], animals: [], byArea: {}, totalsByAnimal: {} });
+    setSelectedAreaIndices(new Set());
+    axios.get(`/api/scenarios/${selectedScenarioId}/livestock-heads-by-area`)
+      .then((res) => {
+        if (res.data && !res.data.error) {
+          setHeadsData({
+            status: 'done',
+            error: '',
+            areas: res.data.areas || [],
+            animals: res.data.animals || [],
+            byArea: res.data.by_area || {},
+            totalsByAnimal: res.data.totals_by_animal || {},
+          });
+        } else {
+          setHeadsData({ status: 'unavailable', error: '', areas: [], animals: [], byArea: {}, totalsByAnimal: {} });
+        }
+      })
+      .catch(() => setHeadsData({ status: 'unavailable', error: '', areas: [], animals: [], byArea: {}, totalsByAnimal: {} }));
+  }, [selectedScenarioId]);
+
+  const selectedAreaIsos = useMemo(() => {
+    const areas = headsData.areas || [];
+    if (!areas.length) return [];
+    if (selectedAreaIndices.size === 0) return areas.map((a) => String(a.iso));
+    return [...selectedAreaIndices].sort((a, b) => a - b).map((idx) => areas[idx]).filter(Boolean).map((a) => String(a.iso));
+  }, [headsData.areas, selectedAreaIndices]);
+
+  const selectedHeadsByAnimal = useMemo(() => {
+    if (headsData.status !== 'done') return {};
+    const byAnimal = {};
+    selectedAreaIsos.forEach((iso) => {
+      const row = headsData.byArea?.[iso] || {};
+      Object.entries(row).forEach(([animal, value]) => {
+        const n = Number(value);
+        if (!isFinite(n)) return;
+        byAnimal[animal] = (byAnimal[animal] || 0) + n;
+      });
+    });
+    return byAnimal;
+  }, [headsData.status, headsData.byArea, selectedAreaIsos]);
+
+  const headRows = useMemo(() => {
+    return (headsData.animals || [])
+      .map((animal) => ({ animal, heads: selectedHeadsByAnimal[animal] || 0 }))
+      .filter((r) => r.heads > 0)
+      .sort((a, b) => b.heads - a.heads);
+  }, [headsData.animals, selectedHeadsByAnimal]);
+
+  const totalHeads = useMemo(() => headRows.reduce((sum, r) => sum + r.heads, 0), [headRows]);
+
+  return (
+    <>
+      {allScenarios.length > 1 && (
+        <div className="flex items-center gap-2 mb-4">
+          <label className="text-xs font-semibold text-gray-700 shrink-0">Scenario:</label>
+          <select
+            value={selectedScenarioId}
+            onChange={(e) => setSelectedScenarioId(e.target.value)}
+            className="border border-gray-300 rounded px-2 py-1 text-xs flex-1 min-w-0"
+          >
+            {allScenarios.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}{s.id === activeScenario.id ? ' (active)' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      {headsData.status === 'loading' ? (
+        <LoadingState label="heads data" />
+      ) : headsData.status === 'unavailable' ? (
+        <p className="text-sm text-gray-500">No heads raster data available for this scenario.</p>
+      ) : (
+        <div className="flex flex-col md:flex-row gap-6">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
+              <span className="text-xs text-gray-500">
+                {selectedAreaIndices.size === 0
+                  ? `All ${headsData.areas.length} area${headsData.areas.length !== 1 ? 's' : ''}`
+                  : `${selectedAreaIndices.size} selected area${selectedAreaIndices.size !== 1 ? 's' : ''}`}
+              </span>
+            </div>
+            {headsData.areas.length > 1 && (
+              <AreaSelector
+                labels={headsData.areas.map((a, i) => a.label || `Area ${i + 1}`)}
+                selectedIndices={selectedAreaIndices}
+                onChange={setSelectedAreaIndices}
+              />
+            )}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
+              <div className="bg-white border border-gray-200 rounded-lg px-3 py-2">
+                <p className="text-xs text-gray-500 uppercase tracking-wide">Total heads</p>
+                <p className="text-xl font-semibold text-wpBlue">{fmtInt(totalHeads)}</p>
+              </div>
+              <div className="bg-white border border-gray-200 rounded-lg px-3 py-2">
+                <p className="text-xs text-gray-500 uppercase tracking-wide">Available species</p>
+                <p className="text-xl font-semibold text-wpBlue">{headRows.length}</p>
+              </div>
+            </div>
+            {headRows.length > 0 ? (
+              <div className="overflow-auto max-h-56 bg-white rounded-lg border border-gray-200 mt-2">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50 sticky top-0">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium text-gray-600">Animal</th>
+                      <th className="px-3 py-2 text-right font-medium text-gray-600">Heads</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {headRows.map((r) => (
+                      <tr key={r.animal}>
+                        <td className="px-3 py-1.5 text-gray-700">{animalLabel(r.animal)}</td>
+                        <td className="px-3 py-1.5 text-right text-gray-800 tabular-nums">{fmtInt(r.heads)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="text-xs text-gray-500 mt-2">No head counts found for the selected area set.</p>
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <AnimalHeadsMap
+              scenarioId={selectedScenarioId}
+              animals={headsData.animals}
+            />
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // LivestockPopulationEditor
 // Rows = animals, columns = isodata fields (frac_young, prev_*, excr_*, mass_*, manure_per_mass)
 // ---------------------------------------------------------------------------
@@ -280,6 +706,14 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved }) {
   const [isSaving, setIsSaving] = useState(false);
   // animals with non-zero TIF grid sum: null = not yet loaded, {} = none found
   const [availableAnimals, setAvailableAnimals] = useState(null);
+  const [headsSummary, setHeadsSummary] = useState({
+    status: 'loading',
+    error: '',
+    areas: [],
+    animals: [],
+    byArea: {},
+    totalsByAnimal: {},
+  });
   const savedRowsRef = useRef([]);
   const onDirtyChangeRef = useRef(onDirtyChange);
 
@@ -288,13 +722,29 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved }) {
   const load = useCallback(async () => {
     setStatus('loading');
     setError('');
+    setHeadsSummary({ status: 'loading', error: '', areas: [], animals: [], byArea: {}, totalsByAnimal: {} });
     try {
-      const [r, availRes] = await Promise.all([
+      const [r, availRes, headsRes] = await Promise.all([
         axios.get(`/api/scenarios/${scenario.id}/livestock-population`),
         axios.get(`/api/scenarios/${scenario.id}/livestock-available-animals`).catch(() => null),
+        axios.get(`/api/scenarios/${scenario.id}/livestock-heads-by-area`).catch(() => null),
       ]);
       const available = availRes?.data?.animals ?? null;
       setAvailableAnimals(available);
+
+      if (headsRes?.data && !headsRes.data.error) {
+        setHeadsSummary({
+          status: 'done',
+          error: '',
+          areas: headsRes.data.areas || [],
+          animals: headsRes.data.animals || [],
+          byArea: headsRes.data.by_area || {},
+          totalsByAnimal: headsRes.data.totals_by_animal || {},
+        });
+      } else {
+        setHeadsSummary({ status: 'unavailable', error: '', areas: [], animals: [], byArea: {}, totalsByAnimal: {} });
+      }
+
       const allFields = r.data?.fieldnames || [];
       // `animal` is injected by the backend separately — not in fieldnames
       const nextRows = (r.data?.data || []).map((row) => {
@@ -370,6 +820,21 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved }) {
     onDirtyChangeRef.current?.(false);
   };
 
+  // Filter to animals that have heads > 0 in the study area.
+  // headsSummary.animals is the backend-provided list of animals with non-zero heads.
+  // If that data is not yet available, fall back to showing everything.
+  const headsAnimalSet = useMemo(() => {
+    if (headsSummary.status !== 'done' || !headsSummary.animals?.length) return null;
+    return new Set(headsSummary.animals);
+  }, [headsSummary.status, headsSummary.animals]);
+
+  const visibleRows = useMemo(() => {
+    let result = headsAnimalSet ? rows.filter(row => headsAnimalSet.has(row.animal)) : rows;
+    return result.filter(row => !EXCLUDED_BY_DEFAULT.has(row.animal));
+  }, [rows, headsAnimalSet]);
+
+  // All hooks must be called before any early returns (Rules of Hooks).
+
   if (status === 'loading') return <LoadingState label="livestock population data" />;
   if (status === 'error') return <ErrorState label="livestock population data" error={error} />;
   if (!rows.length) {
@@ -380,29 +845,37 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved }) {
     );
   }
 
-  // Filter to animals present in the study area (non-zero TIF grid sum).
-  // availableAnimals === null means the endpoint is unavailable — show all.
-  // An animal with sum === null (rasterio absent) is treated as present.
-  const visibleRows = availableAnimals === null
-    ? rows
-    : rows.filter((row) => {
-        const key = row.animal;
-        if (!(key in availableAnimals)) return false;  // no TIF at all
-        const sum = availableAnimals[key];
-        return sum === null || sum > 0;                // null = unknown, treat as present
-      });
-
   return (
     <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
       <SaveResetBar
-        title="Livestock population — animal parameters"
+        title="Livestock Population"
         hint="Source: Vermeulen 2017 / GloWPa isodata"
         isDirty={isDirty}
         isSaving={isSaving}
         onSave={handleSave}
         onReset={handleReset}
         validationErrors={validationErrors}
+        rightSlot={
+          <>
+            {headsSummary.status === 'done' && (headsSummary.areas?.length || 0) > 0 && (
+              <Dialog>
+                <DialogTrigger asChild>
+                  <button className="flex items-center gap-1 px-3 py-1.5 text-xs text-wpBlue border border-wpBlue/40 rounded hover:bg-wpBlue/5 transition font-medium">
+                    View summary data
+                  </button>
+                </DialogTrigger>
+                <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
+                  <DialogHeader>
+                    <DialogTitle>Animal heads summary (from heads rasters)</DialogTitle>
+                  </DialogHeader>
+                  <HeadsSummaryDialogContent activeScenario={scenario} />
+                </DialogContent>
+              </Dialog>
+            )}
+          </>
+        }
       />
+
       <div className="overflow-auto p-3">
         <table className="text-xs border-collapse">
           <thead>
@@ -465,7 +938,7 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved }) {
 // CSV column format: SYSTEM_animal  (last _ token = animal)
 // Layout: columns = animals, rows = management systems, area name = group header
 // ---------------------------------------------------------------------------
-function ManureManagementEditor({ scenario, onDirtyChange, onSaved }) {
+function ManureManagementEditor({ scenario, onDirtyChange, onSaved, animalsWithHeads }) {
   const filename = 'manure_management.csv';
   const [status, setStatus] = useState('loading');
   const [error, setError] = useState('');
@@ -539,8 +1012,12 @@ function ManureManagementEditor({ scenario, onDirtyChange, onSaved }) {
       if (bi === -1) return -1;
       return ai - bi;
     });
-    return { animals: [...animalMap.keys()], allSystems, colMap: animalMap };
-  }, [fieldnames]);
+    const visibleAnimals = (animalsWithHeads
+      ? [...animalMap.keys()].filter(a => animalsWithHeads.has(a))
+      : [...animalMap.keys()]
+    ).filter(a => !EXCLUDED_BY_DEFAULT.has(a));
+    return { animals: visibleAnimals, allSystems, colMap: animalMap };
+  }, [fieldnames, animalsWithHeads]);
 
   // Sum errors: Map<`${rowIdx}_${animal}`, sum>
   const sumErrors = useMemo(() => {
@@ -766,7 +1243,7 @@ function ManureManagementEditor({ scenario, onDirtyChange, onSaved }) {
 // Used for manure_fractions.csv (fgi/fge/foi/foe)
 // Layout: columns = animals, rows = suffix types, area name = group header
 // ---------------------------------------------------------------------------
-function GroupedCsvEditor({ scenario, filename, title, hint, suffixLabels, checkSum, onDirtyChange, onSaved }) {
+function GroupedCsvEditor({ scenario, filename, title, hint, suffixLabels, checkSum, onDirtyChange, onSaved, animalsWithHeads }) {
   const [status, setStatus] = useState('loading');
   const [error, setError] = useState('');
   const [rows, setRows] = useState([]);
@@ -829,8 +1306,12 @@ function GroupedCsvEditor({ scenario, filename, title, hint, suffixLabels, check
       if (!animalMap.has(animal)) animalMap.set(animal, new Map());
       animalMap.get(animal).set(suffix, f);
     });
-    return { animals: [...animalMap.keys()], suffixOrder: suffixes, colMap: animalMap };
-  }, [fieldnames, suffixLabels]);
+    const visibleAnimals = (animalsWithHeads
+      ? [...animalMap.keys()].filter(a => animalsWithHeads.has(a))
+      : [...animalMap.keys()]
+    ).filter(a => !EXCLUDED_BY_DEFAULT.has(a));
+    return { animals: visibleAnimals, suffixOrder: suffixes, colMap: animalMap };
+  }, [fieldnames, suffixLabels, animalsWithHeads]);
 
   // Sum errors per area row × animal (only when checkSum=true)
   const sumErrors = useMemo(() => {
@@ -1079,7 +1560,7 @@ function AnimalIntensiveSlider({ animal, intensiveFrac, onChange }) {
 // ---------------------------------------------------------------------------
 // ProductionSystemsEditor — slider-based intensive/extensive split editor
 // ---------------------------------------------------------------------------
-function ProductionSystemsEditor({ scenario, onDirtyChange, onSaved }) {
+function ProductionSystemsEditor({ scenario, onDirtyChange, onSaved, animalsWithHeads }) {
   const filename = 'production_systems.csv';
   const [status, setStatus] = useState('loading');
   const [error, setError] = useState('');
@@ -1146,8 +1627,12 @@ function ProductionSystemsEditor({ scenario, onDirtyChange, onSaved }) {
         animalMap.get(animal).e = f;
       }
     });
-    return { animals: [...animalMap.keys()], colMap: animalMap };
-  }, [fieldnames]);
+    const visibleAnimals = (animalsWithHeads
+      ? [...animalMap.keys()].filter(a => animalsWithHeads.has(a))
+      : [...animalMap.keys()]
+    ).filter(a => !EXCLUDED_BY_DEFAULT.has(a));
+    return { animals: visibleAnimals, colMap: animalMap };
+  }, [fieldnames, animalsWithHeads]);
 
   const validationErrors = useMemo(() => {
     const errs = [];
@@ -1230,6 +1715,7 @@ function ProductionSystemsEditor({ scenario, onDirtyChange, onSaved }) {
         onSave={handleSave}
         onReset={handleReset}
         validationErrors={validationErrors}
+        rightSlot={null}
       />
       {rows.length > 1 && (
         <div className="px-3 py-2 border-b border-gray-100">
@@ -1295,6 +1781,18 @@ function ProductionSystemsEditor({ scenario, onDirtyChange, onSaved }) {
 // LivestockEditorPanel — main export
 // ---------------------------------------------------------------------------
 export default function LivestockEditorPanel({ scenario, subcategoryId, onDirtyChange, onSaved }) {
+  // Fetch once to know which animals have heads > 0 (used by manure / production-systems tabs).
+  const [animalsWithHeads, setAnimalsWithHeads] = useState(null);
+
+  useEffect(() => {
+    axios.get(`/api/scenarios/${scenario.id}/livestock-heads-by-area`)
+      .then((r) => {
+        const list = r.data?.animals;
+        setAnimalsWithHeads(list?.length ? new Set(list) : null);
+      })
+      .catch(() => setAnimalsWithHeads(null));
+  }, [scenario.id]);
+
   if (subcategoryId === 'livestock-population') {
     return (
       <LivestockPopulationEditor
@@ -1312,6 +1810,7 @@ export default function LivestockEditorPanel({ scenario, subcategoryId, onDirtyC
           scenario={scenario}
           onDirtyChange={onDirtyChange}
           onSaved={onSaved}
+          animalsWithHeads={animalsWithHeads}
         />
         <GroupedCsvEditor
           scenario={scenario}
@@ -1322,6 +1821,7 @@ export default function LivestockEditorPanel({ scenario, subcategoryId, onDirtyC
           checkSum={false}
           onDirtyChange={onDirtyChange}
           onSaved={onSaved}
+          animalsWithHeads={animalsWithHeads}
         />
       </div>
     );
@@ -1333,6 +1833,7 @@ export default function LivestockEditorPanel({ scenario, subcategoryId, onDirtyC
         scenario={scenario}
         onDirtyChange={onDirtyChange}
         onSaved={onSaved}
+        animalsWithHeads={animalsWithHeads}
       />
     );
   }

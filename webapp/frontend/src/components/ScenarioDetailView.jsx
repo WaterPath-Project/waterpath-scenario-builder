@@ -97,7 +97,7 @@ const DRIVER_SUBCATEGORIES = [
   { id: 'production-systems',   label: 'Production Systems',    icon: ProductionSystemsIcon,  categoryId: 'livestock-emissions' },
 ];
 
-const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '', initialCategory, initialSubcategory, onViewResults }) => {
+const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '', initialCategory, initialSubcategory, onViewResults, onCloneScenario }) => {
   const { 
     scenarios, 
     tempScenarios, 
@@ -355,15 +355,31 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
 
   const handleMetadataSave = async (formData) => {
     if (scenario.isTemp) {
-      // For temp scenarios, update the temp scenario in the store
       updateTempScenario(scenario.id, formData);
     } else {
-      // For persistent scenarios, call the update API
       await updateScenario(scenario.id, formData);
     }
   };
 
-  const handleDelete = async () => {
+  // Clone: open the SSP dialog with this scenario's data pre-filled.
+  // We delegate upward via the onClone prop so the parent (App) can open
+  // the SSPScenarioDialog with the right state.
+  const handleCloneScenario = useCallback((src) => {
+    if (!src) return;
+    // Build an SSP-style formData object from the existing scenario
+    const cloneData = {
+      scenarioName: `${src.name} (copy)`,
+      sspScenario:  (src.ssp || 'SSP1').replace(/^SSP/i, ''),
+      pathogen:     src.pathogen || '',
+      year:         String(src.year || '2030'),
+      projectionMethod: src.projectionMethod || 'isimip',
+      modifiers: [],
+      _cloneFromId: src.id,
+    };
+    onCloneScenario?.(cloneData);
+  }, [onCloneScenario]);
+
+  const handleDeleteScenario = async () => {
     const confirmMessage = scenario.isTemp 
       ? `Are you sure you want to delete "${scenario.name}"? This temporary scenario will be removed from your browser.`
       : `Are you sure you want to delete "${scenario.name}"? This will permanently remove the scenario and its CSV file from the server.`;
@@ -468,7 +484,7 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
               <span>Edit metadata</span>
             </button>
             <button
-              onClick={handleDelete}
+              onClick={handleDeleteScenario}
               className="flex items-center space-x-1 px-3 py-1 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
             >
               <Trash2 size={16} />
@@ -640,6 +656,8 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
         onClose={() => setIsMetadataDialogOpen(false)}
         scenario={scenario}
         onSave={handleMetadataSave}
+        locked={!scenario?.isTemp && !!scenarioInfo?.has_outputs}
+        onClone={onCloneScenario ? handleCloneScenario : undefined}
       />
     </div>
   );

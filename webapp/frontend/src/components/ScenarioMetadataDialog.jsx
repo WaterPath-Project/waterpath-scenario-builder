@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Calendar, AlertTriangle } from 'lucide-react';
+import { Calendar, AlertTriangle, Copy } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -9,7 +9,7 @@ import {
 } from './Dialog';
 import useConfigStore from '../store/configStore';
 
-const ScenarioMetadataDialog = ({ isOpen, onClose, scenario, onSave, requirePathogen = false }) => {
+const ScenarioMetadataDialog = ({ isOpen, onClose, scenario, onSave, requirePathogen = false, locked = false, onClone }) => {
   const { pathogenOptions } = useConfigStore();
   const [formData, setFormData] = useState({
     name: '',
@@ -146,23 +146,33 @@ const ScenarioMetadataDialog = ({ isOpen, onClose, scenario, onSave, requirePath
           </div>
 
           {/* SSP, Pathogen and Year */}
+          {locked && (
+            <div className="flex items-start gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-500">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0 text-gray-400" />
+              <span>SSP, pathogen and year are locked because the model has already been run for this scenario. Use <strong>Clone scenario</strong> to create a new editable copy.</span>
+            </div>
+          )}
           <div className="grid grid-cols-3 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 SSP (Shared Socioeconomic Pathway)
               </label>
-              <select
-                value={formData.ssp}
-                onChange={(e) => handleChange('ssp', e.target.value)}
-                className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent"
-              >
-                <option value="">Select SSP</option>
-                <option value="SSP1">SSP1 - Sustainability</option>
-                <option value="SSP2">SSP2 - Middle of the Road</option>
-                <option value="SSP3">SSP3 - Regional Rivalry</option>
-                <option value="SSP4">SSP4 - Inequality</option>
-                <option value="SSP5">SSP5 - Fossil-fueled Development</option>
-              </select>
+              {locked ? (
+                <p className="p-2 text-sm text-gray-800 bg-gray-100 rounded-md border border-gray-200">{formData.ssp || '—'}</p>
+              ) : (
+                <select
+                  value={formData.ssp}
+                  onChange={(e) => handleChange('ssp', e.target.value)}
+                  className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent"
+                >
+                  <option value="">Select SSP</option>
+                  <option value="SSP1">SSP1 - Sustainability</option>
+                  <option value="SSP2">SSP2 - Middle of the Road</option>
+                  <option value="SSP3">SSP3 - Regional Rivalry</option>
+                  <option value="SSP4">SSP4 - Inequality</option>
+                  <option value="SSP5">SSP5 - Fossil-fueled Development</option>
+                </select>
+              )}
             </div>
 
             <div>
@@ -170,22 +180,28 @@ const ScenarioMetadataDialog = ({ isOpen, onClose, scenario, onSave, requirePath
                 Pathogen
                 {requirePathogen && <span className="text-red-500 ml-1">*</span>}
               </label>
-              <select
-                value={formData.pathogen}
-                onChange={(e) => handleChange('pathogen', e.target.value)}
-                className={`w-full p-2 border rounded-md focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent ${
-                  errors.pathogen
-                    ? 'border-red-500 ring-2 ring-red-300'
-                    : requirePathogen && !formData.pathogen
-                      ? 'border-amber-400 ring-2 ring-amber-200'
-                      : 'border-gray-300'
-                }`}
-              >
-                <option value="">Select Pathogen</option>
-                {pathogenOptions.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
+              {locked ? (
+                <p className="p-2 text-sm text-gray-800 bg-gray-100 rounded-md border border-gray-200">
+                  {pathogenOptions.find(o => o.value === formData.pathogen)?.label || formData.pathogen || '—'}
+                </p>
+              ) : (
+                <select
+                  value={formData.pathogen}
+                  onChange={(e) => handleChange('pathogen', e.target.value)}
+                  className={`w-full p-2 border rounded-md focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent ${
+                    errors.pathogen
+                      ? 'border-red-500 ring-2 ring-red-300'
+                      : requirePathogen && !formData.pathogen
+                        ? 'border-amber-400 ring-2 ring-amber-200'
+                        : 'border-gray-300'
+                  }`}
+                >
+                  <option value="">Select Pathogen</option>
+                  {pathogenOptions.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              )}
               {errors.pathogen && (
                 <p className="text-red-500 text-sm mt-1">{errors.pathogen}</p>
               )}
@@ -195,17 +211,21 @@ const ScenarioMetadataDialog = ({ isOpen, onClose, scenario, onSave, requirePath
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Year
               </label>
-              <select
-                value={formData.year}
-                onChange={(e) => handleChange('year', e.target.value)}
-                className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent"
-              >
-                <option value="">Select Year</option>
-                <option value="2025">2025</option>
-                <option value="2030">2030</option>
-                <option value="2050">2050</option>
-                <option value="2100">2100</option>
-              </select>
+              {locked ? (
+                <p className="p-2 text-sm text-gray-800 bg-gray-100 rounded-md border border-gray-200">{formData.year || '—'}</p>
+              ) : (
+                <select
+                  value={formData.year}
+                  onChange={(e) => handleChange('year', e.target.value)}
+                  className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent"
+                >
+                  <option value="">Select Year</option>
+                  <option value="2025">2025</option>
+                  <option value="2030">2030</option>
+                  <option value="2050">2050</option>
+                  <option value="2100">2100</option>
+                </select>
+              )}
             </div>
           </div>
 
@@ -256,21 +276,36 @@ const ScenarioMetadataDialog = ({ isOpen, onClose, scenario, onSave, requirePath
         </div>
 
         {/* Footer Actions */}
-        <div className="flex justify-end gap-3 pt-4 border-t border-gray-200">
-          <button
-            onClick={handleClose}
-            className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-md transition-colors"
-            disabled={isSaving}
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSubmit}
-            disabled={isSaving}
-            className="px-4 py-2 text-sm font-medium bg-wpGreen text-wpBlue hover:bg-wpGreen-800 disabled:opacity-50 rounded-lg transition-colors"
-          >
-            {isSaving ? 'Saving...' : 'Save Changes'}
-          </button>
+        <div className="flex items-center justify-between pt-4 border-t border-gray-200">
+          <div>
+            {onClone && (
+              <button
+                type="button"
+                onClick={() => { onClone(scenario); handleClose(); }}
+                disabled={isSaving}
+                className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-gray-600 border border-gray-300 hover:bg-gray-50 rounded-lg transition-colors disabled:opacity-50"
+              >
+                <Copy size={15} />
+                Clone scenario
+              </button>
+            )}
+          </div>
+          <div className="flex gap-3">
+            <button
+              onClick={handleClose}
+              className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-md transition-colors"
+              disabled={isSaving}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSubmit}
+              disabled={isSaving}
+              className="px-4 py-2 text-sm font-medium bg-wpGreen text-wpBlue hover:bg-wpGreen-800 disabled:opacity-50 rounded-lg transition-colors"
+            >
+              {isSaving ? 'Saving...' : 'Save Changes'}
+            </button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

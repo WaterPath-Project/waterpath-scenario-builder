@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import { RotateCcw, Save } from 'lucide-react';
 import axios from 'axios';
+import AreaSelector from './AreaSelector';
 
 // ─── Field definitions ────────────────────────────────────────────────────────
 
@@ -302,21 +303,18 @@ const SanitationPanelInner = ({ scenario, initialRows, onDirtyChange }) => {
     <div className="space-y-4">
       {/* Toolbar: subarea selector + save/reset */}
       <div className="flex items-center gap-3 flex-wrap">
-        {/* Subarea pills */}
-        <div className="flex flex-wrap gap-1 flex-1">
-          {initialRows.map((r, i) => (
-            <button
-              key={i}
-              onClick={() => setActiveAreaIdx(i)}
-              className={`px-3 py-1 text-xs rounded-full font-medium transition-colors ${
-                i === activeAreaIdx
-                  ? 'bg-wpBlue text-white'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}
-            >
-              {r.subarea || r.iso || `Area ${i + 1}`}
-            </button>
-          ))}
+        {/* Shared area selector (single-area editing) */}
+        <div className="flex-1">
+          <AreaSelector
+            labels={initialRows.map((r, i) => r.subarea || r.iso || `Area ${i + 1}`)}
+            selectedIndices={new Set([activeAreaIdx])}
+            onChange={(next) => {
+              const first = [...next][0];
+              if (typeof first === 'number') setActiveAreaIdx(first);
+            }}
+            singleSelect={true}
+            allowAll={false}
+          />
         </div>
 
         {/* Dirty indicator + actions */}

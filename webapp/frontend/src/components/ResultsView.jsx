@@ -18,6 +18,7 @@ import MulesIcon      from '../../assets/icons/mules.svg';
 import PigsIcon       from '../../assets/icons/pigs.svg';
 import PoultryIcon    from '../../assets/icons/poultry.svg';
 import SheepIcon      from '../../assets/icons/sheep.svg';
+import BuffaloesIcon      from '../../assets/icons/buffaloes.svg';
 import useSettingsStore      from '../store/settingsStore';
 
 // Make proj4 available globally so georaster-layer-for-leaflet can reproject

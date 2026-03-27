@@ -286,8 +286,8 @@ const SyncedTwoColumns = ({ leftContent, rightContent, borderColor }) => {
     <div className="flex gap-4 mt-3">
       <div className="w-3/4 min-w-0" ref={leftRef}>{leftContent}</div>
       <div
-        className="w-1/4 flex flex-col border-l pl-4 items-center py-10"
-        style={{ borderColor, maxHeight: '440px', overflow: 'hidden' }}
+        className="w-1/4 flex flex-col border-l pl-4 items-start"
+        style={{ borderColor, maxHeight: '320px' }}
       >{rightContent}</div>
     </div>
   );
@@ -417,6 +417,7 @@ const IntegerField = ({ label, value, onChange }) => (
 // Keeps the last-used area selection so switching between scenarios restores it.
 let _persistedIndices = null;     // Set<number> | null
 let _persistedMulti   = false;
+let _persistedSfxTab  = '_urb';   // Urban/Rural tab selection
 
 // ─── SanitationLadderInner ────────────────────────────────────────────────────
 
@@ -436,13 +437,15 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
   // Persist whenever selection changes so it survives scenario switches.
   useEffect(() => { _persistedIndices = selectedIndices; }, [selectedIndices]);
   useEffect(() => { _persistedMulti   = multiSelectMode; }, [multiSelectMode]);
+  const [activeSfxTab, setActiveSfxTab] = useState(() => _persistedSfxTab);
+
+  useEffect(() => { _persistedSfxTab  = activeSfxTab; }, [activeSfxTab]);
 
   const [localValues, setLocalValues] = useState(() => initialRows.map(parseRow));
 
   const savedRef  = useRef(initialRows.map(parseRow));
   const [isDirty,  setIsDirty]  = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [activeSfxTab, setActiveSfxTab] = useState('_urb');
   const [showFullData, setShowFullData] = useState(false);
   const [showJMPLadder, setShowJMPLadder] = useState(false);
   const [mgmtExpanded, setMgmtExpanded] = useState(false);

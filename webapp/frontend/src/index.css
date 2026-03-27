@@ -25,6 +25,21 @@ code {
   image-rendering: crisp-edges;
 }
 
+/* Permanent area labels on Leaflet maps */
+.area-map-label {
+  background: rgba(255,255,255,0.82) !important;
+  border: 1px solid rgba(30,41,59,0.3) !important;
+  border-radius: 3px !important;
+  box-shadow: none !important;
+  color: #1e293b !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  padding: 1px 4px !important;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.area-map-label::before { display: none !important; }
+
 /* Range slider — color only the thumb, leave track neutral gray */
 input[type="range"].accent-thumb {
   -webkit-appearance: none;

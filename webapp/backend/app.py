@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, send_from_directory, request
+from flask import Flask, jsonify, send_from_directory, send_file, request
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 import os
@@ -223,13 +223,39 @@ _SCHEMA_CATEGORY_MAP = {
 }
 
 
+def _livestock_subpath_for_file(base_name):
+    """Return the sub-path (relative to scenario_input_path) where a file
+    returned by the projections API zip should be written, based on its name.
+
+    Returns one of:
+      'livestock_emissions/animals'  – per-animal heads rasters and isodata
+      'livestock_emissions'          – livestock root files
+      None                           – not a livestock file; use default cat_folder
+    """
+    name_lo = base_name.lower()
+    # {animal}_heads.tif  →  livestock_emissions/animals/
+    if name_lo.endswith('_heads.tif'):
+        return 'livestock_emissions/animals'
+    # isodata_{animal}.csv  →  livestock_emissions/animals/
+    if name_lo.startswith('isodata_') and name_lo.endswith('.csv'):
+        return 'livestock_emissions/animals'
+    # Known livestock root-level files  →  livestock_emissions/
+    if base_name in _LIVESTOCK_ROOT_FILES:
+        return 'livestock_emissions'
+    return None
+
+
 def apply_projections_to_scenario(case_study_path, folder_name, ssp, year, schemas=None):
     """Call the external WaterPath Data API to auto-calculate projections and
     apply the returned files to an already-created scenario folder.
 
-    For each schema in *schemas* (default: ``['population']``):
-      1. Locate the baseline ``isodata.csv`` inside the scenario folder.
-      2. POST to ``WATERPATH_DATA_API_URL/data/projections/download``.
+    Schemas are grouped by their shared ``isodata.csv`` path. When multiple
+    schemas (e.g. ``population`` + ``sanitation``) use the same file, a single
+    API call is made with ``schema='all'`` so the server returns projections for
+    both in one response. Steps per unique isodata.csv:
+      1. Locate the ``isodata.csv`` inside the scenario folder.
+      2. POST to ``WATERPATH_DATA_API_URL/data/projections/download`` with
+         ``schema='all'``.
       3. Extract the returned zip into the category sub-folder of the scenario,
          renaming raster files according to ``RASTER_RENAME_MAP``.
       4. Return per-schema result dicts with keys ``ok``, ``error``, ``summary``.
@@ -246,7 +272,7 @@ def apply_projections_to_scenario(case_study_path, folder_name, ssp, year, schem
         dict mapping each schema name to a result dict.
     """
     if schemas is None:
-        schemas = ['population']
+        schemas = ['population', 'sanitation']
 
     # Normalise SSP: '1', 'ssp1', 'SSP1' → 'SSP1'
     ssp_str = str(ssp).strip()
@@ -256,23 +282,36 @@ def apply_projections_to_scenario(case_study_path, folder_name, ssp, year, schem
     scenario_input_path = os.path.join(case_study_path, 'input', folder_name)
     results = {}
 
+    # Group schemas by their shared isodata.csv path so that schemas using the
+    # same file (e.g. population + sanitation both under human_emissions) are
+    # covered by a single API call with schema='all'.
+    isodata_to_schemas = {}
+    isodata_to_cat_folder = {}
     for schema in schemas:
         cat_folder = _SCHEMA_CATEGORY_MAP.get(schema, 'human_emissions')
         isodata_path = os.path.join(scenario_input_path, cat_folder, 'isodata.csv')
+        isodata_to_schemas.setdefault(isodata_path, []).append(schema)
+        isodata_to_cat_folder[isodata_path] = cat_folder
+
+    for isodata_path, schema_group in isodata_to_schemas.items():
+        cat_folder = isodata_to_cat_folder[isodata_path]
 
         if not os.path.exists(isodata_path):
-            results[schema] = {
-                'ok': False,
-                'error': f"isodata.csv not found at {isodata_path}",
-                'summary': None,
-            }
-            print(f"[WARNING] Projection skipped for schema='{schema}': isodata.csv missing")
+            for schema in schema_group:
+                results[schema] = {
+                    'ok': False,
+                    'error': f"isodata.csv not found at {isodata_path}",
+                    'summary': None,
+                }
+                print(f"[WARNING] Projection skipped for schema='{schema}': isodata.csv missing")
             continue
 
         url = f"{WATERPATH_DATA_API_URL}/data/projections/download"
-        params = {'schema': schema, 'year': int(year), 'ssp': ssp_str}
+        # Pass 'all' when providing isodata.csv so the API generates projections
+        # for all schemas in the group (population + sanitation) in one request.
+        params = {'schema': 'all', 'year': int(year), 'ssp': ssp_str}
 
-        print(f"[DEBUG] Calling projections API: POST {url} params={params}")
+        print(f"[DEBUG] Calling projections API: POST {url} params={params} schemas={schema_group}")
         try:
             with open(isodata_path, 'rb') as f:
                 resp = requests.post(
@@ -283,30 +322,72 @@ def apply_projections_to_scenario(case_study_path, folder_name, ssp, year, schem
                 )
 
             if resp.status_code != 200:
-                results[schema] = {
-                    'ok': False,
-                    'error': f"API returned {resp.status_code}: {resp.text[:500]}",
-                    'summary': None,
-                }
-                print(f"[WARNING] Projection API error for schema='{schema}': {results[schema]['error']}")
+                for schema in schema_group:
+                    results[schema] = {
+                        'ok': False,
+                        'error': f"API returned {resp.status_code}: {resp.text[:500]}",
+                        'summary': None,
+                    }
+                print(f"[WARNING] Projection API error for schemas={schema_group}: {resp.text[:500]}")
                 continue
 
-            # Extract the returned zip into the category sub-folder
+            # Extract the returned zip, routing files to their correct category
+            # sub-folder.  The API may return a flat zip (all files at the root)
+            # or a structured zip (files under livestock_emissions/animals/ etc.).
+            # Strategy:
+            #   1. If a zip entry already carries a recognised category path
+            #      (e.g. livestock_emissions/animals/cattle_heads.tif), preserve it.
+            #   2. Otherwise route by filename pattern via _livestock_subpath_for_file.
+            #   3. Unrecognised flat files fall back to target_dir (human_emissions).
             target_dir = os.path.join(scenario_input_path, cat_folder)
             summary_data = None
 
             with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
                 for member in zf.infolist():
-                    # Flatten any directory entries
                     if member.is_dir():
                         continue
-                    # Use only the basename so nested zip paths are handled safely
-                    base_name = os.path.basename(member.filename)
+                    # Sanitise path: normalise separators, drop empty/traversal parts
+                    safe_parts = [
+                        p for p in member.filename.replace('\\', '/').split('/')
+                        if p and p != '..'
+                    ]
+                    if not safe_parts:
+                        continue
+                    base_name = safe_parts[-1]
                     if not base_name:
                         continue
-                    # Rename rasters on the fly (pop_urban.tif → popurban.tif, etc.)
+                    zip_safe_rel = '/'.join(safe_parts)
+
+                    # Determine destination directory
+                    matched_cat = next(
+                        (cat for cat in CATEGORY_FOLDER_MAP.values()
+                         if zip_safe_rel.startswith(cat + '/')),
+                        None,
+                    )
+                    if matched_cat:
+                        # Zip already has full category structure – preserve it
+                        dest_dir = os.path.join(
+                            scenario_input_path,
+                            *safe_parts[:-1],
+                        )
+                    else:
+                        ls_sub = _livestock_subpath_for_file(base_name)
+                        dest_dir = (
+                            os.path.join(scenario_input_path, ls_sub)
+                            if ls_sub
+                            else target_dir
+                        )
+
                     dest_name = RASTER_RENAME_MAP.get(base_name, base_name)
-                    dest_path = os.path.join(target_dir, dest_name)
+                    dest_path = os.path.join(dest_dir, dest_name)
+
+                    # Security: ensure resolved path stays within scenario_input_path
+                    scenario_abs = os.path.realpath(scenario_input_path)
+                    if not os.path.realpath(dest_path).startswith(scenario_abs + os.sep):
+                        print(f"[WARNING] Skipping unsafe zip entry: {member.filename!r}")
+                        continue
+
+                    os.makedirs(dest_dir, exist_ok=True)
                     with zf.open(member) as src, open(dest_path, 'wb') as dst:
                         dst.write(src.read())
                     if base_name == 'summary.json':
@@ -316,12 +397,14 @@ def apply_projections_to_scenario(case_study_path, folder_name, ssp, year, schem
                         except Exception:
                             pass
 
-            print(f"[DEBUG] Projection applied for schema='{schema}' → {target_dir}")
-            results[schema] = {'ok': True, 'error': None, 'summary': summary_data}
+            print(f"[DEBUG] Projection applied for schemas={schema_group} → {target_dir}")
+            for schema in schema_group:
+                results[schema] = {'ok': True, 'error': None, 'summary': summary_data}
 
         except Exception as exc:
-            results[schema] = {'ok': False, 'error': str(exc), 'summary': None}
-            print(f"[WARNING] Projection exception for schema='{schema}': {exc}")
+            for schema in schema_group:
+                results[schema] = {'ok': False, 'error': str(exc), 'summary': None}
+            print(f"[WARNING] Projection exception for schemas={schema_group}: {exc}")
 
     return results
 
@@ -717,6 +800,15 @@ _GLOWPA_ANIMALS = [
     'asses', 'buffaloes', 'camels', 'cattle', 'chickens',
     'ducks', 'goats', 'horses', 'mules', 'pigs', 'sheep',
 ]
+
+# Files returned by the projections API that belong at the root of
+# livestock_emissions/ (not in the animals/ sub-folder).
+_LIVESTOCK_ROOT_FILES = frozenset([
+    'animal_isoraster.tif',
+    'manure_fractions.csv',
+    'manure_management.csv',
+    'production_systems.csv',
+])
 
 
 def _detect_livestock_module(cs_path, folder):
@@ -1804,6 +1896,49 @@ def frontend_update_livestock_population(scenario_id):
         return jsonify({'error': str(e)}), 500
 
 
+@frontend_app.route('/api/scenarios/<scenario_id>/livestock-tif/<path:filename>', methods=['GET'])
+def frontend_livestock_tif(scenario_id, filename):
+    """Serve a raw heads TIF file for rendering in the browser (georaster/Leaflet)."""
+    import mimetypes
+    try:
+        name = os.path.basename(filename)
+        if not name.lower().endswith('.tif') and not name.lower().endswith('.tiff'):
+            return jsonify({'error': 'Only .tif files are served'}), 400
+        _, _, ls_dir = _livestock_dir_for_scenario(scenario_id)
+        tif_path = os.path.join(ls_dir, 'animals', name)
+        if not os.path.exists(tif_path):
+            return jsonify({'error': f'{name} not found'}), 404
+        mime = mimetypes.guess_type(tif_path)[0] or 'image/tiff'
+        return send_file(tif_path, mimetype=mime)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@frontend_app.route('/api/scenarios/<scenario_id>/input-raster/<path:filename>', methods=['GET'])
+def frontend_input_raster(scenario_id, filename):
+    """Serve an input TIF raster (isoraster.tif, poprural.tif, popurban.tif) for the browser."""
+    import mimetypes
+    ALLOWED = {'isoraster.tif', 'poprural.tif', 'popurban.tif'}
+    try:
+        name = os.path.basename(filename)
+        if name not in ALLOWED:
+            return jsonify({'error': f'{name} not allowed'}), 400
+        cs, folder = _locate_scenario(scenario_id)
+        tif_path = _resolve_data_path(cs['folder_path'], folder, name)
+        if not os.path.exists(tif_path):
+            tif_path = _resolve_data_path(cs['folder_path'], 'baseline', name)
+        if not os.path.exists(tif_path):
+            return jsonify({'error': f'{name} not found'}), 404
+        mime = mimetypes.guess_type(tif_path)[0] or 'image/tiff'
+        return send_file(tif_path, mimetype=mime)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @frontend_app.route('/api/scenarios/<scenario_id>/livestock-available-animals', methods=['GET'])
 def frontend_livestock_available_animals(scenario_id):
     """Return animals whose heads TIF has a non-zero grid sum.
@@ -1841,6 +1976,130 @@ def frontend_livestock_available_animals(scenario_id):
         return jsonify({'animals': result}), 200
     except ValueError as e:
         return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@frontend_app.route('/api/scenarios/<scenario_id>/livestock-heads-by-area', methods=['GET'])
+def frontend_livestock_heads_by_area(scenario_id):
+    """Return per-area animal head totals derived from animals/*_heads.tif rasters.
+
+    Response shape:
+      {
+        areas: [{ iso: "1", label: "Area name" }, ...],
+        animals: ["cattle", "goats", ...],
+        by_area: { "1": { "cattle": 123.4, ... }, ... },
+        totals_by_animal: { "cattle": 999.0, ... }
+      }
+    """
+    import numpy as np
+    try:
+        import rasterio
+        from rasterio.mask import mask as rio_mask
+        from rasterio.warp import transform_geom
+        from rasterio.crs import CRS
+        import fiona
+
+        cs, folder, ls_dir = _livestock_dir_for_scenario(scenario_id)
+        animals_dir = os.path.join(ls_dir, 'animals')
+        if not os.path.isdir(animals_dir):
+            return jsonify({'areas': [], 'animals': [], 'by_area': {}, 'totals_by_animal': {}}), 200
+
+        # Try scenario geodata first, then baseline.
+        shp_path = None
+        for candidate_folder in [folder, 'baseline']:
+            geodata_dir = os.path.join(cs['folder_path'], 'input', candidate_folder, 'geodata')
+            if not os.path.isdir(geodata_dir):
+                continue
+            shp_files = [f for f in os.listdir(geodata_dir) if f.lower().endswith('.shp')]
+            if shp_files:
+                shp_path = os.path.join(geodata_dir, shp_files[0])
+                break
+        if not shp_path:
+            return jsonify({'error': 'No geodata shapefile found'}), 404
+
+        # Prefer labels from isodata.csv when available.
+        area_labels = {}
+        isodata_path = _resolve_data_path(cs['folder_path'], folder, 'isodata.csv')
+        if os.path.exists(isodata_path):
+            with open(isodata_path, 'r', newline='', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for idx, row in enumerate(reader):
+                    iso_key = str(row.get('iso') or row.get('gid') or (idx + 1)).strip()
+                    label = (
+                        row.get('subarea')
+                        or row.get('NAME_3')
+                        or row.get('NAME_2')
+                        or row.get('NAME_1')
+                        or row.get('NAME_0')
+                        or iso_key
+                    )
+                    area_labels[iso_key] = str(label)
+
+        areas = []
+        geometries = []
+        with fiona.open(shp_path) as shp:
+            shp_crs = shp.crs_wkt or 'EPSG:4326'
+            for idx, feat in enumerate(shp):
+                iso_key = str(idx + 1)
+                props = feat.get('properties') or {}
+                label = (
+                    area_labels.get(iso_key)
+                    or props.get('subarea')
+                    or props.get('NAME_3')
+                    or props.get('NAME_2')
+                    or props.get('NAME_1')
+                    or props.get('NAME_0')
+                    or iso_key
+                )
+                areas.append({'iso': iso_key, 'label': str(label)})
+                geometries.append(feat.get('geometry'))
+
+        by_area = {a['iso']: {} for a in areas}
+        totals_by_animal = {}
+
+        animals = []
+        for animal in _GLOWPA_ANIMALS:
+            tif_path = os.path.join(animals_dir, f'{animal}_heads.tif')
+            if not os.path.exists(tif_path):
+                continue
+            animals.append(animal)
+            totals_by_animal[animal] = 0.0
+
+            with rasterio.open(tif_path) as src:
+                raster_crs = src.crs or CRS.from_epsg(4326)
+                nodata = src.nodata
+                for area, geom in zip(areas, geometries):
+                    iso_key = area['iso']
+                    try:
+                        geom_raster = transform_geom(shp_crs, raster_crs.to_wkt(), geom)
+                    except Exception:
+                        geom_raster = geom
+                    try:
+                        out, _ = rio_mask(src, [geom_raster], crop=True, all_touched=True, filled=True, nodata=np.nan)
+                        vals = out[0].astype(float)
+                        if nodata is not None:
+                            vals[vals == float(nodata)] = np.nan
+                        vals[vals < 0] = np.nan
+                        total = float(np.nansum(vals))
+                        if not np.isfinite(total):
+                            total = 0.0
+                    except Exception:
+                        total = 0.0
+
+                    by_area[iso_key][animal] = total
+                    totals_by_animal[animal] += total
+
+        return jsonify({
+            'areas': areas,
+            'animals': animals,
+            'by_area': by_area,
+            'totals_by_animal': totals_by_animal,
+        }), 200
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except ImportError as e:
+        return jsonify({'error': f'Missing geospatial dependency: {e}'}), 500
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -2180,6 +2439,18 @@ def update_livestock_population(scenario_id):
 @app.route('/api/scenarios/<scenario_id>/livestock-csv/<path:filename>', methods=['GET'])
 def get_livestock_csv(scenario_id, filename):
     return frontend_get_livestock_csv(scenario_id, filename)
+
+@app.route('/api/scenarios/<scenario_id>/livestock-heads-by-area', methods=['GET'])
+def get_livestock_heads_by_area(scenario_id):
+    return frontend_livestock_heads_by_area(scenario_id)
+
+@app.route('/api/scenarios/<scenario_id>/livestock-tif/<path:filename>', methods=['GET'])
+def get_livestock_tif(scenario_id, filename):
+    return frontend_livestock_tif(scenario_id, filename)
+
+@app.route('/api/scenarios/<scenario_id>/input-raster/<path:filename>', methods=['GET'])
+def get_input_raster(scenario_id, filename):
+    return frontend_input_raster(scenario_id, filename)
 
 @app.route('/api/scenarios/<scenario_id>/livestock-csv/<path:filename>', methods=['PUT'])
 def update_livestock_csv(scenario_id, filename):
@@ -2802,6 +3073,108 @@ def update_scenario_isodata(scenario_id):
 
     except Exception as e:
         return jsonify({'error': f'Failed to update isodata: {str(e)}'}), 500
+
+
+@app.route('/api/scenarios/<scenario_id>/clone', methods=['POST'])
+def clone_scenario(scenario_id):
+    """Clone an existing scenario: copy its input folder and register a new metadata entry.
+
+    Optional JSON body:
+      { "name": "New name for the clone" }
+
+    The clone gets a fresh UUID, a unique folder name derived from the source folder,
+    and is never a baseline. Output files are intentionally NOT copied.
+    """
+    try:
+        target_case_study = None
+        target_row = None
+
+        for case_study in case_studies:
+            cs_path = case_study.get('folder_path')
+            if not cs_path:
+                continue
+            meta_path = os.path.join(cs_path, 'config', 'scenario_metadata.csv')
+            if not os.path.exists(meta_path):
+                continue
+            with open(meta_path, 'r', newline='', encoding='utf-8') as f:
+                for row in csv.DictReader(f):
+                    if row['scenario_id'] == scenario_id:
+                        target_case_study = case_study
+                        target_row = dict(row)
+                        break
+            if target_row:
+                break
+
+        if not target_row:
+            return jsonify({'error': 'Scenario not found'}), 404
+
+        data = request.get_json(silent=True) or {}
+        src_name = target_row.get('name', 'Scenario')
+        clone_name = data.get('name') or f"{src_name} (clone)"
+
+        cs_path = target_case_study['folder_path']
+        src_folder = target_row.get('folder', '')
+        src_input = os.path.join(cs_path, 'input', src_folder)
+
+        # Build a unique destination folder name
+        base_dest = f"{src_folder}_clone"
+        dest_folder = base_dest
+        counter = 1
+        while os.path.exists(os.path.join(cs_path, 'input', dest_folder)):
+            dest_folder = f"{base_dest}_{counter}"
+            counter += 1
+
+        dest_input = os.path.join(cs_path, 'input', dest_folder)
+
+        if os.path.exists(src_input):
+            shutil.copytree(src_input, dest_input)
+        else:
+            os.makedirs(dest_input, exist_ok=True)
+
+        new_id = str(uuid.uuid4())
+        now = datetime.now().isoformat()
+
+        scenario_entry = {
+            'scenario_id': new_id,
+            'name':        clone_name,
+            'folder':      dest_folder,
+            'ssp':         target_row.get('ssp', ''),
+            'pathogen':    target_row.get('pathogen', ''),
+            'year':        target_row.get('year', ''),
+            'is_baseline': 'False',
+            'notes':       target_row.get('notes', ''),
+            'created_at':  now,
+            'updated_at':  now,
+        }
+        add_scenario_to_metadata(cs_path, scenario_entry)
+        target_case_study['scenario_count'] = target_case_study.get('scenario_count', 0) + 1
+
+        new_scenario = {
+            'id':            new_id,
+            'name':          clone_name,
+            'case_study_id': target_case_study['id'],
+            'folder':        dest_folder,
+            'ssp':           target_row.get('ssp', ''),
+            'pathogen':      target_row.get('pathogen', ''),
+            'year':          target_row.get('year', ''),
+            'notes':         target_row.get('notes', ''),
+            'description':   target_row.get('notes', ''),
+            'is_baseline':   False,
+            'created_at':    now,
+            'updated_at':    now,
+        }
+        print(f"[DEBUG] Cloned scenario '{src_name}' → '{clone_name}' in folder '{dest_folder}'")
+        return jsonify(new_scenario), 201
+
+    except Exception as e:
+        print(f"[ERROR] Failed to clone scenario: {traceback.format_exc()}")
+        return jsonify({'error': f'Failed to clone scenario: {str(e)}'}), 500
+
+
+@frontend_app.route('/api/scenarios/<scenario_id>/clone', methods=['POST'])
+def frontend_clone_scenario(scenario_id):
+    """Clone a scenario (frontend endpoint)"""
+    return clone_scenario(scenario_id)
 
 
 @app.route('/api/scenarios/<scenario_id>', methods=['DELETE'])
