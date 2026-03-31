@@ -516,20 +516,6 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
           </div>
         )}
 
-        {/* Output files summary (shown after run completes) */}
-        {['success', 'error'].includes(runStatus) && (
-          <div className="mx-6 mb-2">
-            {runOutputFiles.length > 0 ? (
-              <p className="text-xs text-gray-500">
-                <span className="font-semibold text-gray-700">Output files:</span>{' '}
-                {runOutputFiles.join(', ')}
-              </p>
-            ) : (
-              <p className="text-xs text-orange-500">No output files were generated in the output folder.</p>
-            )}
-          </div>
-        )}
-
         {/* Run output console */}
         {showOutput && (runOutput.stdout || runOutput.stderr) && (
           <div className="mx-6 mb-3 bg-gray-900 rounded-lg p-3 text-xs font-outfit text-gray-100 max-h-48 overflow-y-auto">

@@ -7,6 +7,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import axios from 'axios';
 import { RefreshCw, BarChart2, AlertTriangle, ArrowRight, X, Droplets, Trees, ArrowUpRight, ArrowDownRight, Minus, Maximize2, Minimize2, Download, Printer } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from './Dialog';
 
 import LivestockEmissionsIcon from '../../assets/icons/livestock_emissions.svg';
 import AssesIcon      from '../../assets/icons/asses.svg';
@@ -19,6 +20,11 @@ import PigsIcon       from '../../assets/icons/pigs.svg';
 import PoultryIcon    from '../../assets/icons/poultry.svg';
 import SheepIcon      from '../../assets/icons/sheep.svg';
 import BuffaloesIcon      from '../../assets/icons/buffaloes.svg';
+import HumanPopulationIcon from '../../assets/icons/human_population.svg';
+import SanitationIcon from '../../assets/icons/sanitation.svg';
+import WastewaterTreatmentIcon from '../../assets/icons/wastewater_treatment.svg';
+import LivestockPopulationIcon from '../../assets/icons/livestock_population.svg';
+import ProductionSystemsIcon from '../../assets/icons/production_systems.svg';
 import useSettingsStore      from '../store/settingsStore';
 
 // Make proj4 available globally so georaster-layer-for-leaflet can reproject
@@ -39,6 +45,7 @@ const LIVESTOCK_ICONS = {
   asses:     AssesIcon,
   camels:    CamelsIcon,
   cattle:    CattleIcon,
+  buffaloes: BuffaloesIcon,
   goats:     GoatsIcon,
   horses:    HorsesIcon,
   mules:     MulesIcon,
@@ -316,6 +323,215 @@ function AreaDialog({ area, waterStats, landStats, onClose }) {
   );
 }
 
+function computeDeltaPct(base, value) {
+  if (base === null || base === undefined || value === null || value === undefined) return null;
+  const b = Number(base);
+  const v = Number(value);
+  if (!Number.isFinite(b) || !Number.isFinite(v)) return null;
+  if (Math.abs(b) < 1e-9) return Math.abs(v) < 1e-9 ? 0 : null;
+  return ((v - b) / Math.abs(b)) * 100;
+}
+
+function formatMetricValue(value, valueFormat) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '—';
+  const v = Number(value);
+  if (valueFormat === 'percent') return `${v.toFixed(1)}%`;
+  if (valueFormat === 'hdi') return v.toFixed(3);
+  if (valueFormat === 'integer') return Math.round(v).toLocaleString();
+  return v.toFixed(2);
+}
+
+function formatDeltaValue(delta, deltaMode) {
+  if (delta === null || delta === undefined || Number.isNaN(Number(delta))) return '—';
+  const v = Number(delta);
+  if (deltaMode === 'pp') return `${v >= 0 ? '+' : ''}${v.toFixed(1)} %`;
+  if (deltaMode === 'absolute') return `${v >= 0 ? '+' : ''}${v.toFixed(3)}`;
+  return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
+}
+
+function computeMetricDelta(base, value, deltaMode) {
+  if (base === null || base === undefined || value === null || value === undefined) return null;
+  const b = Number(base);
+  const v = Number(value);
+  if (!Number.isFinite(b) || !Number.isFinite(v)) return null;
+  if (deltaMode === 'pp' || deltaMode === 'absolute') return v - b;
+  return computeDeltaPct(b, v);
+}
+
+function isWastewaterMetric(metricKey) {
+  return metricKey.startsWith('wastewater_');
+}
+
+function isShareMetric(metricKey) {
+  return metricKey.startsWith('wastewater_share_');
+}
+
+function isPointOnlyMetric(metricKey) {
+  return metricKey === 'wastewater_facility_count' || metricKey === 'wastewater_total_capacity';
+}
+
+function isMetricApplicableForScenario(metricKey, scenario) {
+  if (!scenario || !isWastewaterMetric(metricKey)) return true;
+  const mode = scenario.wwtp_mode;
+  if (mode === 'point' && isShareMetric(metricKey)) return false;
+  if (mode === 'area' && isPointOnlyMetric(metricKey)) return false;
+  return true;
+}
+
+const DRIVER_META = {
+  Population: { icon: HumanPopulationIcon, label: 'Population' },
+  Sanitation: { icon: SanitationIcon, label: 'Sanitation' },
+  'Wastewater treatment': { icon: WastewaterTreatmentIcon, label: 'Wastewater treatment' },
+  'Livestock population': { icon: LivestockPopulationIcon, label: 'Livestock population' },
+  'Production systems': { icon: ProductionSystemsIcon, label: 'Production systems' },
+};
+
+// ─── DriverChangeDialog ──────────────────────────────────────────────────────────────────────────
+
+function DriverChangeDialog({ open, onOpenChange, data, loading, error }) {
+  const scenarios = data?.scenarios || [];
+  const metrics = data?.metrics || [];
+  const baselineId = data?.baseline_scenario_id || null;
+  const baselineScenario = scenarios.find(s => s.id === baselineId) || null;
+  const baselineMetrics = baselineScenario?.metrics || {};
+  const [viewMode, setViewMode] = useState('delta'); // 'delta' | 'values'
+
+  const groupedMetrics = useMemo(() => {
+    const groups = [];
+    const byDriver = new Map();
+    metrics.forEach((m) => {
+      if (!byDriver.has(m.driver)) {
+        const g = { driver: m.driver, rows: [] };
+        byDriver.set(m.driver, g);
+        groups.push(g);
+      }
+      byDriver.get(m.driver).rows.push(m);
+    });
+    return groups;
+  }, [metrics]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-[95vw] w-[1200px] max-h-[85vh] overflow-hidden p-0">
+        <DialogHeader className="px-6 pt-6 pb-3 border-b border-gray-200">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <DialogTitle className="text-wpBlue">Summary of changes</DialogTitle>
+              <p className="text-xs text-gray-500 mt-1">
+                Baseline: <span className="font-semibold">{baselineScenario?.name || 'Not found'}</span>
+              </p>
+            </div>
+            <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden text-xs font-semibold">
+              <button
+                onClick={() => setViewMode('delta')}
+                className={`px-3 py-1.5 ${viewMode === 'delta' ? 'bg-wpBlue text-white' : 'bg-white text-wpBlue hover:bg-gray-50'}`}
+              >
+                Deltas
+              </button>
+              <button
+                onClick={() => setViewMode('values')}
+                className={`px-3 py-1.5 ${viewMode === 'values' ? 'bg-wpBlue text-white' : 'bg-white text-wpBlue hover:bg-gray-50'}`}
+              >
+                Values
+              </button>
+            </div>
+          </div>
+        </DialogHeader>
+
+        <div className="px-6 pb-6 pt-4 overflow-auto">
+          {loading && <p className="text-sm text-gray-500 italic">Loading driver comparison…</p>}
+          {!loading && error && <p className="text-sm text-red-500">{error}</p>}
+          {!loading && !error && scenarios.length === 0 && (
+            <p className="text-sm text-gray-500 italic">No scenarios available for this case study.</p>
+          )}
+
+          {!loading && !error && scenarios.length > 0 && (
+            <div className="border border-gray-200 rounded-lg overflow-hidden min-w-[900px]">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
+                  <tr>
+                    <th className="text-left px-3 py-2 min-w-[170px] text-xs uppercase tracking-wide text-gray-500">Category</th>
+                    <th className="text-left px-3 py-2 min-w-[260px] text-xs uppercase tracking-wide text-gray-500">Metric</th>
+                    {scenarios.map(sc => (
+                      <th key={sc.id} className="text-center px-3 py-2 min-w-[150px]">
+                        <div className="font-semibold text-wpBlue leading-tight">{sc.name}</div>
+                        <div className="text-[11px] text-gray-500 mt-0.5">
+                          {sc.year || '—'}
+                          {sc.id === baselineId ? ' · Baseline' : ''}
+                        </div>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {groupedMetrics.map(group => {
+                    const meta = DRIVER_META[group.driver] || null;
+                    return group.rows.map((metric, idx) => (
+                      <tr key={metric.key} className="border-b border-gray-100 last:border-b-0">
+                        {idx === 0 && (
+                          <td rowSpan={group.rows.length} className="px-3 py-2 text-gray-700 align-top border-r border-gray-100 bg-gray-50/30">
+                            <div className="flex items-center gap-2 pt-1">
+                              {meta?.icon && <img src={meta.icon} alt={meta.label} className="w-6 h-6" />}
+                              <span className="text-xs uppercase tracking-wide text-gray-600 font-semibold">{meta?.label || group.driver}</span>
+                            </div>
+                          </td>
+                        )}
+                        <td className="px-3 py-2 text-gray-700">{metric.label}</td>
+                        {scenarios.map(sc => {
+                          const applicable = isMetricApplicableForScenario(metric.key, sc);
+                          if (!applicable) {
+                            return <td key={`${metric.key}-${sc.id}`} className="px-3 py-2 text-center"><span className="text-gray-400">—</span></td>;
+                          }
+
+                          const val = sc.metrics?.[metric.key];
+                          const valueStr = formatMetricValue(val, metric.value_format);
+                          if (viewMode === 'values' || sc.id === baselineId) {
+                            return (
+                              <td key={`${metric.key}-${sc.id}`} className="px-3 py-2 text-center">
+                                <span className={`font-semibold ${sc.id === baselineId ? 'text-wpBlue' : 'text-gray-700'}`}>{valueStr}</span>
+                              </td>
+                            );
+                          }
+
+                          const baselineApplicable = isMetricApplicableForScenario(metric.key, baselineScenario);
+                          const base = baselineApplicable ? baselineMetrics?.[metric.key] : null;
+                          const delta = computeMetricDelta(base, val, metric.delta_mode || 'relative_pct');
+                          const direction = metric.color_direction || 'positive_good';
+                          let deltaColor = 'text-gray-700';
+                          if (delta !== null && delta !== 0) {
+                            if (direction === 'neutral') {
+                              deltaColor = 'text-wpBlue';
+                            } else if (direction === 'positive_good') {
+                              deltaColor = delta > 0 ? 'text-green-700' : 'text-red-600';
+                            } else if (direction === 'negative_good') {
+                              deltaColor = delta > 0 ? 'text-red-600' : 'text-green-700';
+                            }
+                          }
+                          return (
+                            <td key={`${metric.key}-${sc.id}`} className="px-3 py-2 text-center">
+                              {delta === null ? (
+                                <span className="text-gray-400">—</span>
+                              ) : (
+                                <span className={`font-semibold ${deltaColor}`}>
+                                  {formatDeltaValue(delta, metric.delta_mode || 'relative_pct')}
+                                </span>
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ));
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ─── GeoTiffLayer: renders a GeoTIFF via georaster-layer-for-leaflet ─────────────────────────────
 // Uses proj4 for CRS reprojection so TIFs in any projection (e.g. UTM) are
 // placed correctly on the Web-Mercator base map.
@@ -479,6 +695,7 @@ function EmissionMapPanel({
   onAreaClick, loading,
   emissionType, onChangeEmissionType,
   areaNames, selectedAreas, onAreaSelect,
+  choroplethMode = false,
 }) {
   const primRef = useRef(primaryIsoTotals);
   const compRef = useRef(isComparison);
@@ -487,6 +704,20 @@ function EmissionMapPanel({
   useEffect(() => { primRef.current = primaryIsoTotals; }, [primaryIsoTotals]);
   useEffect(() => { compRef.current = isComparison; secRef.current = secondaryIsoTotals; }, [isComparison, secondaryIsoTotals]);
   useEffect(() => { selRef.current = selectedAreas; }, [selectedAreas]);
+
+  const choroplethModeRef = useRef(choroplethMode);
+  useEffect(() => { choroplethModeRef.current = choroplethMode; }, [choroplethMode]);
+
+  const { heatmapView: smoothing, fixedColorScale, setDynamicLogMax } = useSettingsStore();
+
+  // In choropleth mode the raster is never loaded, so set dynamic log scale from ISO totals
+  // directly so the Legend component shows the right tick marks.
+  useEffect(() => {
+    if (!choroplethMode) return;
+    if (fixedColorScale) { setDynamicLogMax(null); return; }
+    const vals = Object.values(primaryIsoTotals || {}).filter(v => v > 0);
+    if (vals.length > 0) setDynamicLogMax(Math.log10(Math.max(...vals)));
+  }, [choroplethMode, primaryIsoTotals, fixedColorScale]); // eslint-disable-line
 
   const [diffData, setDiffData] = useState(null);
   // Only fetch diff image when in comparison mode; single raster is handled by GeoTiffLayer.
@@ -505,6 +736,19 @@ function EmissionMapPanel({
   const getStyle = useCallback((feature) => {
     const iso = String(feature.properties.iso);
     const isSel = !selRef.current || selRef.current.has(iso);
+    if (choroplethModeRef.current) {
+      const val = primRef.current?.[iso];
+      const secVal = compRef.current ? secRef.current?.[iso] : undefined;
+      let fillColor;
+      if (compRef.current && val != null && secVal != null) {
+        const pct = val > 0 ? ((secVal - val) / val) * 100 : null;
+        fillColor = diffColor(pct);
+      } else {
+        fillColor = val > 0 ? emissionColor(val) : '#e5e7eb';
+      }
+      return { fillColor, fillOpacity: isSel ? 0.85 : 0.25,
+               color: '#1e293b', weight: 0.8, opacity: isSel ? 0.7 : 0.2, pane: 'polygonPane' };
+    }
     return { fillColor: 'transparent', fillOpacity: 0,
              color: '#1e293b', weight: 0.6, opacity: isSel ? 0.5 : 0.15, pane: 'polygonPane' };
   }, []);
@@ -515,7 +759,7 @@ function EmissionMapPanel({
   const onEachFeature = useCallback((feature, layer) => {
     const iso = feature.properties.iso;
     const isoKey = String(iso);
-    const name = feature.properties.NAME_3 || feature.properties.NAME_2 || feature.properties.NAME_1 || feature.properties.NAME_0 || feature.properties.subarea || areaNames?.[isoKey] || `Area ${iso}`;
+    const name = feature.properties.NAME_4 || feature.properties.NAME_3 || feature.properties.NAME_2 || feature.properties.NAME_1 || feature.properties.NAME_0 || feature.properties.subarea || areaNames?.[isoKey] || `Area ${iso}`;
     layer.on('mouseover', () => {
       const val = primRef.current?.[isoKey];
       const secVal = secRef.current?.[isoKey];
@@ -524,17 +768,35 @@ function EmissionMapPanel({
         ? `<strong>${name}</strong><br/>${formatScientific(val||0)} \u2192 ${formatScientific(secVal||0)}<br/>${pct >= 0 ? '+' : ''}${pct?.toFixed(1)}%`
         : `<strong>${name}</strong><br/>${formatScientific(val||0)} vp`;
       layer.bindTooltip(tip, { sticky: true });
-      layer.setStyle({ fillColor: 'transparent', fillOpacity: 0, weight: 1.5, color: '#0f172a', opacity: 0.9, pane: 'polygonPane' });
+      if (choroplethModeRef.current) {
+        // In choropleth mode keep the fill; only highlight the border
+        layer.setStyle({ weight: 2.5, color: '#0f172a', opacity: 1, pane: 'polygonPane' });
+      } else {
+        layer.setStyle({ fillColor: 'transparent', fillOpacity: 0, weight: 1.5, color: '#0f172a', opacity: 0.9, pane: 'polygonPane' });
+      }
       layer.bringToFront();
     });
     layer.on('mouseout', () => {
       const isSel = !selRef.current || selRef.current.has(isoKey);
-      layer.setStyle({ fillColor: 'transparent', fillOpacity: 0, weight: 0.6, color: '#1e293b', opacity: isSel ? 0.5 : 0.15, pane: 'polygonPane' });
+      if (choroplethModeRef.current) {
+        const val = primRef.current?.[isoKey];
+        const secVal = compRef.current ? secRef.current?.[isoKey] : undefined;
+        let fillColor;
+        if (compRef.current && val != null && secVal != null) {
+          const pct = val > 0 ? ((secVal - val) / val) * 100 : null;
+          fillColor = diffColor(pct);
+        } else {
+          fillColor = val > 0 ? emissionColor(val) : '#e5e7eb';
+        }
+        layer.setStyle({ fillColor, fillOpacity: isSel ? 0.85 : 0.25, weight: 0.8, color: '#1e293b', opacity: isSel ? 0.7 : 0.2, pane: 'polygonPane' });
+      } else {
+        layer.setStyle({ fillColor: 'transparent', fillOpacity: 0, weight: 0.6, color: '#1e293b', opacity: isSel ? 0.5 : 0.15, pane: 'polygonPane' });
+      }
     });
     layer.on('click', () => onAreaClickRef.current?.({ iso, name }));
   }, [areaNames]);
 
-  const geoKey = `${scenarioId}-${secondaryScenarioId}-${Object.keys(primaryIsoTotals || {}).length}-${isComparison}-${selectedAreas?.size ?? 'all'}`;
+  const geoKey = `${scenarioId}-${secondaryScenarioId}-${Object.keys(primaryIsoTotals || {}).length}-${isComparison}-${selectedAreas?.size ?? 'all'}-${emissionType}-ch${choroplethMode?1:0}-sm${smoothing?1:0}`;
 
   const rankedAreas = useMemo(() => {
     const base = primaryIsoTotals || {};
@@ -604,10 +866,13 @@ function EmissionMapPanel({
               <MapContainer center={[0,0]} zoom={2} style={{ height:'100%', width:'100%' }} scrollWheelZoom>
                 <TileLayer url={TILE_URL} attribution={TILE_ATTR}/>
                 <CreateBlendPane/>
-                {/* Single raster: GeoTIFF rendered via georaster-layer-for-leaflet with proj4 CRS support */}
-                {singleRasterUrl && <GeoTiffLayer url={singleRasterUrl} />}
-                {/* Diff raster: server-computed relative-change PNG */}
-                {isComparison && diffData?.image && diffData.bounds && (
+                {/* Single raster: GeoTIFF rendered via georaster-layer-for-leaflet with proj4 CRS support.
+                    Skipped in choropleth mode — area is too small for the raster grid, polygons are
+                    filled directly with emission colours instead. */}
+                {!choroplethMode && singleRasterUrl && <GeoTiffLayer url={singleRasterUrl} />}
+                {/* Diff raster: server-computed relative-change PNG (skipped in choropleth mode —
+                    polygon fill uses diffColor() per area instead). */}
+                {!choroplethMode && isComparison && diffData?.image && diffData.bounds && (
                   <ImageOverlay
                     url={`data:image/png;base64,${diffData.image}`}
                     bounds={[[diffData.bounds.south,diffData.bounds.west],[diffData.bounds.north,diffData.bounds.east]]}
@@ -909,7 +1174,7 @@ function StatsSection({ primaryData, secondaryData, isComparison, selectedAreas,
                     <div className="flex-1 relative h-2 bg-gray-100 rounded-full">
                       <div className="absolute top-0 h-2 rounded-full bg-amber-500/20"
                         style={{ width:`${Math.min(94, Math.max(barPct, isComparison ? secBarPct : 0)).toFixed(1)}%`, left:0 }}/>
-                      <div className="absolute w-2.5 h-2.5 rounded-full bg-amber-600 border-2 border-white shadow-sm"
+                      <div className="absolute w-2.5 h-2.5 rounded-full bg-wpBlue border-2 border-white shadow-sm"
                         style={{ left:`${Math.min(94, barPct).toFixed(1)}%`, top:'50%', transform:'translate(-50%,-50%)' }}/>
                       {isComparison && (
                         <div className="absolute w-2.5 h-2.5 rounded-full bg-wpCypress border-2 border-white shadow-sm"
@@ -1095,6 +1360,15 @@ async function loadScenarioOutputs(scId) {
     landTifFile  ? axios.get(`/api/scenarios/${scId}/raster-area-stats/${landTifFile}`).catch(() => null)  : Promise.resolve(null),
   ]);
 
+  // Count valid pixels per TIF so choropleth mode can be decided per emission type at render time.
+  // Choropleth is preferred when the TIF has fewer valid pixels than the user-configured threshold
+  // (settable in Settings → Map Display). This happens when the study area is smaller than the
+  // output raster grid resolution, leaving only a handful of blocky cells.
+  const waterRasterPixels = Object.values(wStatsRes?.data || {})
+    .reduce((sum, s) => sum + (s?.count ?? 0), 0);
+  const landRasterPixels = Object.values(lStatsRes?.data || {})
+    .reduce((sum, s) => sum + (s?.count ?? 0), 0);
+
   return {
     geojson:                geoRes?.data   || null,
     waterEmissions:         wEmRes?.data   || null,
@@ -1107,6 +1381,8 @@ async function loadScenarioOutputs(scId) {
     landTif:                landTifFile    || null,
     waterRasterStats:       wStatsRes?.data || null,
     landRasterStats:        lStatsRes?.data || null,
+    waterRasterPixels,
+    landRasterPixels,
     loadedAt:               Date.now(),
   };
 }
@@ -1114,6 +1390,8 @@ async function loadScenarioOutputs(scId) {
 // ─── Main component ────────────────────────────────────────────────────────────────────────────────
 
 export default function ResultsView({ caseStudies, initialCaseStudyId, initialScenarioId, onCaseStudyChange }) {
+  const { choroplethPixelThreshold } = useSettingsStore();
+
   const [selectedCsId,       setSelectedCsId]       = useState(initialCaseStudyId || '');
   const [availableScenarios, setAvailableScenarios] = useState([]);
   const [scenariosLoading,   setScenariosLoading]   = useState(false);
@@ -1128,6 +1406,10 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
   // Area filter: null = all, Set<string iso> = specific
   const [selectedAreas, setSelectedAreas] = useState(null);
   const [clickedArea,   setClickedArea]   = useState(null);
+  const [driverDialogOpen, setDriverDialogOpen] = useState(false);
+  const [driverLoading, setDriverLoading] = useState(false);
+  const [driverError, setDriverError] = useState('');
+  const [driverData, setDriverData] = useState(null);
 
   // ── Sync externally supplied IDs
   useEffect(() => { if (initialCaseStudyId) setSelectedCsId(initialCaseStudyId); }, [initialCaseStudyId]);
@@ -1175,6 +1457,18 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
     });
   }, [JSON.stringify(selectedScIds)]); // eslint-disable-line
 
+  // ── Driver comparison dialog data
+  useEffect(() => {
+    if (!driverDialogOpen || !selectedCsId) return;
+    setDriverLoading(true);
+    setDriverError('');
+    const scenarioIds = availableScenarios.map(s => s.id).join(',');
+    axios.get(`/api/case-studies/${selectedCsId}/driver-comparison`, { params: { scenario_ids: scenarioIds } })
+      .then(({ data }) => setDriverData(data))
+      .catch((err) => setDriverError(err.response?.data?.error || 'Failed to load driver comparison'))
+      .finally(() => setDriverLoading(false));
+  }, [driverDialogOpen, selectedCsId, availableScenarios]);
+
   // Reset area filter on primary change
   const prevPrimRef = useRef(null);
   useEffect(() => {
@@ -1208,7 +1502,7 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
     geojson?.features?.forEach(f => {
       const iso = String(f.properties.iso);
       // Cascade through all GADM NAME levels so any admin granularity shows real names.
-      m[iso] = f.properties.NAME_3 || f.properties.NAME_2 || f.properties.NAME_1
+      m[iso] = f.properties.NAME_4 || f.properties.NAME_3 || f.properties.NAME_2 || f.properties.NAME_1
              || f.properties.NAME_0 || f.properties.subarea || f.properties.name || `Area ${iso}`;
     });
     return m;
@@ -1316,9 +1610,17 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
             </p>
           )}
         </div>
-      </div>
 
-      {/* Category tabs — hidden; only human-emissions view is currently active */}
+        <button
+          onClick={() => setDriverDialogOpen(true)}
+          disabled={!selectedCsId || scenariosLoading || availableScenarios.length === 0}
+          className="px-3 py-2.5 border text-sm border-wpBrown bg-wpWhite-100 text-wpBlue font-semibold font-inter rounded-lg hover:bg-wpBrown-100 disabled:opacity-50 disabled:cursor-not-allowed self-start"
+          title="Compare driver changes across scenarios"
+        >
+          Summary of changes
+        </button>
+
+      </div>
 
       {/* Empty state */}
       {!primaryScId && (
@@ -1387,6 +1689,11 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
             areaNames={areaNames}
             selectedAreas={selectedAreas}
             onAreaSelect={handleAreaSelect}
+            choroplethMode={
+              emissionType === 'water'
+                ? (!waterTif || (primaryData?.waterRasterPixels ?? 0) < choroplethPixelThreshold)
+                : (!landTif  || (primaryData?.landRasterPixels  ?? 0) < choroplethPixelThreshold)
+            }
           />
 
           {/* Section 1: area filter for map/area breakdown */}
@@ -1458,6 +1765,14 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
           onClose={() => setClickedArea(null)}
         />
       )}
+
+      <DriverChangeDialog
+        open={driverDialogOpen}
+        onOpenChange={setDriverDialogOpen}
+        data={driverData}
+        loading={driverLoading}
+        error={driverError}
+      />
     </div>
   );
 }

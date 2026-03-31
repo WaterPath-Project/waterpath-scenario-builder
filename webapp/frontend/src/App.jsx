@@ -40,6 +40,7 @@ import ConfirmDialog from './components/ConfirmDialog';
 import SSPScenarioDialog from './components/SSPScenarioDialog';
 import ScenarioMetadataDialog from './components/ScenarioMetadataDialog';
 import ResultsView from './components/ResultsView';
+import CaseStudyPage from './components/CaseStudyPage';
 import './index.css';
 
 // Bootstrap global config (pathogens, etc.) as early as possible.
@@ -106,8 +107,9 @@ function Dashboard() {
   // Get active section from URL path (only first segment matters)
   const getActiveSectionFromPath = (pathname) => {
     if (pathname === '/') return 'service-status';
-    const firstSeg = pathname.split('/').filter(Boolean)[0];
-    return firstSeg || 'service-status';
+    const parts = pathname.split('/').filter(Boolean);
+    if (parts[0] === 'case-studies' && parts[1]) return 'case-study-detail';
+    return parts[0] || 'service-status';
   };
   
   const [backendStatus, setBackendStatus] = useState('checking');
@@ -167,7 +169,7 @@ function Dashboard() {
     setScenarioDirty,
   } = useScenarioStore();
 
-  const { heatmapView, setHeatmapView, fixedColorScale, setFixedColorScale, debugMode, setDebugMode } = useSettingsStore();
+  const { heatmapView, setHeatmapView, fixedColorScale, setFixedColorScale, choroplethPixelThreshold, setChoroplethPixelThreshold, debugMode, setDebugMode } = useSettingsStore();
 
   // Effect to sync activeSection with URL changes
   useEffect(() => {
@@ -359,8 +361,8 @@ function Dashboard() {
   };
 
   const handleCaseStudySelect = (caseStudy) => {
-    // Just navigate — the URL-sync effect will update all state
-    navigate(`/scenarios/${toCsSlug(caseStudy)}`);
+    // Navigate to the case study landing page using the name slug
+    navigate(`/case-studies/${toCsSlug(caseStudy)}`);
   };
 
   const handleBaselinePathozenSave = async (formData) => {
@@ -742,6 +744,26 @@ function Dashboard() {
           </div>
         );
       
+      case 'case-study-detail': {
+        const csSlug    = location.pathname.split('/').filter(Boolean)[1] || '';
+        const matchedCs = caseStudies.find(c => toCsSlug(c) === csSlug);
+        const csId      = matchedCs?.id || '';
+        return (
+          <CaseStudyPage
+            csId={csId}
+            csSlug={csSlug}
+            onGoToAnalytics={(id) => {
+              const cs = caseStudies.find(c => c.id === id);
+              if (cs) {
+                setAnalyticsCaseStudy(cs);
+                setResultsState(prev => ({ ...prev, caseStudyId: id }));
+              }
+              navigate('/analytics');
+            }}
+          />
+        );
+      }
+
       case 'case-studies':
         return (
           <div className="space-y-8">
@@ -990,6 +1012,23 @@ function Dashboard() {
                       }`}
                     />
                   </button>
+                </div>
+                <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-gray-800">Choropleth threshold</p>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      # of valid raster pixels that determine whether maps should be projected in choropleth mode (filled polygons) or raster mode. Increase to prefer choropleth for coarser grids. Set to 0 to always use raster mode.
+                    </p>
+                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    max={1000}
+                    step={1}
+                    value={choroplethPixelThreshold}
+                    onChange={e => setChoroplethPixelThreshold(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                    className="ml-6 w-20 px-2 py-1 text-sm border border-gray-300 rounded-lg text-center focus:outline-none focus:ring-2 focus:ring-wpBlue"
+                  />
                 </div>
                 <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
                   <div>
@@ -1267,6 +1306,7 @@ function App() {
         <Route path="/" element={<Navigate to="/service-status" replace />} />
         <Route path="/service-status" element={<Dashboard />} />
         <Route path="/case-studies" element={<Dashboard />} />
+        <Route path="/case-studies/:csId" element={<Dashboard />} />
         <Route path="/scenarios" element={<Dashboard />} />
         <Route path="/scenarios/:csSlug" element={<Dashboard />} />
         <Route path="/scenarios/:csSlug/:scenarioSlug" element={<Dashboard />} />

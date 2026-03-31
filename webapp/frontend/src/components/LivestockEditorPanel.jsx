@@ -132,22 +132,19 @@ function csvFieldnamesForSave(rows, visibleFieldnames) {
 // ---------------------------------------------------------------------------
 // StepperInput
 // ---------------------------------------------------------------------------
-function StepperInput({ value, onChange, step = 1, min, max, percent = false, decimals }) {
-  // `value` is always the raw stored value (0–1 for percent mode, absolute otherwise).
-  // `percent`: display as (value×100).toFixed(1)%, accept typed input as %, store as fraction.
-  // `decimals`: format the display value with this many decimal places (non-percent mode).
-  // Empty string is treated as valid (absent/zero) — not highlighted red.
+function StepperInput({ value, onChange, step = 1, min, max, percent = false, decimals, inputClassName }) {
   const [raw, setRaw] = useState(asText(value));
-  const [editText, setEditText] = useState(null); // null = not actively editing
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState('');
   const valid = raw === '' || isValidNumber(raw);
 
   useEffect(() => {
     setRaw(asText(value));
-    setEditText(null);
+    setEditing(false);
   }, [value]);
 
   const toDisplay = (r) => {
-    if (r === '') return percent ? '0.0' : r;
+    if (r === '') return percent ? '0.0' : '0';
     if (!isValidNumber(r)) return r;
     const n = parseFloat(r);
     if (percent) return (n * 100).toFixed(1);
@@ -155,10 +152,8 @@ function StepperInput({ value, onChange, step = 1, min, max, percent = false, de
     return r;
   };
 
-  const displayVal = editText !== null ? editText : toDisplay(raw);
-
-  const commitFromDisplay = (text) => {
-    setEditText(null);
+  const commit = (text) => {
+    setEditing(false);
     const n = parseFloat(text);
     if (!isNaN(n)) {
       let newRaw = percent ? n / 100 : n;
@@ -169,11 +164,10 @@ function StepperInput({ value, onChange, step = 1, min, max, percent = false, de
       setRaw(s);
       onChange(s);
     }
-    // else: invalid text → revert (editText cleared above)
   };
 
   const nudge = (delta) => {
-    setEditText(null);
+    setEditing(false);
     const base = raw === '' ? 0 : parseFloat(raw);
     const next = isNaN(base) ? 0 : Math.round((base + delta) * 1e9) / 1e9;
     let clamped = next;
@@ -184,23 +178,35 @@ function StepperInput({ value, onChange, step = 1, min, max, percent = false, de
     onChange(s);
   };
 
+  const displayLabel = toDisplay(raw) + (percent ? '%' : '');
+
   return (
-    <div className={`flex items-center rounded border text-xs ${valid ? 'border-gray-200' : 'border-red-400'}`}>
+    <div className="flex items-center gap-0.5 text-xs">
       <button type="button" onClick={() => nudge(-step)}
-        className="px-1.5 py-1 text-gray-400 hover:text-wpBlue hover:bg-gray-50 rounded-l select-none" tabIndex={-1}>−</button>
-      <input
-        value={displayVal}
-        onChange={(e) => setEditText(e.target.value)}
-        onBlur={(e) => commitFromDisplay(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') commitFromDisplay(e.target.value);
-          if (e.key === 'Escape') setEditText(null);
-        }}
-        className={`w-14 px-1 py-1 text-center bg-transparent outline-none ${valid ? 'text-gray-800' : 'text-red-500'}`}
-      />
-      {percent && <span className="pr-1 text-gray-400 select-none">%</span>}
+        className="px-1 py-1 text-gray-400 hover:text-wpBlue hover:bg-gray-50 rounded select-none" tabIndex={-1}>−</button>
+      {editing ? (
+        <input
+          autoFocus
+          value={editText}
+          onChange={(e) => setEditText(e.target.value)}
+          onBlur={(e) => commit(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit(e.target.value);
+            if (e.key === 'Escape') setEditing(false);
+          }}
+          className={`${inputClassName ?? 'w-14'} px-1 py-0.5 text-center border border-wpBlue-300 rounded focus:outline-none focus:ring-1 focus:ring-wpBlue-400 ${valid ? 'text-gray-800' : 'text-red-500'}`}
+        />
+      ) : (
+        <span
+          className={`${inputClassName ?? 'w-14'} px-1 py-0.5 text-center tabular-nums cursor-text hover:bg-gray-100 rounded select-none ${valid ? 'text-gray-800' : 'text-red-500'}`}
+          title="Click to type a value"
+          onClick={() => { setEditText(toDisplay(raw)); setEditing(true); }}
+        >
+          {displayLabel}
+        </span>
+      )}
       <button type="button" onClick={() => nudge(+step)}
-        className="px-1.5 py-1 text-gray-400 hover:text-wpBlue hover:bg-gray-50 rounded-r select-none" tabIndex={-1}>+</button>
+        className="px-1 py-1 text-gray-400 hover:text-wpBlue hover:bg-gray-50 rounded select-none" tabIndex={-1}>+</button>
     </div>
   );
 }
@@ -546,161 +552,46 @@ export function PopulationMap({ scenarioId }) {
 // HeadsSummaryDialogContent — standalone dialog body with per-scenario selector
 // ---------------------------------------------------------------------------
 function HeadsSummaryDialogContent({ activeScenario }) {
-  const { scenarios, tempScenarios } = useScenarioStore();
-  const allScenarios = useMemo(
-    () => [...scenarios, ...tempScenarios].filter((s) => !s.isTemp),
-    [scenarios, tempScenarios],
-  );
-
-  const [selectedScenarioId, setSelectedScenarioId] = useState(activeScenario.id);
-  const [selectedAreaIndices, setSelectedAreaIndices] = useState(new Set());
-  const [headsData, setHeadsData] = useState({
-    status: 'loading', error: '', areas: [], animals: [], byArea: {}, totalsByAnimal: {},
-  });
+  const [animals, setAnimals] = useState([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setHeadsData({ status: 'loading', error: '', areas: [], animals: [], byArea: {}, totalsByAnimal: {} });
-    setSelectedAreaIndices(new Set());
-    axios.get(`/api/scenarios/${selectedScenarioId}/livestock-heads-by-area`)
+    setLoading(true);
+    axios.get(`/api/scenarios/${activeScenario.id}/livestock-heads-by-area`)
       .then((res) => {
         if (res.data && !res.data.error) {
-          setHeadsData({
-            status: 'done',
-            error: '',
-            areas: res.data.areas || [],
-            animals: res.data.animals || [],
-            byArea: res.data.by_area || {},
-            totalsByAnimal: res.data.totals_by_animal || {},
-          });
-        } else {
-          setHeadsData({ status: 'unavailable', error: '', areas: [], animals: [], byArea: {}, totalsByAnimal: {} });
+          const totals = res.data.totals_by_animal || {};
+          const sorted = (res.data.animals || []).sort((a, b) => (totals[b] || 0) - (totals[a] || 0));
+          setAnimals(sorted);
         }
       })
-      .catch(() => setHeadsData({ status: 'unavailable', error: '', areas: [], animals: [], byArea: {}, totalsByAnimal: {} }));
-  }, [selectedScenarioId]);
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [activeScenario.id]);
 
-  const selectedAreaIsos = useMemo(() => {
-    const areas = headsData.areas || [];
-    if (!areas.length) return [];
-    if (selectedAreaIndices.size === 0) return areas.map((a) => String(a.iso));
-    return [...selectedAreaIndices].sort((a, b) => a - b).map((idx) => areas[idx]).filter(Boolean).map((a) => String(a.iso));
-  }, [headsData.areas, selectedAreaIndices]);
+  if (loading) return <LoadingState label="heads data" />;
+  if (!animals.length) return <p className="text-sm text-gray-500">No heads raster data available for this scenario.</p>;
 
-  const selectedHeadsByAnimal = useMemo(() => {
-    if (headsData.status !== 'done') return {};
-    const byAnimal = {};
-    selectedAreaIsos.forEach((iso) => {
-      const row = headsData.byArea?.[iso] || {};
-      Object.entries(row).forEach(([animal, value]) => {
-        const n = Number(value);
-        if (!isFinite(n)) return;
-        byAnimal[animal] = (byAnimal[animal] || 0) + n;
-      });
-    });
-    return byAnimal;
-  }, [headsData.status, headsData.byArea, selectedAreaIsos]);
-
-  const headRows = useMemo(() => {
-    return (headsData.animals || [])
-      .map((animal) => ({ animal, heads: selectedHeadsByAnimal[animal] || 0 }))
-      .filter((r) => r.heads > 0)
-      .sort((a, b) => b.heads - a.heads);
-  }, [headsData.animals, selectedHeadsByAnimal]);
-
-  const totalHeads = useMemo(() => headRows.reduce((sum, r) => sum + r.heads, 0), [headRows]);
-
-  return (
-    <>
-      {allScenarios.length > 1 && (
-        <div className="flex items-center gap-2 mb-4">
-          <label className="text-xs font-semibold text-gray-700 shrink-0">Scenario:</label>
-          <select
-            value={selectedScenarioId}
-            onChange={(e) => setSelectedScenarioId(e.target.value)}
-            className="border border-gray-300 rounded px-2 py-1 text-xs flex-1 min-w-0"
-          >
-            {allScenarios.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}{s.id === activeScenario.id ? ' (active)' : ''}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-      {headsData.status === 'loading' ? (
-        <LoadingState label="heads data" />
-      ) : headsData.status === 'unavailable' ? (
-        <p className="text-sm text-gray-500">No heads raster data available for this scenario.</p>
-      ) : (
-        <div className="flex flex-col md:flex-row gap-6">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
-              <span className="text-xs text-gray-500">
-                {selectedAreaIndices.size === 0
-                  ? `All ${headsData.areas.length} area${headsData.areas.length !== 1 ? 's' : ''}`
-                  : `${selectedAreaIndices.size} selected area${selectedAreaIndices.size !== 1 ? 's' : ''}`}
-              </span>
-            </div>
-            {headsData.areas.length > 1 && (
-              <AreaSelector
-                labels={headsData.areas.map((a, i) => a.label || `Area ${i + 1}`)}
-                selectedIndices={selectedAreaIndices}
-                onChange={setSelectedAreaIndices}
-              />
-            )}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
-              <div className="bg-white border border-gray-200 rounded-lg px-3 py-2">
-                <p className="text-xs text-gray-500 uppercase tracking-wide">Total heads</p>
-                <p className="text-xl font-semibold text-wpBlue">{fmtInt(totalHeads)}</p>
-              </div>
-              <div className="bg-white border border-gray-200 rounded-lg px-3 py-2">
-                <p className="text-xs text-gray-500 uppercase tracking-wide">Available species</p>
-                <p className="text-xl font-semibold text-wpBlue">{headRows.length}</p>
-              </div>
-            </div>
-            {headRows.length > 0 ? (
-              <div className="overflow-auto max-h-56 bg-white rounded-lg border border-gray-200 mt-2">
-                <table className="w-full text-xs">
-                  <thead className="bg-gray-50 sticky top-0">
-                    <tr>
-                      <th className="px-3 py-2 text-left font-medium text-gray-600">Animal</th>
-                      <th className="px-3 py-2 text-right font-medium text-gray-600">Heads</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {headRows.map((r) => (
-                      <tr key={r.animal}>
-                        <td className="px-3 py-1.5 text-gray-700">{animalLabel(r.animal)}</td>
-                        <td className="px-3 py-1.5 text-right text-gray-800 tabular-nums">{fmtInt(r.heads)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <p className="text-xs text-gray-500 mt-2">No head counts found for the selected area set.</p>
-            )}
-          </div>
-          <div className="flex-1 min-w-0">
-            <AnimalHeadsMap
-              scenarioId={selectedScenarioId}
-              animals={headsData.animals}
-            />
-          </div>
-        </div>
-      )}
-    </>
-  );
+  return <AnimalHeadsMap scenarioId={activeScenario.id} animals={animals} />;
 }
 
 // ---------------------------------------------------------------------------
 // LivestockPopulationEditor
 // Rows = animals, columns = isodata fields (frac_young, prev_*, excr_*, mass_*, manure_per_mass)
 // ---------------------------------------------------------------------------
-function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved }) {
+function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved, onHeadCountsChange }) {
+  const clonePopulationRows = useCallback((arr) => (
+    (arr || []).map((r) => ({
+      ...r,
+      areaRows: Array.isArray(r.areaRows) ? r.areaRows.map((ar) => ({ ...ar })) : [],
+    }))
+  ), []);
+
   const [status, setStatus] = useState('loading');
   const [error, setError] = useState('');
   const [rows, setRows] = useState([]);
+  const [areaLabels, setAreaLabels] = useState([]);
+  const [selectedIndices, setSelectedIndices] = useState(new Set());
   const [fieldnames, setFieldnames] = useState([]);    // editable field columns
   const [rawFieldnames, setRawFieldnames] = useState([]);
   const [isSaving, setIsSaving] = useState(false);
@@ -715,6 +606,8 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved }) {
     totalsByAnimal: {},
   });
   const savedRowsRef = useRef([]);
+  const [headCounts, setHeadCounts] = useState({});
+  const savedHeadCountsRef = useRef({});
   const onDirtyChangeRef = useRef(onDirtyChange);
 
   useEffect(() => { onDirtyChangeRef.current = onDirtyChange; }, [onDirtyChange]);
@@ -733,14 +626,17 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved }) {
       setAvailableAnimals(available);
 
       if (headsRes?.data && !headsRes.data.error) {
+        const totals = headsRes.data.totals_by_animal || {};
         setHeadsSummary({
           status: 'done',
           error: '',
           areas: headsRes.data.areas || [],
           animals: headsRes.data.animals || [],
           byArea: headsRes.data.by_area || {},
-          totalsByAnimal: headsRes.data.totals_by_animal || {},
+          totalsByAnimal: totals,
         });
+        setHeadCounts(totals);
+        savedHeadCountsRef.current = { ...totals };
       } else {
         setHeadsSummary({ status: 'unavailable', error: '', areas: [], animals: [], byArea: {}, totalsByAnimal: {} });
       }
@@ -750,12 +646,21 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved }) {
       const nextRows = (r.data?.data || []).map((row) => {
         const out = { animal: row.animal };
         allFields.forEach((f) => { out[f] = asText(row[f]); });
+        out.areaRows = Array.isArray(row.areaRows)
+          ? row.areaRows.map((ar) => {
+              const one = {};
+              allFields.forEach((f) => { one[f] = asText(ar?.[f]); });
+              return one;
+            })
+          : [];
         return out;
       });
       // editable columns: exclude identifier columns
       const editFields = allFields.filter((f) => !['iso', 'gid', 'subarea', 'animal'].includes(f));
-      savedRowsRef.current = nextRows;
-      setRows(nextRows);
+      savedRowsRef.current = clonePopulationRows(nextRows);
+      setRows(clonePopulationRows(nextRows));
+      setAreaLabels(Array.isArray(r.data?.areas) ? r.data.areas : []);
+      setSelectedIndices(new Set());
       setFieldnames(editFields);
       setRawFieldnames(['animal', ...allFields]);
       onDirtyChangeRef.current?.(false);
@@ -764,11 +669,24 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved }) {
       setError(e.response?.data?.error || e.message);
       setStatus('error');
     }
-  }, [scenario.id]);
+  }, [scenario.id, clonePopulationRows]);
 
   useEffect(() => { load(); }, [load]);
 
-  const isDirty = useMemo(() => !rowsEqual(rows, savedRowsRef.current), [rows]);
+  // Notify parent whenever headCounts change (so sibling tabs can hide zero-count animals).
+  const onHeadCountsChangeRef = useRef(onHeadCountsChange);
+  useEffect(() => { onHeadCountsChangeRef.current = onHeadCountsChange; }, [onHeadCountsChange]);
+  useEffect(() => { onHeadCountsChangeRef.current?.(headCounts); }, [headCounts]);
+
+  const headCountsDirty = useMemo(() => {
+    if (headsSummary.status !== 'done') return false;
+    const saved = savedHeadCountsRef.current;
+    return Object.keys(headCounts).some(
+      (k) => Math.round(headCounts[k] || 0) !== Math.round(saved[k] || 0),
+    );
+  }, [headCounts, headsSummary.status]);
+
+  const isDirty = useMemo(() => !rowsEqual(rows, savedRowsRef.current) || headCountsDirty, [rows, headCountsDirty]);
   useEffect(() => { onDirtyChangeRef.current?.(isDirty); }, [isDirty]);
 
   // Step sizes per field
@@ -789,23 +707,84 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved }) {
     const errs = [];
     rows.forEach((row) => {
       const isPoultry = POULTRY_ANIMALS.includes((row.animal || '').toLowerCase());
-      fieldnames.forEach((f) => {
-        const isNA = (isPoultry && NON_POULTRY_FIELDS.has(f)) || (!isPoultry && POULTRY_ONLY_FIELDS.has(f));
-        if (isNA) return;
-        const v = row[f];
-        if (v !== '' && !isValidNumber(v)) {
-          errs.push(`${row.animal || '?'}: invalid value in "${LIVESTOCK_POP_LABELS[f] || f}"`);
-        }
+      const areaRows = Array.isArray(row.areaRows) && row.areaRows.length ? row.areaRows : [row];
+      areaRows.forEach((ar, ai) => {
+        fieldnames.forEach((f) => {
+          const isNA = (isPoultry && NON_POULTRY_FIELDS.has(f)) || (!isPoultry && POULTRY_ONLY_FIELDS.has(f));
+          if (isNA) return;
+          const v = ar[f];
+          if (v !== '' && !isValidNumber(v)) {
+            const area = areaLabels[ai] || `Area ${ai + 1}`;
+            errs.push(`${row.animal || '?'} (${area}): invalid value in "${LIVESTOCK_POP_LABELS[f] || f}"`);
+          }
+        });
       });
     });
     return errs;
-  }, [rows, fieldnames]);
+  }, [rows, fieldnames, areaLabels]);
+
+  const effectiveAreaLabels = useMemo(() => {
+    if (areaLabels.length > 0) return areaLabels;
+    const first = rows[0];
+    if (first?.areaRows?.length) {
+      return first.areaRows.map((ar, i) => ar.subarea || ar.iso || ar.gid || `Area ${i + 1}`);
+    }
+    return [];
+  }, [areaLabels, rows]);
+
+  const areaCount = useMemo(() => {
+    const first = rows[0];
+    return Array.isArray(first?.areaRows) ? first.areaRows.length : 0;
+  }, [rows]);
+
+  const selectedAreaIndices = useMemo(() => {
+    if (!areaCount) return [0];
+    if (selectedIndices.size === 0) return Array.from({ length: areaCount }, (_, i) => i);
+    return [...selectedIndices].filter((i) => i >= 0 && i < areaCount).sort((a, b) => a - b);
+  }, [selectedIndices, areaCount]);
+
+  const getDisplayValue = useCallback((row, field) => {
+    const areaRows = Array.isArray(row.areaRows) ? row.areaRows : null;
+    if (!areaRows || areaRows.length === 0) return row[field];
+    const pool = selectedAreaIndices.map((i) => areaRows[i]).filter(Boolean);
+    if (!pool.length) return row[field];
+    if (pool.length === 1) return asText(pool[0][field]);
+    const nums = pool.map((ar) => parseFloat(ar[field])).filter((v) => !isNaN(v));
+    if (nums.length === pool.length) {
+      const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
+      return String(Math.round(avg * 1e9) / 1e9);
+    }
+    return asText(pool[0][field]);
+  }, [selectedAreaIndices]);
+
+  const updateFieldForSelectedAreas = useCallback((rowIdx, field, value) => {
+    setRows((prev) => prev.map((r, i) => {
+      if (i !== rowIdx) return r;
+      const areaRows = Array.isArray(r.areaRows) ? r.areaRows : null;
+      if (!areaRows || areaRows.length === 0) {
+        return { ...r, [field]: value };
+      }
+      const targetSet = new Set(selectedAreaIndices);
+      const nextAreaRows = areaRows.map((ar, ai) => (
+        targetSet.has(ai) ? { ...ar, [field]: value } : ar
+      ));
+      return {
+        ...r,
+        areaRows: nextAreaRows,
+        [field]: asText(nextAreaRows[0]?.[field] ?? r[field]),
+      };
+    }));
+  }, [selectedAreaIndices]);
 
   const handleSave = async () => {
     setIsSaving(true);
     try {
       await axios.put(`/api/scenarios/${scenario.id}/livestock-population`, { rows });
-      savedRowsRef.current = rows.map((r) => ({ ...r }));
+      savedRowsRef.current = clonePopulationRows(rows);
+      if (headCountsDirty) {
+        await axios.put(`/api/scenarios/${scenario.id}/livestock-headcount`, { counts: headCounts });
+        savedHeadCountsRef.current = { ...headCounts };
+      }
       onDirtyChangeRef.current?.(false);
       onSaved?.();
     } catch (e) {
@@ -816,7 +795,8 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved }) {
   };
 
   const handleReset = () => {
-    setRows(savedRowsRef.current.map((r) => ({ ...r })));
+    setRows(clonePopulationRows(savedRowsRef.current));
+    setHeadCounts({ ...savedHeadCountsRef.current });
     onDirtyChangeRef.current?.(false);
   };
 
@@ -830,8 +810,12 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved }) {
 
   const visibleRows = useMemo(() => {
     let result = headsAnimalSet ? rows.filter(row => headsAnimalSet.has(row.animal)) : rows;
-    return result.filter(row => !EXCLUDED_BY_DEFAULT.has(row.animal));
-  }, [rows, headsAnimalSet]);
+    result = result.filter(row => !EXCLUDED_BY_DEFAULT.has(row.animal));
+    if (headsSummary.status === 'done') {
+      result = result.filter(row => Math.round(headCounts[row.animal] || 0) > 0);
+    }
+    return result;
+  }, [rows, headsAnimalSet, headCounts, headsSummary.status]);
 
   // All hooks must be called before any early returns (Rules of Hooks).
 
@@ -861,12 +845,12 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved }) {
               <Dialog>
                 <DialogTrigger asChild>
                   <button className="flex items-center gap-1 px-3 py-1.5 text-xs text-wpBlue border border-wpBlue/40 rounded hover:bg-wpBlue/5 transition font-medium">
-                    View summary data
+                    View animal distribution
                   </button>
                 </DialogTrigger>
-                <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
+                <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
                   <DialogHeader>
-                    <DialogTitle>Animal heads summary (from heads rasters)</DialogTitle>
+                    <DialogTitle>Animal distribution</DialogTitle>
                   </DialogHeader>
                   <HeadsSummaryDialogContent activeScenario={scenario} />
                 </DialogContent>
@@ -876,11 +860,24 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved }) {
         }
       />
 
+      {effectiveAreaLabels.length > 1 && (
+        <div className="px-3 py-2 border-b border-gray-100">
+          <AreaSelector
+            labels={effectiveAreaLabels}
+            selectedIndices={selectedIndices}
+            onChange={setSelectedIndices}
+          />
+        </div>
+      )}
+
       <div className="overflow-auto p-3">
         <table className="text-xs border-collapse">
           <thead>
             <tr className="bg-gray-50 text-gray-500 tracking-wide text-xs">
               <th className="px-3 py-2 text-left font-medium sticky left-0 bg-gray-50 z-10 whitespace-nowrap">Animal</th>
+              {headsSummary.status === 'done' && (
+                <th className="px-2 py-2 text-left font-medium whitespace-nowrap">Head count</th>
+              )}
               {fieldnames.map((f) => (
                 <th key={f} className="px-2 py-2 text-left font-medium whitespace-nowrap" title={f}>
                   {LIVESTOCK_POP_LABELS[f] || titleCase(f)}
@@ -897,9 +894,20 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved }) {
                   <td className="px-3 py-2 sticky left-0 bg-white z-10 whitespace-nowrap">
                     <div className="flex items-center gap-2">
                       <img src={icon} alt={row.animal} className="w-4 h-4" />
-                      <span className="capitalize font-medium text-gray-700">{row.animal}</span>
+                      <span className="capitalize font-semibold text-wpBlue">{row.animal}</span>
                     </div>
                   </td>
+                  {headsSummary.status === 'done' && (
+                    <td className="px-1 py-1">
+                      <StepperInput
+                        value={Math.round(headCounts[row.animal] ?? 0)}
+                        onChange={(v) => setHeadCounts((prev) => ({ ...prev, [row.animal]: Math.round(parseFloat(v) || 0) }))}
+                        step={1000}
+                        min={0}
+                        inputClassName="w-24"
+                      />
+                    </td>
+                  )}
                   {fieldnames.map((f) => {
                     const isPoultry = POULTRY_ANIMALS.includes((row.animal || '').toLowerCase());
                     const isNA = (isPoultry && NON_POULTRY_FIELDS.has(f)) || (!isPoultry && POULTRY_ONLY_FIELDS.has(f));
@@ -911,8 +919,8 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved }) {
                     return (
                       <td key={f} className="px-1 py-1">
                         <StepperInput
-                          value={row[f]}
-                          onChange={(v) => setRows((prev) => prev.map((r, i) => i === rowIdx ? { ...r, [f]: v } : r))}
+                          value={getDisplayValue(row, f)}
+                          onChange={(v) => updateFieldForSelectedAreas(rowIdx, f, v)}
                           step={stepFor(f)}
                           min={0}
                           max={f === 'frac_young' ? 1 : undefined}
@@ -1131,8 +1139,8 @@ function ManureManagementEditor({ scenario, onDirtyChange, onSaved, animalsWithH
   return (
     <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
       <SaveResetBar
-        title="Manure Management"
-        hint="Shares per system per animal (%) — cells highlighted in amber have fractions that don't sum to 100% and will block saving"
+        title="Animal shares per system"
+        hint="Shares per system per animal (%)"
         isDirty={isDirty}
         isSaving={isSaving}
         onSave={handleSave}
@@ -1543,7 +1551,7 @@ function AnimalIntensiveSlider({ animal, intensiveFrac, onChange }) {
     <div className="flex items-center gap-3 py-2 border-b border-gray-100 last:border-0">
       <div className="flex items-center gap-1.5 w-28 shrink-0">
         <img src={icon} alt={animal} className="w-4 h-4" />
-        <span className="text-xs font-medium text-gray-700 capitalize">{animalLabel(animal)}</span>
+        <span className="text-xs font-semibold text-wpBlue capitalize">{animalLabel(animal)}</span>
       </div>
       <span className="text-xs text-gray-400 w-20 text-right shrink-0">{pctExt}% Ext.</span>
       <input
@@ -1783,6 +1791,8 @@ function ProductionSystemsEditor({ scenario, onDirtyChange, onSaved, animalsWith
 export default function LivestockEditorPanel({ scenario, subcategoryId, onDirtyChange, onSaved }) {
   // Fetch once to know which animals have heads > 0 (used by manure / production-systems tabs).
   const [animalsWithHeads, setAnimalsWithHeads] = useState(null);
+  // Live head counts forwarded from LivestockPopulationEditor (includes unsaved edits).
+  const [headCounts, setHeadCounts] = useState(null);
 
   useEffect(() => {
     axios.get(`/api/scenarios/${scenario.id}/livestock-heads-by-area`)
@@ -1793,12 +1803,27 @@ export default function LivestockEditorPanel({ scenario, subcategoryId, onDirtyC
       .catch(() => setAnimalsWithHeads(null));
   }, [scenario.id]);
 
+  // Effective set = API-sourced × user-edited head counts (hide zero-count animals live).
+  const effectiveAnimalsWithHeads = useMemo(() => {
+    if (headCounts && Object.keys(headCounts).length > 0) {
+      const nonZero = new Set(
+        Object.keys(headCounts).filter((a) => Math.round(headCounts[a] || 0) > 0)
+      );
+      if (animalsWithHeads) {
+        return new Set([...animalsWithHeads].filter((a) => nonZero.has(a)));
+      }
+      return nonZero;
+    }
+    return animalsWithHeads;
+  }, [animalsWithHeads, headCounts]);
+
   if (subcategoryId === 'livestock-population') {
     return (
       <LivestockPopulationEditor
         scenario={scenario}
         onDirtyChange={onDirtyChange}
         onSaved={onSaved}
+        onHeadCountsChange={setHeadCounts}
       />
     );
   }
@@ -1810,18 +1835,18 @@ export default function LivestockEditorPanel({ scenario, subcategoryId, onDirtyC
           scenario={scenario}
           onDirtyChange={onDirtyChange}
           onSaved={onSaved}
-          animalsWithHeads={animalsWithHeads}
+          animalsWithHeads={effectiveAnimalsWithHeads}
         />
         <GroupedCsvEditor
           scenario={scenario}
           filename="manure_fractions.csv"
-          title="Manure Fractions"
+          title="Manure by land type and system"
           hint="Fraction of manure by land type (grazing/other) × system (intensive/extensive)"
           suffixLabels={MANURE_FRAC_LABELS}
           checkSum={false}
           onDirtyChange={onDirtyChange}
           onSaved={onSaved}
-          animalsWithHeads={animalsWithHeads}
+          animalsWithHeads={effectiveAnimalsWithHeads}
         />
       </div>
     );
@@ -1833,7 +1858,7 @@ export default function LivestockEditorPanel({ scenario, subcategoryId, onDirtyC
         scenario={scenario}
         onDirtyChange={onDirtyChange}
         onSaved={onSaved}
-        animalsWithHeads={animalsWithHeads}
+        animalsWithHeads={effectiveAnimalsWithHeads}
       />
     );
   }

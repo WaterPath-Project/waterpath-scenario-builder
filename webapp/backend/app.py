@@ -45,6 +45,9 @@ else:
 WATERPATH_DATA_API_URL = os.environ.get(
     'WATERPATH_DATA_API_URL', 'https://dev.waterpath.venthic.com/api'
 ).rstrip('/')
+# The projection endpoint fetches live data from GitHub and does heavy computation;
+# allow more time than the default requests timeout. Override via env var if needed.
+PROJECTION_API_TIMEOUT = int(os.environ.get('PROJECTION_API_TIMEOUT', '600'))
 
 # Mapping from frontend category id → expected sub-folder name inside baseline/
 CATEGORY_FOLDER_MAP = {
@@ -307,9 +310,11 @@ def apply_projections_to_scenario(case_study_path, folder_name, ssp, year, schem
             continue
 
         url = f"{WATERPATH_DATA_API_URL}/data/projections/download"
-        # Pass 'all' when providing isodata.csv so the API generates projections
-        # for all schemas in the group (population + sanitation) in one request.
-        params = {'schema': 'all', 'year': int(year), 'ssp': ssp_str}
+        # Use 'all' only when the baseline has livestock data; otherwise
+        # request only 'human_emissions' to avoid unnecessary work.
+        livestock_path = os.path.join(scenario_input_path, 'livestock_emissions')
+        api_schema = 'all' if os.path.isdir(livestock_path) else 'human_emissions'
+        params = {'schema': api_schema, 'year': int(year), 'ssp': ssp_str}
 
         print(f"[DEBUG] Calling projections API: POST {url} params={params} schemas={schema_group}")
         try:
@@ -318,7 +323,7 @@ def apply_projections_to_scenario(case_study_path, folder_name, ssp, year, schem
                     url,
                     params=params,
                     files={'file': ('isodata.csv', f, 'text/csv')},
-                    timeout=120,
+                    timeout=PROJECTION_API_TIMEOUT,
                 )
 
             if resp.status_code != 200:
@@ -342,6 +347,12 @@ def apply_projections_to_scenario(case_study_path, folder_name, ssp, year, schem
             target_dir = os.path.join(scenario_input_path, cat_folder)
             summary_data = None
 
+            # Files from the projection zip that must never overwrite the baseline copy.
+            # treatment.csv in the baseline is WWTP point-source data (lon/lat/capacity/
+            # treatment_type).  The projection API returns a GID-fraction table under the
+            # same name — an incompatible schema that would break GloWPa if written.
+            _PROJECTION_SKIP_FILES = {'treatment.csv'}
+
             with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
                 for member in zf.infolist():
                     if member.is_dir():
@@ -355,6 +366,9 @@ def apply_projections_to_scenario(case_study_path, folder_name, ssp, year, schem
                         continue
                     base_name = safe_parts[-1]
                     if not base_name:
+                        continue
+                    if base_name in _PROJECTION_SKIP_FILES:
+                        print(f"[DEBUG] Skipping projection zip entry '{base_name}' (protected baseline file)")
                         continue
                     zip_safe_rel = '/'.join(safe_parts)
 
@@ -913,9 +927,11 @@ def _r_iso_csv_to_rds_snippet(csv_path, rds_path, treatment_csv_path=None):
       primary_viruses=0.75, liquid=0.97 → fEmitted_virus=0.2425
       secondary_viruses=0.95, liquid=0.50 → fEmitted_virus=0.025
       tertiary_viruses=0.99, liquid=0.40 → fEmitted_virus=0.004
+      quaternary_viruses=0.9975, liquid=0.40 → fEmitted_virus=0.001
       primary_protozoa=0.50, liquid=0.85 → fEmitted_protozoa=0.425
       secondary_protozoa=0.90, liquid=0.20 → fEmitted_protozoa=0.02
       tertiary_protozoa=0.92, liquid=0.25 → fEmitted_protozoa=0.02
+      quaternary_protozoa=0.996, liquid=0.25 → fEmitted_protozoa=0.001
     """
     tr_path_r = f"'{treatment_csv_path}'" if treatment_csv_path else "NULL"
     return (
@@ -927,14 +943,17 @@ def _r_iso_csv_to_rds_snippet(csv_path, rds_path, treatment_csv_path=None):
         # --- Strategy 1: fraction columns already in isodata (AREA WWTP mode cols in isodata) ---
         f"    if (!'fEmitted_inEffluent_after_treatment_virus' %in% names(df) && "
         f"        'FractionPrimarytreatment' %in% names(df)) {{ "
+        f"      .fq1 <- if ('FractionQuaternarytreatment' %in% names(df)) df$FractionQuaternarytreatment else 0; "
         f"      df$fEmitted_inEffluent_after_treatment_virus <- "
         f"        df$FractionPrimarytreatment   * (0.97 - 0.97*0.75) + "
         f"        df$FractionSecondarytreatment * (0.50 - 0.50*0.95) + "
-        f"        df$FractionTertiarytreatment  * (0.40 - 0.40*0.99); "
+        f"        df$FractionTertiarytreatment  * (0.40 - 0.40*0.99) + "
+        f"        .fq1                          * (0.40 - 0.40*0.9975); "
         f"      df$fEmitted_inEffluent_after_treatment_protozoa <- "
         f"        df$FractionPrimarytreatment   * (0.85 - 0.85*0.50) + "
         f"        df$FractionSecondarytreatment * (0.20 - 0.20*0.90) + "
-        f"        df$FractionTertiarytreatment  * (0.25 - 0.25*0.92); "
+        f"        df$FractionTertiarytreatment  * (0.25 - 0.25*0.92) + "
+        f"        .fq1                          * (0.25 - 0.25*0.996); "
         f"    }}; "
         # --- Strategy 2 (treatment.csv): AREA or POINT mode ---
         f"    if (!'fEmitted_inEffluent_after_treatment_virus' %in% names(df)) {{ "
@@ -946,21 +965,23 @@ def _r_iso_csv_to_rds_snippet(csv_path, rds_path, treatment_csv_path=None):
         f"          .fp <- mean(.tr$FractionPrimarytreatment,   na.rm=TRUE); "
         f"          .fs <- mean(.tr$FractionSecondarytreatment, na.rm=TRUE); "
         f"          .ft <- mean(.tr$FractionTertiarytreatment,  na.rm=TRUE); "
+        f"          .fq <- if ('FractionQuaternarytreatment' %in% names(.tr)) mean(.tr$FractionQuaternarytreatment, na.rm=TRUE) else 0; "
         f"          message(paste('fEmitted from AREA treatment.csv: fp=', round(.fp,4), 'fs=', round(.fs,4), 'ft=', round(.ft,4))); "
         f"          df$fEmitted_inEffluent_after_treatment_virus    <- "
-        f"            .fp*(0.97-0.97*0.75) + .fs*(0.50-0.50*0.95) + .ft*(0.40-0.40*0.99); "
+        f"            .fp*(0.97-0.97*0.75) + .fs*(0.50-0.50*0.95) + .ft*(0.40-0.40*0.99) + .fq*(0.40-0.40*0.9975); "
         f"          df$fEmitted_inEffluent_after_treatment_protozoa <- "
-        f"            .fp*(0.85-0.85*0.50) + .fs*(0.20-0.20*0.90) + .ft*(0.25-0.25*0.92); "
+        f"            .fp*(0.85-0.85*0.50) + .fs*(0.20-0.20*0.90) + .ft*(0.25-0.25*0.92) + .fq*(0.25-0.25*0.996); "
         # --- Strategy 2b: POINT mode treatment.csv (has capacity/treatment_type) ---
         f"        }} else {{ "
         f"          .tot <- sum(.tr$capacity, na.rm=TRUE); "
         f"          if (isTRUE(.tot > 0)) {{ "
-        f"            .fp <- sum(.tr$capacity[.tr$treatment_type=='Primary'],   na.rm=TRUE) / .tot; "
-        f"            .fs <- sum(.tr$capacity[.tr$treatment_type=='Secondary'], na.rm=TRUE) / .tot; "
-        f"            .ft <- sum(.tr$capacity[.tr$treatment_type=='Tertiary'],  na.rm=TRUE) / .tot; "
-        f"          }} else {{ .fp <- 1; .fs <- 0; .ft <- 0 }}; "
-        f"          .fem_v <- .fp*0.2425 + .fs*0.025 + .ft*0.004; "
-        f"          .fem_p <- .fp*0.425  + .fs*0.02  + .ft*0.02; "
+        f"            .fp <- sum(.tr$capacity[.tr$treatment_type=='Primary'],    na.rm=TRUE) / .tot; "
+        f"            .fs <- sum(.tr$capacity[.tr$treatment_type=='Secondary'],  na.rm=TRUE) / .tot; "
+        f"            .ft <- sum(.tr$capacity[.tr$treatment_type=='Tertiary'],   na.rm=TRUE) / .tot; "
+        f"            .fq <- sum(.tr$capacity[.tr$treatment_type=='Quaternary'], na.rm=TRUE) / .tot; "
+        f"          }} else {{ .fp <- 1; .fs <- 0; .ft <- 0; .fq <- 0 }}; "
+        f"          .fem_v <- .fp*0.2425 + .fs*0.025 + .ft*0.004 + .fq*0.001; "
+        f"          .fem_p <- .fp*0.425  + .fs*0.02  + .ft*0.02  + .fq*0.001; "
         f"          message(paste('fEmitted from POINT treatment.csv: virus=', round(.fem_v,4), 'protozoa=', round(.fem_p,4))); "
         f"          df$fEmitted_inEffluent_after_treatment_virus    <- .fem_v; "
         f"          df$fEmitted_inEffluent_after_treatment_protozoa <- .fem_p; "
@@ -1822,21 +1843,36 @@ def frontend_get_livestock_population(scenario_id):
 
         data = []
         fieldnames = []
+        area_labels = []
         for fname in isodata_files:
             animal = fname[len('isodata_'):-4]
             table = _read_csv_table(os.path.join(animals_dir, fname))
-            row = dict(table['data'][0]) if table['data'] else {}
+            area_rows = [dict(r) for r in (table['data'] or [])]
+            row = dict(area_rows[0]) if area_rows else {}
             for col in table['fieldnames']:
                 if col not in fieldnames:
                     fieldnames.append(col)
+            # Preserve full per-area data so frontend can support area selection/multi-selection.
+            row['areaRows'] = area_rows
             row['animal'] = animal
             data.append(row)
+
+            if not area_labels and area_rows:
+                area_labels = [
+                    (
+                        str(r.get('subarea') or '').strip()
+                        or str(r.get('iso') or '').strip()
+                        or str(r.get('gid') or '').strip()
+                        or f'Area {i + 1}'
+                    )
+                    for i, r in enumerate(area_rows)
+                ]
 
         # Keep common identifiers at the left when present.
         preferred = ['iso', 'gid']
         ordered = [c for c in preferred if c in fieldnames] + [c for c in fieldnames if c not in preferred]
 
-        return jsonify({'data': data, 'fieldnames': ordered}), 200
+        return jsonify({'data': data, 'fieldnames': ordered, 'areas': area_labels}), 200
     except ValueError as e:
         return jsonify({'error': str(e)}), 404
     except Exception as e:
@@ -1875,12 +1911,26 @@ def frontend_update_livestock_population(scenario_id):
             if not rows_existing:
                 rows_existing = [{k: '' for k in fieldnames}]
 
-            for row in rows_existing:
-                for k, v in src_row.items():
-                    if k in readonly:
+            src_area_rows = src_row.get('areaRows')
+            if isinstance(src_area_rows, list) and src_area_rows:
+                # New behavior: update each CSV row by index (used by area selection in frontend).
+                for i, row in enumerate(rows_existing):
+                    patch = src_area_rows[i] if i < len(src_area_rows) and isinstance(src_area_rows[i], dict) else None
+                    if not patch:
                         continue
-                    if k in fieldnames:
-                        row[k] = '' if v is None else str(v)
+                    for k, v in patch.items():
+                        if k in readonly:
+                            continue
+                        if k in fieldnames:
+                            row[k] = '' if v is None else str(v)
+            else:
+                # Backward-compatible behavior: apply one set of values to all rows.
+                for row in rows_existing:
+                    for k, v in src_row.items():
+                        if k in readonly:
+                            continue
+                        if k in fieldnames:
+                            row[k] = '' if v is None else str(v)
 
             with open(csv_path, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -2028,6 +2078,7 @@ def frontend_livestock_heads_by_area(scenario_id):
                     iso_key = str(row.get('iso') or row.get('gid') or (idx + 1)).strip()
                     label = (
                         row.get('subarea')
+                        or row.get('NAME_4')
                         or row.get('NAME_3')
                         or row.get('NAME_2')
                         or row.get('NAME_1')
@@ -2046,6 +2097,7 @@ def frontend_livestock_heads_by_area(scenario_id):
                 label = (
                     area_labels.get(iso_key)
                     or props.get('subarea')
+                    or props.get('NAME_4')
                     or props.get('NAME_3')
                     or props.get('NAME_2')
                     or props.get('NAME_1')
@@ -2096,6 +2148,69 @@ def frontend_livestock_heads_by_area(scenario_id):
             'by_area': by_area,
             'totals_by_animal': totals_by_animal,
         }), 200
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except ImportError as e:
+        return jsonify({'error': f'Missing geospatial dependency: {e}'}), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@frontend_app.route('/api/scenarios/<scenario_id>/livestock-headcount', methods=['PUT'])
+def frontend_set_livestock_headcount(scenario_id):
+    """Scale livestock heads TIF pixels to match new total head counts.
+
+    Body: { "counts": { "cattle": 12345.0, ... } }
+
+    For each animal, multiplies all valid pixel values by (new_total / old_total)
+    so that the grid sum equals the requested count.  Nodata and negative cells
+    are left unchanged.  The TIF is written back in float32 in-place.
+    """
+    try:
+        import numpy as np
+        import rasterio
+
+        payload = request.get_json() or {}
+        counts = payload.get('counts', {})
+
+        _, _, ls_dir = _livestock_dir_for_scenario(scenario_id)
+        animals_dir = os.path.join(ls_dir, 'animals')
+
+        results = {}
+        for animal, new_total in counts.items():
+            animal = str(animal)
+            new_total = float(new_total)
+            tif_path = os.path.join(animals_dir, f'{animal}_heads.tif')
+            if not os.path.exists(tif_path):
+                results[animal] = {'skipped': 'TIF not found'}
+                continue
+
+            with rasterio.open(tif_path) as src:
+                data_arr = src.read(1).astype(float)
+                profile = src.profile.copy()
+                nodata = src.nodata
+
+            valid = np.ones(data_arr.shape, dtype=bool)
+            if nodata is not None:
+                valid &= (data_arr != float(nodata))
+            valid &= (data_arr >= 0)
+
+            old_total = float(np.nansum(data_arr[valid]))
+            if old_total <= 0:
+                results[animal] = {'skipped': 'old total was zero, cannot scale'}
+                continue
+
+            scale = new_total / old_total
+            new_arr = data_arr.copy()
+            new_arr[valid] = data_arr[valid] * scale
+
+            profile.update(dtype='float32')
+            with rasterio.open(tif_path, 'w', **profile) as dst:
+                dst.write(new_arr.astype('float32'), 1)
+
+            results[animal] = {'old_total': round(old_total), 'new_total': round(new_total), 'scale': round(scale, 6)}
+
+        return jsonify({'results': results}), 200
     except ValueError as e:
         return jsonify({'error': str(e)}), 404
     except ImportError as e:
@@ -2444,6 +2559,10 @@ def get_livestock_csv(scenario_id, filename):
 def get_livestock_heads_by_area(scenario_id):
     return frontend_livestock_heads_by_area(scenario_id)
 
+@app.route('/api/scenarios/<scenario_id>/livestock-headcount', methods=['PUT'])
+def put_livestock_headcount(scenario_id):
+    return frontend_set_livestock_headcount(scenario_id)
+
 @app.route('/api/scenarios/<scenario_id>/livestock-tif/<path:filename>', methods=['GET'])
 def get_livestock_tif(scenario_id, filename):
     return frontend_livestock_tif(scenario_id, filename)
@@ -2715,12 +2834,15 @@ def frontend_update_case_study_datapackage(case_study_id):
                 counter += 1
             if new_folder != old_folder:
                 new_path = os.path.join(data_dir, new_folder)
-                os.rename(case_study['folder_path'], new_path)
-                case_study['folder_name'] = new_folder
-                case_study['folder_path'] = new_path
-                case_study['datapackage_path'] = os.path.join(new_path, 'datapackage.json')
-                renamed_folder = new_folder
-                print(f"[INFO] Renamed case study folder: {old_folder} → {new_folder}")
+                try:
+                    os.rename(case_study['folder_path'], new_path)
+                    case_study['folder_name'] = new_folder
+                    case_study['folder_path'] = new_path
+                    case_study['datapackage_path'] = os.path.join(new_path, 'datapackage.json')
+                    renamed_folder = new_folder
+                    print(f"[INFO] Renamed case study folder: {old_folder} → {new_folder}")
+                except OSError as rename_err:
+                    print(f"[WARN] Could not rename case study folder '{old_folder}' → '{new_folder}': {rename_err}. Saving datapackage in place.")
 
         # Update in-memory name from title
         new_title = datapackage_data.get('title')
@@ -2806,7 +2928,6 @@ def create_scenario():
             projection_results = apply_projections_to_scenario(
                 case_study_path, folder_name,
                 ssp=ssp, year=year,
-                schemas=['population'],
             )
             for schema, result in projection_results.items():
                 if result['ok']:
@@ -3349,6 +3470,325 @@ def frontend_get_analytics(case_study_id):
         return jsonify({'error': str(exc)}), 500
 
 
+def _num(v, default=0.0):
+    try:
+        if v is None:
+            return default
+        s = str(v).strip()
+        if s == '':
+            return default
+        return float(s)
+    except Exception:
+        return default
+
+
+def _clamp01(v):
+    return max(0.0, min(1.0, _num(v, 0.0)))
+
+
+def _read_csv_rows(path):
+    if not path or not os.path.exists(path):
+        return [], []
+    with open(path, 'r', newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        return [dict(r) for r in reader], list(reader.fieldnames or [])
+
+
+def _weighted_split_mean(rows, urb_field, rur_field):
+    weighted_sum = 0.0
+    weight = 0.0
+    for row in rows:
+        pop = max(0.0, _num(row.get('population'), 0.0))
+        urban = _clamp01(row.get('fraction_urban_pop'))
+        rural = 1.0 - urban
+        val = urban * _num(row.get(urb_field), 0.0) + rural * _num(row.get(rur_field), 0.0)
+        weighted_sum += pop * val
+        weight += pop
+    return (weighted_sum / weight) if weight > 0 else None
+
+
+def _weighted_sanitation_share(rows, source_fields):
+    weighted_sum = 0.0
+    weight = 0.0
+    for row in rows:
+        pop = max(0.0, _num(row.get('population'), 0.0))
+        urban = _clamp01(row.get('fraction_urban_pop'))
+        rural = 1.0 - urban
+        urb_share = sum(_num(row.get(f'{src}_urb'), 0.0) for src in source_fields)
+        rur_share = sum(_num(row.get(f'{src}_rur'), 0.0) for src in source_fields)
+        val = urban * urb_share + rural * rur_share
+        weighted_sum += pop * val
+        weight += pop
+    return (weighted_sum / weight) if weight > 0 else None
+
+
+def _normalize_treatment_type(raw):
+    v = str(raw or '').strip().lower()
+    if 'quaternary' in v:
+        return 'quaternary'
+    if 'tertiary' in v:
+        return 'tertiary'
+    if 'secondary' in v:
+        return 'secondary'
+    if 'primary' in v:
+        return 'primary'
+    return None
+
+
+def _compute_livestock_mean_heads(ls_dir):
+    """Return mean total heads across available animals (absolute), or None."""
+    animals_dir = os.path.join(ls_dir, 'animals')
+    if not os.path.isdir(animals_dir):
+        return None
+    tif_files = [
+        f for f in os.listdir(animals_dir)
+        if f.lower().endswith('_heads.tif')
+    ]
+    if not tif_files:
+        return None
+
+    try:
+        import numpy as np
+        import rasterio
+    except Exception:
+        return None
+
+    totals = []
+    for fname in tif_files:
+        tif_path = os.path.join(animals_dir, fname)
+        try:
+            with rasterio.open(tif_path) as src:
+                arr = src.read(1).astype(float)
+                nd = src.nodata
+            if nd is not None:
+                arr[arr == float(nd)] = np.nan
+            arr[arr < 0] = np.nan
+            total = float(np.nansum(arr))
+            if np.isfinite(total):
+                totals.append(total)
+        except Exception:
+            continue
+
+    if not totals:
+        return None
+    return float(sum(totals) / len(totals))
+
+
+def _compute_driver_metrics_for_scenario(cs_path, folder):
+    iso_path = _resolve_data_path(cs_path, folder, 'isodata.csv')
+    iso_rows, _ = _read_csv_rows(iso_path)
+
+    # Population
+    total_population = sum(max(0.0, _num(r.get('population'), 0.0)) for r in iso_rows)
+    mean_urban_fraction = _weighted_split_mean(
+        [{**r, 'fraction_urban_pop_urb': r.get('fraction_urban_pop', 0), 'fraction_urban_pop_rur': r.get('fraction_urban_pop', 0)} for r in iso_rows],
+        'fraction_urban_pop_urb',
+        'fraction_urban_pop_rur',
+    )
+    mean_under5_fraction = _weighted_split_mean(
+        [{**r, 'fraction_pop_under5_urb': r.get('fraction_pop_under5', 0), 'fraction_pop_under5_rur': r.get('fraction_pop_under5', 0)} for r in iso_rows],
+        'fraction_pop_under5_urb',
+        'fraction_pop_under5_rur',
+    )
+    if iso_rows:
+        pop_weight = sum(max(0.0, _num(r.get('population'), 0.0)) for r in iso_rows)
+        if pop_weight > 0:
+            mean_hdi = sum(max(0.0, _num(r.get('population'), 0.0)) * _num(r.get('hdi'), 0.0) for r in iso_rows) / pop_weight
+        else:
+            hdi_vals = [_num(r.get('hdi'), None) for r in iso_rows if str(r.get('hdi', '')).strip() != '']
+            hdi_vals = [v for v in hdi_vals if v is not None]
+            mean_hdi = (sum(hdi_vals) / len(hdi_vals)) if hdi_vals else None
+    else:
+        mean_hdi = None
+
+    # Sanitation groups
+    improved_sources = ['flushSewer', 'flushSeptic', 'flushPit', 'pitSlab', 'compostingToilet', 'containerBased']
+    unimproved_sources = ['pitNoSlab', 'bucketLatrine', 'hangingToilet', 'flushOpen', 'flushUnknown', 'other']
+    od_sources = ['openDefecation']
+
+    improved_share = _weighted_sanitation_share(iso_rows, improved_sources)
+    unimproved_share = _weighted_sanitation_share(iso_rows, unimproved_sources)
+    od_share = _weighted_sanitation_share(iso_rows, od_sources)
+
+    # Wastewater treatment
+    sewage_treated = _weighted_split_mean(iso_rows, 'sewageTreated_urb', 'sewageTreated_rur')
+    fecal_sludge_treated = _weighted_split_mean(iso_rows, 'fecalSludgeTreated_urb', 'fecalSludgeTreated_rur')
+    wwtp_mode = _detect_wwtp_mode(cs_path, folder).lower()  # 'point' | 'area'
+
+    point_facilities = None
+    point_total_capacity = None
+    share_primary = None
+    share_secondary = None
+    share_tertiary = None
+    share_quaternary = None
+
+    treatment_path = _resolve_data_path(cs_path, folder, 'treatment.csv')
+    treatment_rows, treatment_fields = _read_csv_rows(treatment_path)
+
+    if wwtp_mode == 'point':
+        rows = [r for r in treatment_rows if str(r.get('lon', '')).strip() and str(r.get('lat', '')).strip()]
+        point_facilities = float(len(rows))
+        cap_by_type = {'primary': 0.0, 'secondary': 0.0, 'tertiary': 0.0, 'quaternary': 0.0}
+        total_cap = 0.0
+        for row in rows:
+            cap = max(0.0, _num(row.get('capacity'), 0.0))
+            ttype = _normalize_treatment_type(row.get('treatment_type'))
+            total_cap += cap
+            if ttype:
+                cap_by_type[ttype] += cap
+        point_total_capacity = total_cap
+        if total_cap > 0:
+            share_primary = 100.0 * cap_by_type['primary'] / total_cap
+            share_secondary = 100.0 * cap_by_type['secondary'] / total_cap
+            share_tertiary = 100.0 * cap_by_type['tertiary'] / total_cap
+            share_quaternary = 100.0 * cap_by_type['quaternary'] / total_cap
+    else:
+        # AREA mode: derive treatment shares from area fractions where available.
+        frac_fields = [
+            'FractionPrimarytreatment',
+            'FractionSecondarytreatment',
+            'FractionTertiarytreatment',
+            'FractionQuaternarytreatment',
+        ]
+        if iso_rows and any(f in (iso_rows[0].keys() if iso_rows else []) for f in frac_fields):
+            weighted = {f: 0.0 for f in frac_fields}
+            weight = 0.0
+            for row in iso_rows:
+                pop = max(0.0, _num(row.get('population'), 0.0))
+                weight += pop
+                for f in frac_fields:
+                    weighted[f] += pop * _num(row.get(f), 0.0)
+            if weight > 0:
+                share_primary = 100.0 * (weighted['FractionPrimarytreatment'] / weight)
+                share_secondary = 100.0 * (weighted['FractionSecondarytreatment'] / weight)
+                share_tertiary = 100.0 * (weighted['FractionTertiarytreatment'] / weight)
+                share_quaternary = 100.0 * (weighted['FractionQuaternarytreatment'] / weight)
+        elif treatment_rows and 'FractionPrimarytreatment' in treatment_fields:
+            def _mean_col(col):
+                vals = [_num(r.get(col), None) for r in treatment_rows if str(r.get(col, '')).strip() != '']
+                vals = [v for v in vals if v is not None]
+                return (sum(vals) / len(vals)) if vals else 0.0
+            share_primary = 100.0 * _mean_col('FractionPrimarytreatment')
+            share_secondary = 100.0 * _mean_col('FractionSecondarytreatment')
+            share_tertiary = 100.0 * _mean_col('FractionTertiarytreatment')
+            share_quaternary = 100.0 * _mean_col('FractionQuaternarytreatment')
+
+    # Livestock + production systems
+    ls = _detect_livestock_module(cs_path, folder)
+    livestock_mean_growth = None
+    production_progress_intensive = None
+    if ls:
+        livestock_mean_growth = _compute_livestock_mean_heads(ls['dir'])
+        ps_rows, ps_fields = _read_csv_rows(os.path.join(ls['dir'], 'production_systems.csv'))
+        intensive_fields = [f for f in ps_fields if f.endswith('_i')]
+        vals = []
+        for row in ps_rows:
+            for f in intensive_fields:
+                vals.append(_num(row.get(f), None))
+        vals = [v for v in vals if v is not None]
+        if vals:
+            production_progress_intensive = 100.0 * (sum(vals) / len(vals))
+
+    return {
+        'wwtp_mode': wwtp_mode,
+        'metrics': {
+            'population_total': total_population if total_population > 0 else None,
+            'population_urban_mean_pct': (100.0 * mean_urban_fraction) if mean_urban_fraction is not None else None,
+            'population_under5_mean_pct': (100.0 * mean_under5_fraction) if mean_under5_fraction is not None else None,
+            'population_hdi_mean': mean_hdi,
+            'sanitation_improved_pct': (100.0 * improved_share) if improved_share is not None else None,
+            'sanitation_unimproved_pct': (100.0 * unimproved_share) if unimproved_share is not None else None,
+            'sanitation_open_defecation_pct': (100.0 * od_share) if od_share is not None else None,
+            'wastewater_sewage_treated_pct': (100.0 * sewage_treated) if sewage_treated is not None else None,
+            'wastewater_fecal_sludge_treated_pct': (100.0 * fecal_sludge_treated) if fecal_sludge_treated is not None else None,
+            'wastewater_facility_count': point_facilities,
+            'wastewater_total_capacity': point_total_capacity,
+            'wastewater_share_primary_pct': share_primary,
+            'wastewater_share_secondary_pct': share_secondary,
+            'wastewater_share_tertiary_pct': share_tertiary,
+            'wastewater_share_quaternary_pct': share_quaternary,
+            'livestock_mean_population_growth': livestock_mean_growth,
+            'production_mean_progress_intensive_pct': production_progress_intensive,
+        },
+    }
+
+
+@frontend_app.route('/api/case-studies/<case_study_id>/driver-comparison', methods=['GET'])
+def frontend_get_driver_comparison(case_study_id):
+    """Return per-scenario driver metrics used by the Analytics driver-change dialog."""
+    try:
+        cs = next((c for c in case_studies if c['id'] == case_study_id), None)
+        if not cs:
+            return jsonify({'error': 'Case study not found'}), 404
+
+        cs_path = cs['folder_path']
+        meta_path = os.path.join(cs_path, 'config', 'scenario_metadata.csv')
+        if not os.path.exists(meta_path):
+            return jsonify({'baseline_scenario_id': None, 'metrics': [], 'scenarios': []}), 200
+
+        include_ids = [s.strip() for s in (request.args.get('scenario_ids', '') or '').split(',') if s.strip()]
+        include_set = set(include_ids) if include_ids else None
+
+        scenarios_out = []
+        with open(meta_path, 'r', newline='', encoding='utf-8') as f:
+            for row in csv.DictReader(f):
+                scenario_id = row.get('scenario_id')
+                if not scenario_id:
+                    continue
+                if include_set is not None and scenario_id not in include_set:
+                    continue
+
+                folder = row.get('folder', 'baseline')
+                derived = _compute_driver_metrics_for_scenario(cs_path, folder)
+                scenarios_out.append({
+                    'id': scenario_id,
+                    'name': row.get('name', 'Unnamed scenario'),
+                    'year': row.get('year', ''),
+                    'is_baseline': str(row.get('is_baseline', 'False')).lower() in ('true', '1', 'yes'),
+                    'wwtp_mode': derived['wwtp_mode'],
+                    'metrics': derived['metrics'],
+                })
+
+        baseline = next((s for s in scenarios_out if s.get('is_baseline')), None)
+        if baseline is None:
+            baseline = next((s for s in scenarios_out if str(s.get('name', '')).strip().lower() == 'baseline'), None)
+        if baseline is None and scenarios_out:
+            def _year_key(s):
+                try:
+                    return int(s.get('year') or 0)
+                except Exception:
+                    return 0
+            baseline = sorted(scenarios_out, key=_year_key)[0]
+
+        metric_defs = [
+            {'key': 'population_total', 'driver': 'Population', 'label': 'Total population', 'delta_mode': 'relative_pct', 'value_format': 'integer', 'color_direction': 'neutral'},
+            {'key': 'population_urban_mean_pct', 'driver': 'Population', 'label': 'Mean urban fraction', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'neutral'},
+            {'key': 'population_under5_mean_pct', 'driver': 'Population', 'label': 'Mean under-5 fraction', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'neutral'},
+            {'key': 'population_hdi_mean', 'driver': 'Population', 'label': 'Mean HDI', 'delta_mode': 'absolute', 'value_format': 'hdi', 'color_direction': 'positive_good'},
+            {'key': 'sanitation_improved_pct', 'driver': 'Sanitation', 'label': 'Improved %', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
+            {'key': 'sanitation_unimproved_pct', 'driver': 'Sanitation', 'label': 'Unimproved %', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'negative_good'},
+            {'key': 'sanitation_open_defecation_pct', 'driver': 'Sanitation', 'label': 'Open defecation %', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'negative_good'},
+            {'key': 'wastewater_sewage_treated_pct', 'driver': 'Wastewater treatment', 'label': 'Sewage treated %', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
+            {'key': 'wastewater_fecal_sludge_treated_pct', 'driver': 'Wastewater treatment', 'label': 'Fecal sludge treated %', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
+            {'key': 'wastewater_facility_count', 'driver': 'Wastewater treatment', 'label': 'Number of treatment facilities', 'delta_mode': 'relative_pct', 'value_format': 'integer', 'color_direction': 'positive_good'},
+            {'key': 'wastewater_total_capacity', 'driver': 'Wastewater treatment', 'label': 'Total treatment capacity', 'delta_mode': 'relative_pct', 'value_format': 'integer', 'color_direction': 'positive_good'},
+            {'key': 'wastewater_share_primary_pct', 'driver': 'Wastewater treatment', 'label': 'Share of Primary', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'negative_good'},
+            {'key': 'wastewater_share_secondary_pct', 'driver': 'Wastewater treatment', 'label': 'Share of Secondary', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
+            {'key': 'wastewater_share_tertiary_pct', 'driver': 'Wastewater treatment', 'label': 'Share of Tertiary', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
+            {'key': 'wastewater_share_quaternary_pct', 'driver': 'Wastewater treatment', 'label': 'Share of Quaternary', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
+            {'key': 'livestock_mean_population_growth', 'driver': 'Livestock population', 'label': 'Mean Population growth (all animals)', 'delta_mode': 'relative_pct', 'value_format': 'integer', 'color_direction': 'neutral'},
+            {'key': 'production_mean_progress_intensive_pct', 'driver': 'Production systems', 'label': 'Mean progress towards intensive', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'neutral'},
+        ]
+
+        return jsonify({
+            'baseline_scenario_id': baseline.get('id') if baseline else None,
+            'metrics': metric_defs,
+            'scenarios': scenarios_out,
+        }), 200
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
 # ── Output file endpoints ────────────────────────────────────────────────────
 
 def _png_from_rgba(rgba):
@@ -3875,6 +4315,10 @@ def frontend_run_status(run_id):
 @app.route('/api/case-studies/<case_study_id>/analytics')
 def main_get_analytics(case_study_id):
     return frontend_get_analytics(case_study_id)
+
+@app.route('/api/case-studies/<case_study_id>/driver-comparison')
+def main_get_driver_comparison(case_study_id):
+    return frontend_get_driver_comparison(case_study_id)
 
 @app.route('/api/scenarios/<scenario_id>/generate-yaml', methods=['POST'])
 def main_generate_yaml(scenario_id):

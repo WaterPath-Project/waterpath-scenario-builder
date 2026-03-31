@@ -2,6 +2,7 @@
 import { RotateCcw, Save, ChevronDown, ChevronRight, ChevronUp, AlertTriangle, TableProperties, ChartBarStacked } from 'lucide-react';
 import axios from 'axios';
 import DataGridView from './DataGridView';
+import AreaSelector from './AreaSelector';
 
 // ─── Color palette ────────────────────────────────────────────────────────────
 
@@ -414,29 +415,24 @@ const IntegerField = ({ label, value, onChange }) => (
 );
 
 // ─── Persisted selection state (module-level) ─────────────────────────────────
-// Keeps the last-used area selection so switching between scenarios restores it.
-let _persistedIndices = null;     // Set<number> | null
-let _persistedMulti   = false;
+// empty Set = All; non-empty = specific indices. Persisted across scenario switches.
+let _persistedIndices = null;     // Set<number> | null  (null = not yet set)
 let _persistedSfxTab  = '_urb';   // Urban/Rural tab selection
 
 // ─── SanitationLadderInner ────────────────────────────────────────────────────
 
-const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChange, onSaved }) => {
-  // Default to all areas selected; restore persisted selection if available (clamped to row count).
+const SanitationLadderInner = ({ scenario, initialRows, fieldnames, isFractionsMode = false, onDirtyChange, onSaved }) => {
+  // Default to All (empty Set); restore persisted selection if available (clamp to row count).
   const [selectedIndices, setSelectedIndices] = useState(() => {
-    if (_persistedIndices && _persistedIndices.size > 0) {
+    if (_persistedIndices !== null) {
       const valid = new Set([..._persistedIndices].filter(i => i < initialRows.length));
-      if (valid.size > 0) return valid;
+      return valid; // empty Set = All — that is valid and intentional
     }
-    return new Set(initialRows.map((_, i) => i));
+    return new Set(); // default = All
   });
-  const [multiSelectMode, setMultiSelectMode] = useState(
-    () => _persistedMulti || initialRows.length > 1
-  );
 
   // Persist whenever selection changes so it survives scenario switches.
   useEffect(() => { _persistedIndices = selectedIndices; }, [selectedIndices]);
-  useEffect(() => { _persistedMulti   = multiSelectMode; }, [multiSelectMode]);
   const [activeSfxTab, setActiveSfxTab] = useState(() => _persistedSfxTab);
 
   useEffect(() => { _persistedSfxTab  = activeSfxTab; }, [activeSfxTab]);
@@ -518,30 +514,6 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
     onDirtyChange?.(false);
   }, [onDirtyChange]);
 
-  // Selection helpers
-  const selectAll = useCallback(() => {
-    setMultiSelectMode(true); // All always enables multi-select mode
-    setSelectedIndices((prev) => {
-      // If already all selected, collapse back to first area
-      if (prev.size === initialRows.length) return new Set([0]);
-      return new Set(initialRows.map((_, i) => i));
-    });
-  }, [initialRows]);
-
-  const handleAreaClick = useCallback((i) => {
-    if (!multiSelectMode) {
-      // Single-select mode: clicking any pill selects only that area
-      setSelectedIndices(new Set([i]));
-      return;
-    }
-    setSelectedIndices((prev) => {
-      const next = new Set(prev);
-      if (next.has(i) && next.size > 1) next.delete(i);
-      else next.add(i);
-      return next;
-    });
-  }, [multiSelectMode]);
-
   // ── Validate that every active suffix in every row sums to 1 ───────────────
   const techViolations = useMemo(() => {
     const violations = [];
@@ -580,8 +552,12 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
     }
   }, [canSave, localValues, initialRows, scenario.id, onDirtyChange, onSaved]);
 
-  const selectedArr  = useMemo(() => Array.from(selectedIndices).sort((a, b) => a - b), [selectedIndices]);
-  const isAllSelected = selectedArr.length === initialRows.length;
+  const selectedArr  = useMemo(() =>
+    selectedIndices.size === 0
+      ? initialRows.map((_, i) => i)   // empty Set = All
+      : Array.from(selectedIndices).sort((a, b) => a - b),
+  [selectedIndices, initialRows]);
+  const isAllSelected = selectedIndices.size === 0;
 
   // ── Raw data
   // Derive raw columns from what's actually present in the first row (preserves CSV order from
@@ -634,7 +610,18 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
     return out;
   }, [selectedArr, localValues, initialRows]);
 
-  // Representative row for suffix/label lookup
+  // Per-area badge dots (dirty = yellow, violation = red)
+  const areaBadges = useMemo(() =>
+    initialRows.map((r, i) => {
+      const lbl = r.subarea || r.iso || `Area ${i + 1}`;
+      const hasViolation = techViolations.some((v) => v.label === lbl);
+      const dirty = areaIsDirty[i];
+      if (hasViolation) return { color: '#ef4444', title: 'Tech mix ≠ 100%' };
+      if (dirty) return { color: COLORS.unimproved, title: 'Unsaved changes' };
+      return null;
+    }),
+  [initialRows, techViolations, areaIsDirty]);
+
   const repRow = initialRows[selectedArr[0]];
   if (!repRow || !displayVals) return null;
 
@@ -662,74 +649,12 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
 
       {/* ── Toolbar ─────────────────────────────────────────────────────── */}
       <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex flex-wrap gap-1 flex-1">
-
-          {/* All pill */}
-          <button
-            onClick={selectAll}
-            className={`relative px-3 py-1 text-xs rounded-full font-medium transition-colors border ${
-              isAllSelected
-                ? 'text-white border-transparent'
-                : 'bg-white-100 text-gray-500 border-gray-300 hover:bg-gray-200'
-            }`}
-            style={isAllSelected ? { backgroundColor: '#0B4159' } : {}}
-            title="Select all areas (shows averages)"
-          >
-            All
-          </button>
-
-          {/* Multi-select toggle — sits right after All */}
-          <button
-            onClick={() => {
-              setMultiSelectMode((v) => {
-                if (v) {
-                  setSelectedIndices((prev) => new Set([Array.from(prev).sort((a, b) => a - b)[0] ?? 0]));
-                }
-                return !v;
-              });
-            }}
-            className={`px-2.5 py-1 text-xs rounded-full font-medium transition-colors border ${
-              multiSelectMode
-                ? 'bg-wpBlue/10 text-wpBlue border-wpBlue/40'
-                : 'bg-white text-gray-400 border-gray-300 hover:bg-gray-100'
-            }`}
-          >
-            {multiSelectMode ? 'Single select' : 'Select multiple…'}
-          </button>
-
-          {/* Per-area pills */}
-          {initialRows.map((r, i) => {
-            const lbl          = r.subarea || r.iso || `Area ${i + 1}`;
-            const hasViolation = techViolations.some((v) => v.label === lbl);
-            const dirty        = areaIsDirty[i];
-            const isSelected   = selectedIndices.has(i);
-            return (
-              <button
-                key={i}
-                onClick={() => handleAreaClick(i)}
-                className={`relative px-3 py-1 text-xs rounded-full font-medium transition-colors ${
-                  isSelected ? 'text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                }`}
-                style={isSelected ? { backgroundColor: '#0B4159' } : {}}
-                title={isSelected ? 'Click to deselect' : 'Click to select'}
-              >
-                {lbl}
-                {/* Yellow dot — area has unsaved changes */}
-                {dirty && !hasViolation && (
-                  <span
-                    className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border border-white"
-                    style={{ backgroundColor: COLORS.unimproved }}
-                    title="Unsaved changes"
-                  />
-                )}
-                {/* Red dot — tech mix doesn't sum to 100% */}
-                {hasViolation && (
-                  <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-red-500 border border-white" title="Tech mix ≠ 100%" />
-                )}
-              </button>
-            );
-          })}
-        </div>
+        <AreaSelector
+          labels={initialRows.map((r, i) => r.subarea || r.iso || `Area ${i + 1}`)}
+          selectedIndices={selectedIndices}
+          onChange={setSelectedIndices}
+          badges={areaBadges}
+        />
 
         <div className="flex items-center gap-2 flex-shrink-0">
           {isDirty && (
@@ -786,7 +711,7 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
                   return keySfx === '_urb' ? uf > 0 : uf < 1;
                 })
               : editIndices;
-            if (multiSelectMode && targets.length > 1) {
+            if (targets.length > 1) {
               // Proportional scaling: preserve relative differences, move average to new value
               updateFieldProportional(targets, key, value);
             } else {
@@ -979,27 +904,56 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
                         </>
                       }
                       rightContent={
-                        <>
-                          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 text-center">
-                            Treatment fractions
-                          </p>
-                          <div className="flex gap-2 justify-center flex-1 min-h-0">
-                            {TREATMENT_FIELDS.map((f) => {
-                              const key = `${f}${sfx}`;
-                              if (!(key in displayVals)) return null;
-                              return (
-                                <VerticalSliderColumn
-                                  key={key}
-                                  label={FIELD_LABELS[f].replace(' (fraction)', '')}
-                                  value={displayVals[key] ?? 0}
-                                  fieldKey={key}
-                                  accentColor={COLORS.safelyManaged}
-                                  onChange={makeChange}
-                                />
-                              );
-                            })}
-                          </div>
-                        </>
+                        isFractionsMode ? (
+                          <>
+                            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 text-center">
+                              Treatment fractions
+                            </p>
+                            <div className="flex flex-col flex-1 space-y-3 w-full">
+                              <p className="text-[12px] text-gray-400 italic text-center leading-tight"></p>
+                              <div className="flex flex-row gap-6 justify-center">
+                                {TREATMENT_FIELDS.map((f) => {
+                                  const key = `${f}${sfx}`;
+                                  const val = displayVals[key] ?? 0;
+                                  return (
+                                    <div key={key} className="text-center">
+                                      <p className="text-[12px] text-gray-500 leading-tight">{FIELD_LABELS[f].replace(' (fraction)', '')}</p>
+                                      <p className="tabular-nums text-md font-semibold text-wpBlue">{(val * 100).toFixed(1)}%</p>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              <p className="text-[12px] text-gray-500 text-center leading-tight">
+                                The two treatment fractions greatly affect whether the improved facilities proportions can be considered as safely managed. For example, if sewer = 0.6 and treated = 0.5, then 30% of the population is estimated to be safely managed via sewer (0.6 × 0.5 = 0.3). To view how this roughly corresponds to the JMP definitions of safely managed, enable the "Estimate Sanitation Ladder" view above. 
+                              </p>
+                              <p className="text-[12px] text-gray-500 text-center leading-tight">
+                                To edit these treatment fractions, go to the "Wastewater Treatment" tab.
+                              </p>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 text-center">
+                              Treatment fractions
+                            </p>
+                            <div className="flex gap-2 justify-center flex-1 min-h-0">
+                              {TREATMENT_FIELDS.map((f) => {
+                                const key = `${f}${sfx}`;
+                                if (!(key in displayVals)) return null;
+                                return (
+                                  <VerticalSliderColumn
+                                    key={key}
+                                    label={FIELD_LABELS[f].replace(' (fraction)', '')}
+                                    value={displayVals[key] ?? 0}
+                                    fieldKey={key}
+                                    accentColor={COLORS.safelyManaged}
+                                    onChange={makeChange}
+                                  />
+                                );
+                              })}
+                            </div>
+                          </>
+                        )
                       }
                     />
                   </div>
@@ -1120,23 +1074,34 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, onDirtyChang
 // ─── Outer wrapper ────────────────────────────────────────────────────────────
 
 const SanitationLadderPanel = ({ scenario, onDirtyChange, onSaved }) => {
-  const [fetchState, setFetchState] = useState({ status: 'loading', rows: [], fieldnames: [] });
+  const [fetchState, setFetchState] = useState({ status: 'loading', rows: [], fieldnames: [], isFractionsMode: false });
 
   useEffect(() => {
     let cancelled = false;
-    setFetchState({ status: 'loading', rows: [], fieldnames: [] });
+    setFetchState({ status: 'loading', rows: [], fieldnames: [], isFractionsMode: false });
 
     if (scenario?.isTemp) {
       const rows = scenario?.data?.data ?? [];
       const fieldnames = scenario?.data?.fieldnames ?? [];
-      setFetchState({ status: 'done', rows, fieldnames });
+      setFetchState({ status: 'done', rows, fieldnames, isFractionsMode: false });
       return;
     }
 
-    axios
-      .get(`/api/scenarios/${scenario.id}/isodata`)
-      .then((r) => {
-        if (!cancelled) setFetchState({ status: 'done', rows: r.data.data ?? [], fieldnames: r.data.fieldnames ?? [] });
+    Promise.all([
+      axios.get(`/api/scenarios/${scenario.id}/isodata`),
+      axios.get(`/api/scenarios/${scenario.id}/treatment`).catch(() => ({ data: { fieldnames: [] } })),
+    ])
+      .then(([isoRes, treatRes]) => {
+        if (!cancelled) {
+          const treatFieldnames = treatRes.data.fieldnames ?? [];
+          const isFractionsMode = treatFieldnames.includes('FractionPrimarytreatment');
+          setFetchState({
+            status: 'done',
+            rows: isoRes.data.data ?? [],
+            fieldnames: isoRes.data.fieldnames ?? [],
+            isFractionsMode,
+          });
+        }
       })
       .catch((e) => {
         if (!cancelled)
@@ -1177,6 +1142,7 @@ const SanitationLadderPanel = ({ scenario, onDirtyChange, onSaved }) => {
       scenario={scenario}
       initialRows={fetchState.rows}
       fieldnames={fetchState.fieldnames}
+      isFractionsMode={fetchState.isFractionsMode ?? false}
       onDirtyChange={onDirtyChange}
       onSaved={onSaved}
     />

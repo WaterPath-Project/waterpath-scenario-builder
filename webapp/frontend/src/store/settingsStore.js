@@ -35,6 +35,13 @@ const useSettingsStore = create(
       dynamicLogMax: null,
 
       /**
+       * Minimum number of valid raster pixels required to render the GeoTIFF overlay.
+       * When the output raster has fewer valid pixels than this threshold, the map
+       * switches to choropleth mode (filled polygons) instead. Default: 20.
+       */
+      choroplethPixelThreshold: 20,
+
+      /**
        * When true: skip deletion of .RDS files after a model run so they can
        * be inspected for debugging.  When false (default), RDS files are
        * removed automatically once the run completes.
@@ -44,18 +51,20 @@ const useSettingsStore = create(
 
       // ── Actions ──────────────────────────────────────────────────────────────
 
-      setHeatmapView:     (value) => set({ heatmapView: value }),
-      setFixedColorScale: (value) => set({ fixedColorScale: value }),
-      setDynamicLogMax:   (value) => set({ dynamicLogMax: value }),
-      setDebugMode:       (value) => set({ debugMode: value }),
+      setHeatmapView:                (value) => set({ heatmapView: value }),
+      setFixedColorScale:            (value) => set({ fixedColorScale: value }),
+      setDynamicLogMax:              (value) => set({ dynamicLogMax: value }),
+      setChoroplethPixelThreshold:   (value) => set({ choroplethPixelThreshold: value }),
+      setDebugMode:                  (value) => set({ debugMode: value }),
     }),
     {
       name: 'waterpath-settings', // localStorage key
       // Exclude runtime state (dynamicLogMax) from persistence
       partialize: (state) => ({
-        heatmapView:     state.heatmapView,
-        fixedColorScale: state.fixedColorScale,
-        debugMode:       state.debugMode,
+        heatmapView:               state.heatmapView,
+        fixedColorScale:           state.fixedColorScale,
+        choroplethPixelThreshold:  state.choroplethPixelThreshold,
+        debugMode:                 state.debugMode,
       }),
     }
   )
