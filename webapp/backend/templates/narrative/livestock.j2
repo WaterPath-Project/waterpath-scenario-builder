@@ -1,0 +1,17 @@
+{#
+  livestock.j2
+  ============
+  Narrative text for the Livestock driver.
+
+  Context variables (from _build_livestock_ctx):
+    population         – mean livestock population growth (relative_pct change)
+    production_systems – progress towards intensive production (pp change)
+#}
+{% if population.is_significant %}
+Average livestock populations {{ "grow" if population.increased else "shrink" }} {{ population.magnitude }} by {{ population.abs_delta | num }}%,
+{{ "increasing the total manure load available to reach land surfaces and surface water" if population.increased else "reducing the contribution of animal manure to waterborne pathogen loads" }}.
+{% endif %}
+{% if production_systems.is_significant %}
+Livestock production systems shift {{ "towards" if production_systems.increased else "away from" }} intensive management by {{ production_systems.abs_delta | num }} pp,
+{{ "concentrating manure in managed storage that can reduce direct land contamination when handled correctly" if production_systems.increased else "increasing the share of grazing animals whose manure is deposited directly on pastures and fields" }}.
+{% endif %}

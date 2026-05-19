@@ -1,0 +1,31 @@
+{#
+  population.j2
+  =============
+  Narrative text for the Population driver.
+
+  Context variables (from _build_population_ctx):
+    pop            – total population metric (relative_pct change)
+    urbanisation   – urban share metric (pp change)
+    hdi            – Human Development Index metric (absolute change)
+
+  Each metric dict has:
+    is_significant  bool
+    increased       bool
+    magnitude       str   'slightly' | 'moderately' | 'substantially'
+    abs_delta       float (use | num filter for clean formatting)
+    base_val        str   formatted baseline value
+    scen_val        str   formatted scenario value
+#}
+{% if pop.is_significant %}
+The total population {{ "grows" if pop.increased else "shrinks" }} {{ pop.magnitude }} by {{ pop.abs_delta | num }}%,
+reaching {{ pop.scen_val }} people —
+{{ "increasing pressure on water and sanitation systems" if pop.increased else "reducing aggregate demand on sanitation and water infrastructure" }}.
+{% endif %}
+{% if urbanisation.is_significant %}
+The urban population share {{ "rises" if urbanisation.increased else "falls" }} by {{ urbanisation.abs_delta | num }} percentage points to {{ urbanisation.scen_val }},
+{{ "which typically improves access to centralised sanitation and wastewater treatment" if urbanisation.increased else "reflecting growth in rural areas where access to improved sanitation is generally lower" }}.
+{% endif %}
+{% if hdi.is_significant %}
+The Human Development Index {{ "improves" if hdi.increased else "declines" }} to {{ hdi.scen_val }},
+{{ "correlating with lower disease incidence and greater investment in sanitation infrastructure" if hdi.increased else "which is associated with higher pathogen incidence and reduced capacity for sanitation investment" }}.
+{% endif %}

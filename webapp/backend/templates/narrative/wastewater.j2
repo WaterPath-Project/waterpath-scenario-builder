@@ -1,0 +1,33 @@
+{#
+  wastewater.j2
+  =============
+  Narrative text for the Wastewater treatment driver.
+
+  Context variables (from _build_wastewater_ctx):
+    is_point_mode             bool   True when treatment plants are modelled individually
+    sewage_treated            metric – share of sewage treated (pp change)
+    fecal_sludge              metric – share of fecal sludge treated (pp change)
+    facility_count            metric – number of treatment plants (relative_pct change)
+    treatment_level_changed   bool   – any significant shift in treatment level mix
+    advanced_treatment_increased bool
+    primary_treatment_increased  bool
+#}
+{% if sewage_treated.is_significant %}
+The share of sewage receiving treatment {{ "increases" if sewage_treated.increased else "decreases" }} {{ sewage_treated.magnitude }} by {{ sewage_treated.abs_delta | num }} pp to {{ sewage_treated.scen_val }},
+{{ "removing a larger share of pathogens before treated effluent reaches surface water" if sewage_treated.increased else "allowing more untreated pathogen loads to be discharged to surface water" }}.
+{% endif %}
+{% if fecal_sludge.is_significant %}
+Fecal sludge treatment {{ "increases" if fecal_sludge.increased else "decreases" }} {{ fecal_sludge.magnitude }} by {{ fecal_sludge.abs_delta | num }} pp to {{ fecal_sludge.scen_val }}.
+{% endif %}
+{% if is_point_mode %}
+{% if facility_count.is_significant %}
+The number of wastewater treatment plants {{ "increases" if facility_count.increased else "decreases" }} by {{ facility_count.abs_delta | num }}% to {{ facility_count.scen_val }} facilities.
+{% endif %}
+{% if treatment_level_changed %}
+{% if advanced_treatment_increased %}
+The treatment capacity mix shifts towards tertiary and advanced treatment, improving pathogen removal efficiency.
+{% elif primary_treatment_increased %}
+A larger share of treatment capacity operates at primary level, which provides limited pathogen removal.
+{% endif %}
+{% endif %}
+{% endif %}

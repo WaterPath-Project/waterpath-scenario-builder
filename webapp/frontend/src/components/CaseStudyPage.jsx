@@ -4,7 +4,7 @@ import { MapContainer, TileLayer, GeoJSON as LeafletGeoJSON, useMap } from 'reac
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import axios from 'axios';
-import { ArrowLeft, TrendingUp, Calendar, ChartColumn } from 'lucide-react';
+import { TrendingUp, Calendar, ChartColumn, Edit, Trash2 } from 'lucide-react';
 import SSPScenarioDialog from './SSPScenarioDialog';
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
@@ -324,7 +324,7 @@ function ScenarioFlowDiagram({ scenarios, emissionTotals, colorScale, onCreateSc
 }
 
 // ─── CaseStudyPage ────────────────────────────────────────────────────────────
-export default function CaseStudyPage({ csId, csSlug, onGoToAnalytics }) {
+export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAnalytics, onEdit, onDelete }) {
   const navigate = useNavigate();
 
   const [metadata,         setMetadata]         = useState(null);
@@ -498,20 +498,29 @@ export default function CaseStudyPage({ csId, csSlug, onGoToAnalytics }) {
 
       {/* ── Header bar ── */}
       <div className="flex items-center gap-3 px-6 py-3 bg-wpWhite-100 border-b border-gray-200 sticky top-0 z-10">
-        <button
-          onClick={() => navigate('/case-studies')}
-          className="flex items-center gap-1.5 text-sm font-medium text-wpBlue hover:text-wpBlue-300 transition-colors"
-        >
-          <ArrowLeft size={15} /> Back
-        </button>
-        <span className="text-gray-300 select-none">|</span>
         <h1 className="text-base font-semibold text-wpBlue font-inter flex-1 truncate">{title}</h1>
+        {onEdit && (
+          <button
+            onClick={() => onEdit(csId)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-600 border border-gray-300 rounded-lg bg-wpWhite-100 hover:bg-gray-100 transition-colors"
+          >
+            <Edit size={13} /> Edit
+          </button>
+        )}
+        {onDelete && (
+          <button
+            onClick={() => onDelete({ id: csId, name: title })}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-red-500 border border-red-200 rounded-lg bg-wpWhite-100 hover:bg-red-50 transition-colors"
+          >
+            <Trash2 size={13} /> Delete
+          </button>
+        )}
         {csSlug && (
           <button
-            onClick={() => navigate(`/scenarios/${csSlug}`)}
+            onClick={() => { onGoToScenarios?.(csId); navigate(`/scenarios/${csSlug}`); }}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold text-wpBlue border border-wpBlue-300 rounded-lg bg-wpWhite-100 hover:bg-wpBlue-100 transition-colors"
           >
-            <ChartColumn size={13} /> Scenario Editor
+            <ChartColumn size={13} /> Scenarios
           </button>
         )}
         {onGoToAnalytics && (
@@ -519,7 +528,7 @@ export default function CaseStudyPage({ csId, csSlug, onGoToAnalytics }) {
             onClick={() => onGoToAnalytics(csId)}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold text-wpBlue border border-wpBrown rounded-lg bg-wpWhite-100 hover:bg-wpBrown-100 transition-colors"
           >
-            <TrendingUp size={13} /> Analytics
+            <TrendingUp size={13} /> Results
           </button>
         )}
       </div>

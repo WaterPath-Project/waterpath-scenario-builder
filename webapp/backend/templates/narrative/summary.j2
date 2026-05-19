@@ -1,0 +1,24 @@
+{#
+  summary.j2
+  ==========
+  One-paragraph summary of the scenario comparison.
+
+  Context variables (from _build_summary_ctx):
+    header           str   e.g. "SSP3 — 2050"
+    has_changes      bool  True when at least one driver produced text
+    driver_list_str  str   e.g. "Population, Sanitation and Hydrology"
+    outlook          str   'positive' | 'negative' | 'mixed'
+#}
+{{ header }}:
+{% if not has_changes %}
+No significant changes were detected in the modelled input drivers compared to the baseline scenario.
+{% else %}
+Key differences from baseline affect {{ driver_list_str }}.
+{% if outlook == 'positive' %}
+On balance, the changes suggest a reduction in waterborne pathogen risk compared to the baseline scenario.
+{% elif outlook == 'negative' %}
+On balance, the changes suggest an increase in waterborne pathogen risk compared to the baseline scenario.
+{% else %}
+The changes present mixed implications for waterborne pathogen risk, with risk-increasing and risk-reducing factors in roughly equal measure.
+{% endif %}
+{% endif %}

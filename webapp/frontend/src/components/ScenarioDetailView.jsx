@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Edit3, Trash2, BarChart3, Play, RefreshCw, Loader2, ScrollText, BarChart2, CheckCircle, AlertTriangle } from 'lucide-react';
+import { Edit3, Trash2, BarChart3, Play, Loader2, ScrollText, BarChart2, CheckCircle, AlertTriangle } from 'lucide-react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import useScenarioStore from '../store/scenarioStore';
@@ -10,12 +10,10 @@ import PopulationPanel from './PopulationPanel';
 import SanitationLadderPanel from './SanitationLadderPanel';
 import WastewaterTreatmentPanel from './WastewaterTreatmentPanel';
 import LivestockEditorPanel from './LivestockEditorPanel';
-
 // Import category icons
 import HumanEmissionsIcon from '../../assets/icons/human_emissions.svg';
 import LivestockEmissionsIcon from '../../assets/icons/livestock_emissions.svg';
 import ConcentrationsIcon from '../../assets/icons/concentrations.svg';
-import RiskIcon from '../../assets/icons/risk.svg';
 
 // Import subcategory icons
 import HumanPopulationIcon from '../../assets/icons/human_population.svg';
@@ -28,8 +26,7 @@ import FlowIcon from '../../assets/icons/flow.svg';
 import DischargeIcon from '../../assets/icons/discharge.svg';
 import RunoffIcon from '../../assets/icons/runoff.svg';
 import RiverParametersIcon from '../../assets/icons/river_parameters.svg';
-import ExposureDataIcon from '../../assets/icons/exposure_data.svg';
-import PathogenPropertiesIcon from '../../assets/icons/pathogen_properties.svg';
+
 
 // Run status pill config
 const RUN_STATUS_CFG = {
@@ -76,15 +73,6 @@ const CATEGORIES = [
       { id: 'river-parameters', label: 'River Parameters', icon: RiverParametersIcon },
     ]
   },
-  {
-    id: 'risk',
-    label: 'Risk',
-    icon: RiskIcon,
-    subcategories: [
-      { id: 'exposure-data', label: 'Exposure Data', icon: ExposureDataIcon },
-      { id: 'pathogen-properties', label: 'Pathogen Properties', icon: PathogenPropertiesIcon },
-    ]
-  }
 ];
 
 // Flat list of emission driver subcategories shown in the side panel (human + livestock)
@@ -129,7 +117,7 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
   const [showLog,    setShowLog]    = useState(false);
   const needsRerun = needsRerunIds[scenarioId] ?? false;
 
-  const pollRef = useRef(null);
+  const pollRef     = useRef(null);
 
   const canRun     = scenarioInfo?.readiness?.ready === true;
   const hasResults = runStatus === 'success' || !!scenarioInfo?.has_outputs;
@@ -268,7 +256,9 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
           clearInterval(pollRef.current);
           setRunLoading(false);
           if (Array.isArray(data.output_files)) setRunOutputFiles(data.output_files);
-          if (data.status === 'success') setNeedsRerun(scenarioId, false);
+          if (data.status === 'success') {
+            setNeedsRerun(scenarioId, false);
+          }
           // Refresh scenario info so has_outputs is up to date
           if (selectedCaseStudy?.id) {
             axios.get(`/api/case-studies/${selectedCaseStudy.id}/analytics`)
@@ -288,6 +278,8 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
     return () => clearInterval(pollRef.current);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
+
+  // ── Re-run risk handler ────────────────────────────────────────────────────
 
   // ── Run model handler ──────────────────────────────────────────────────────
   const handleRunModel = async () => {
@@ -586,7 +578,6 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
               );
             })}
           </div>
-
         </div>
 
         {/* Right Content Area */}

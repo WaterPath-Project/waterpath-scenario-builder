@@ -64,7 +64,20 @@ waterpath-scenario-builder/
             └── index.css      # Styling
 ```
 
-## 🔧 Development
+## � Documentation
+
+Detailed documentation lives in the [`docs/`](docs/) folder:
+
+| File | Contents |
+|------|----------|
+| [docs/development.md](docs/development.md) | Development setup, hot reload, Docker services |
+| [docs/dev-mode.md](docs/dev-mode.md) | Dev vs production mode differences |
+| [docs/data-directories.md](docs/data-directories.md) | Data directory layout for GloWPa I/O |
+| [docs/glowpa-invocation.md](docs/glowpa-invocation.md) | How to invoke the GloWPa model |
+| [docs/livestock-high-emissions.md](docs/livestock-high-emissions.md) | Livestock unit-mismatch bugs and fixes |
+| [docs/hydrology-map.md](docs/hydrology-map.md) | Hydrology map layers, flow arrows, river lines, water overlay |
+
+## �🔧 Development
 
 ### Backend Development
 The Flask backend is located in `webapp/backend/app.py`. It provides:

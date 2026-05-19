@@ -1,0 +1,29 @@
+{#
+  hydrology.j2
+  ============
+  Narrative text for the Hydrology driver.
+
+  Covers the four scenario-varying climate-driven inputs to GloWPa:
+    discharge    – mean annual river discharge (m³/s)   → dilution
+    runoff       – mean surface runoff (mm/day)          → overland transport
+    temperature  – mean river temperature (°C)           → temperature decay
+    ssrd         – mean solar radiation (W/m²)           → UV decay
+
+  Context variables (from _build_hydrology_ctx): see metric dict shape above.
+#}
+{% if discharge.is_significant %}
+Mean river discharge {{ "increases" if discharge.increased else "decreases" }} {{ discharge.magnitude }} by {{ discharge.abs_delta | num }}%,
+{{ "providing greater dilution of pathogen loads and faster downstream transport through the river network" if discharge.increased else "reducing dilution capacity, which can raise pathogen concentrations in rivers for a given emission load" }}.
+{% endif %}
+{% if runoff.is_significant %}
+Surface runoff {{ "increases" if runoff.increased else "decreases" }} {{ runoff.magnitude }} by {{ runoff.abs_delta | num }}%,
+{{ "washing more pathogen-laden material from land surfaces into rivers during rainfall events" if runoff.increased else "reducing the overland flushing of pathogens from land to surface water" }}.
+{% endif %}
+{% if temperature.is_significant %}
+Mean river temperature {{ "rises" if temperature.increased else "falls" }} {{ temperature.magnitude }} by {{ temperature.abs_delta | num }}°C,
+{{ "accelerating temperature-driven pathogen inactivation in surface water" if temperature.increased else "slowing the natural temperature-driven die-off of pathogens in rivers" }}.
+{% endif %}
+{% if ssrd.is_significant %}
+Solar radiation {{ "increases" if ssrd.increased else "decreases" }} {{ ssrd.magnitude }} by {{ ssrd.abs_delta | num }}%,
+{{ "enhancing UV-driven pathogen die-off in surface water (the actual benefit depends on dissolved organic carbon levels, which attenuate UV penetration through the water column)" if ssrd.increased else "reducing UV-driven pathogen inactivation in rivers" }}.
+{% endif %}

@@ -14,6 +14,19 @@ services:
     tty: true
     stdin_open: true
 
+  qmra:
+    build:
+      context: ./qmra
+      dockerfile: Dockerfile
+    image: qmra-custom
+    container_name: qmra-container
+    volumes:
+      - ./data:/app/data              # Mount entire data directory for case study access
+    networks:
+      - app-network
+    tty: true
+    stdin_open: true
+
   webapp:
     build: 
       context: ./webapp
@@ -35,6 +48,7 @@ services:
       - app-network
     depends_on:
       - glowpa
+      - qmra
 
 networks:
   app-network:

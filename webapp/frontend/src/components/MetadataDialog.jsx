@@ -220,7 +220,7 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
               {!isEditing ? (
                 <button
                   onClick={() => setIsEditing(true)}
-                  className="flex items-center mr-4 mt-4 gap-1 px-3 py-1 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors"
+                  className="flex items-center mr-4 mt-4 gap-1 px-3 py-1 bg-wpBlue text-white rounded-md hover:bg-wpBlue-200 transition-colors"
                 >
                   <Edit3 size={16} />
                   Edit
@@ -230,7 +230,7 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
                   <button
                     onClick={handleSave}
                     disabled={isSaving}
-                    className="flex items-center gap-1 px-3 py-1 bg-green-500 text-white rounded-md hover:bg-green-600 transition-colors disabled:opacity-50"
+                    className="flex items-center gap-1 px-3 py-1 bg-wpGreen text-wpBlue rounded-md hover:bg-wpGreen-200 transition-colors disabled:opacity-50"
                   >
                     <Save size={16} />
                     {isSaving ? 'Saving...' : 'Save'}
@@ -263,30 +263,30 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
 
         <div className="space-y-6">
           {/* Case Study Metadata */}
-          <div className="bg-blue-50 p-4 rounded-lg">
+          <div className="bg-wpGray-100 p-4 rounded-lg">
             <div className="flex items-center gap-2 mb-3">
               <FileText className="h-5 w-5 text-wpBlue-600" />
-              <h3 className="text-lg font-semibold text-wpBlue-800">Metadata</h3>
+              <h3 className="text-lg font-semibold text-wpBlue-900">Metadata</h3>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
               <div>
-                <span className="font-medium text-gray-700">Title:</span>
+                <span className="font-medium text-wpBlue-900">Title:</span>
                 <EditableField
                   value={displayData.title}
                   onChange={handleTitleChange}
                 />
               </div>
               <div>
-                <span className="font-medium text-gray-700">Name:</span>
-                <p className="text-gray-600 font-outfit text-xs mt-1 px-2 py-1 bg-gray-100 rounded">
+                <span className="font-medium text-wpBlue-900">Name:</span>
+                <p className="text-wpBlue-600 font-outfit text-xs mt-1 px-2 py-1 bg-wpBlue-100 rounded">
                   {displayData.name || slugify(displayData.title || '')}
                 </p>
                 {isEditing && (
-                  <p className="text-xs text-gray-400 mt-0.5">Auto-generated from title</p>
+                  <p className="text-xs text-wpBlue-400 mt-0.5">Auto-generated from title</p>
                 )}
               </div>
               <div>
-                <span className="font-medium text-gray-700">Created:</span>
+                <span className="font-medium text-wpBlue-900">Created:</span>
                 <EditableField
                   value={displayData.created}
                   onChange={handleCreatedChange}
@@ -295,7 +295,7 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
               </div>
               {(displayData.updated || isEditing) && (
                 <div>
-                  <span className="font-medium text-gray-700">Updated:</span>
+                  <span className="font-medium text-wpBlue-900">Updated:</span>
                   <EditableField
                     value={displayData.updated}
                     onChange={handleUpdatedChange}
@@ -305,7 +305,7 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
               )}
             </div>
             <div className="mt-4">
-              <span className="font-medium text-gray-700">Description:</span>
+              <span className="font-medium text-sm text-wpBlue-900">Description:</span>
               <EditableField
                 value={displayData.description}
                 onChange={handleDescriptionChange}
@@ -316,8 +316,7 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
             {/* Contributors */}
             <div className="mt-4">
               <div className="flex items-center gap-2 mb-2">
-                <User className="h-4 w-4 text-gray-600" />
-                <span className="font-medium text-gray-700">Contributors:</span>
+                <span className="font-medium text-sm text-wpBlue-900">Contributors:</span>
                 {isEditing && (
                   <button
                     onClick={() => addArrayItem('contributors', { title: '', role: 'author' })}
@@ -367,14 +366,14 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
           </div>
 
           {/* Keywords */}
-          <div className="bg-yellow-50 p-4 rounded-lg">
+          <div className="bg-wpBrown-200 p-4 rounded-lg">
             <div className="flex items-center gap-2 mb-3">
-              <Tag className="h-5 w-5 text-yellow-600" />
-              <h3 className="text-lg font-semibold text-yellow-800">Keywords</h3>
+              <Tag className="h-5 w-5 text-wpBrown-900" />
+              <h3 className="text-lg font-semibold text-wpBrown-900">Keywords</h3>
               {isEditing && (
                 <button
                   onClick={() => addArrayItem('keywords', '')}
-                  className="p-1 text-yellow-600 hover:bg-yellow-100 rounded"
+                  className="p-1 text-wpBrown-900 hover:bg-wpBrown-100 rounded"
                 >
                   <Plus size={16} />
                 </button>
@@ -390,7 +389,7 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
                           type="text"
                           value={keyword}
                           onChange={(e) => handleArrayChange('keywords', index, e.target.value)}
-                          className="px-2 py-1 bg-yellow-200 text-yellow-800 rounded-full text-sm border border-yellow-300"
+                          className="px-2 py-1 bg-wpBrown-100 text-wpBrown-800 rounded-full text-sm border border-wpBrown-300"
                         />
                         <button
                           onClick={() => removeArrayItem('keywords', index)}
@@ -400,7 +399,7 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
                         </button>
                       </>
                     ) : (
-                      <span className="px-2 py-1 bg-yellow-200 text-yellow-800 rounded-full text-sm">
+                      <span className="px-2 py-1 bg-wpBrown-100 text-wpBrown-800 rounded-full text-sm">
                         {keyword}
                       </span>
                     )}
@@ -413,20 +412,20 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
           </div>
 
           {/* Sources and Licenses */}
-          <div className="bg-purple-50 p-4 rounded-lg">
+          <div className="bg-wpTeal-100 p-4 rounded-lg">
             <div className="flex items-center gap-2 mb-3">
-              <ExternalLink className="h-5 w-5 text-purple-600" />
-              <h3 className="text-lg font-semibold text-purple-800">Sources & Licenses</h3>
+              <ExternalLink className="h-5 w-5 text-wpTeal" />
+              <h3 className="text-lg font-semibold text-wpTeal">Sources & Licenses</h3>
             </div>
             
             {/* Sources */}
             <div className="mb-4">
               <div className="flex items-center gap-2 mb-2">
-                <span className="font-medium text-gray-700">Sources:</span>
+                <span className="font-medium text-wpTeal-900">Sources:</span>
                 {isEditing && (
                   <button
                     onClick={() => addArrayItem('sources', { title: '', path: '' })}
-                    className="p-1 text-purple-600 hover:bg-purple-100 rounded"
+                    className="p-1 text-wpTeal hover:bg-wpTeal-800 rounded"
                   >
                     <Plus size={16} />
                   </button>
@@ -443,14 +442,14 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
                             placeholder="Title"
                             defaultValue={source.title || ''}
                             onBlur={(e) => handleArrayChange('sources', index, { ...source, title: e.target.value })}
-                            className="flex-1 p-1 border border-gray-300 rounded text-sm"
+                            className="flex-1 p-1 border border-wpTeal-900 rounded text-sm"
                           />
                           <input
                             type="url"
                             placeholder="URL"
                             defaultValue={source.path || ''}
                             onBlur={(e) => handleArrayChange('sources', index, { ...source, path: e.target.value })}
-                            className="flex-1 p-1 border border-gray-300 rounded text-sm"
+                            className="flex-1 p-1 border border-wpTeal-900 rounded text-sm"
                           />
                           <button
                             onClick={() => removeArrayItem('sources', index)}
@@ -480,7 +479,7 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
                 {isEditing && (
                   <button
                     onClick={() => addArrayItem('licenses', { name: '', title: '', path: '' })}
-                    className="p-1 text-purple-600 hover:bg-purple-100 rounded"
+                    className="p-1 text-wpTeal hover:bg-wpTeal-200 rounded"
                   >
                     <Plus size={16} />
                   </button>

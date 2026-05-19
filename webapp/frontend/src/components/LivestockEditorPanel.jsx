@@ -49,8 +49,8 @@ const ICONS = {
 // isodata_<animal>.csv field labels — based on Vermeulen 2017 / GloWPa source
 const LIVESTOCK_POP_LABELS = {
   frac_young: 'Fraction < 3 months',
-  prev_young: 'Prevalence young [%]',
-  prev_adult: 'Prevalence adult [%]',
+  prev_young: 'Prevalence young',
+  prev_adult: 'Prevalence adult',
   excr_young: 'Excretion young [ooc/g]',
   excr_adult: 'Excretion adult [ooc/g]',
   excr_day: 'Excretion /head/day [ooc]',
@@ -691,8 +691,7 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved, onHeadCou
 
   // Step sizes per field
   const stepFor = (f) => {
-    if (f === 'frac_young') return 0.001;              // 0.1 pp in raw fraction units
-    if (['prev_young', 'prev_adult'].includes(f)) return 0.1;
+    if (['frac_young', 'prev_young', 'prev_adult'].includes(f)) return 0.001; // 0.1 pp in raw fraction units
     if (f === 'manure_per_mass') return 0.1;
     if (['mass_young', 'mass_adult'].includes(f)) return 1;
     return 1; // excr_young, excr_adult, excr_day
@@ -923,9 +922,8 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved, onHeadCou
                           onChange={(v) => updateFieldForSelectedAreas(rowIdx, f, v)}
                           step={stepFor(f)}
                           min={0}
-                          max={f === 'frac_young' ? 1 : undefined}
-                          percent={f === 'frac_young'}
-                          decimals={['prev_young', 'prev_adult'].includes(f) ? 1 : undefined}
+                          max={['frac_young', 'prev_young', 'prev_adult'].includes(f) ? 1 : undefined}
+                          percent={['frac_young', 'prev_young', 'prev_adult'].includes(f)}
                         />
                       </td>
                     );

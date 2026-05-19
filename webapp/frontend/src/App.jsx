@@ -5,6 +5,7 @@ import Terminal from './components/Terminal';
 import ScenarioCard from './components/ScenarioCard';
 import ScenarioTabBar from './components/ScenarioTabBar';
 import ScenarioDetailView from './components/ScenarioDetailView';
+import QmraCaseStudyPanel from './components/QmraCaseStudyPanel';
 import useScenarioStore from './store/scenarioStore';
 import useConfigStore from './store/configStore';
 import useSettingsStore from './store/settingsStore';
@@ -34,6 +35,8 @@ import {
   Edit,
   Trash2,
   BarChart2,
+  ChevronRight,
+  Table2,
 } from 'lucide-react';
 import MetadataDialog from './components/MetadataDialog';
 import ConfirmDialog from './components/ConfirmDialog';
@@ -41,6 +44,7 @@ import SSPScenarioDialog from './components/SSPScenarioDialog';
 import ScenarioMetadataDialog from './components/ScenarioMetadataDialog';
 import ResultsView from './components/ResultsView';
 import CaseStudyPage from './components/CaseStudyPage';
+import ScenarioSummaryView from './components/ScenarioSummaryView';
 import './index.css';
 
 // Bootstrap global config (pathogens, etc.) as early as possible.
@@ -106,14 +110,16 @@ function Dashboard() {
   
   // Get active section from URL path (only first segment matters)
   const getActiveSectionFromPath = (pathname) => {
-    if (pathname === '/') return 'service-status';
+    if (pathname === '/' || pathname === '/service-status') return 'settings';
     const parts = pathname.split('/').filter(Boolean);
-    if (parts[0] === 'case-studies' && parts[1]) return 'case-study-detail';
-    return parts[0] || 'service-status';
+    if (parts[0] === 'service-status') return 'settings';
+    if (parts[0] === 'summary') return 'summary';
+    return parts[0] || 'settings';
   };
   
   const [backendStatus, setBackendStatus] = useState('checking');
   const [glowpaStatus, setGlowpaStatus] = useState('checking');
+  const [qmraStatus, setQmraStatus] = useState('checking');
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeSection, setActiveSection] = useState(getActiveSectionFromPath(location.pathname));
@@ -223,6 +229,11 @@ function Dashboard() {
     if (parts[0] !== 'scenarios') return;
     const scenSlug = parts[2];
     if (!scenSlug) { if (activeTab !== 'main') setActiveTab('main'); return; }
+    // Handle QMRA tab special URL segment
+    if (scenSlug === 'qmra') {
+      if (activeTab !== 'qmra-config') setActiveTab('qmra-config');
+      return;
+    }
     const allS = [...scenarios, ...tempScenarios];
     const matched = allS.find((s) => toScenSlug(s.name) === scenSlug);
     if (matched && activeTab !== matched.id) setActiveTab(matched.id);
@@ -262,6 +273,11 @@ function Dashboard() {
       if (sectionId === 'scenarios') {
         const cs = selectedCaseStudy || analyticsCaseStudy;
         navigate(cs ? `/scenarios/${toCsSlug(cs)}` : '/scenarios');
+      } else if (sectionId === 'case-studies') {
+        const cs = selectedCaseStudy || analyticsCaseStudy;
+        navigate(cs ? `/case-studies/${toCsSlug(cs)}` : '/case-studies');
+      } else if (sectionId === 'summary') {
+        navigate('/summary');
       } else {
         navigate(`/${sectionId}`);
       }
@@ -285,6 +301,15 @@ function Dashboard() {
       setGlowpaStatus(response.data.glowpa_status);
     } catch (error) {
       setGlowpaStatus('disconnected');
+    }
+  };
+
+  const checkQmraStatus = async () => {
+    try {
+      const response = await axios.get('/api/qmra/status');
+      setQmraStatus(response.data.available ? 'connected' : 'disconnected');
+    } catch {
+      setQmraStatus('disconnected');
     }
   };
 
@@ -478,10 +503,11 @@ function Dashboard() {
     setLoading(true);
     setBackendStatus('checking');
     setGlowpaStatus('checking');
+    setQmraStatus('checking');
     
     const backendOk = await checkBackendHealth();
     if (backendOk) {
-      await checkGlowpaStatus();
+      await Promise.all([checkGlowpaStatus(), checkQmraStatus()]);
       await fetchCaseStudies();
       await fetchScenarios();
       await fetchServiceMetrics();
@@ -565,6 +591,7 @@ function Dashboard() {
     const interval = setInterval(() => {
       checkBackendHealth();
       checkGlowpaStatus();
+      checkQmraStatus();
       fetchServiceMetrics();
       setMetrics(prev => ({
         ...prev,
@@ -575,14 +602,8 @@ function Dashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  // Navigation items for the sidebar
+  // Navigation items
   const navigationItems = [
-    { 
-      id: 'service-status', 
-      label: 'Service Status', 
-      icon: Activity, 
-      description: 'View builder status' 
-    },
     { 
       id: 'case-studies', 
       label: 'Case Studies', 
@@ -591,15 +612,21 @@ function Dashboard() {
     },
     { 
       id: 'scenarios', 
-      label: 'Scenario editor', 
+      label: 'Scenarios', 
       icon: ChartColumn, 
       description: 'Manage and run scenarios' 
     },
     { 
       id: 'analytics', 
-      label: 'Analytics', 
+      label: 'Results', 
       icon: TrendingUp, 
       description: 'Explore model results' 
+    },
+    {
+      id: 'summary',
+      label: 'Summary',
+      icon: Table2,
+      description: 'Summary of scenario changes'
     },
     { 
       id: 'settings', 
@@ -611,30 +638,33 @@ function Dashboard() {
 
   const renderContent = () => {
     switch (activeSection) {
+      // service-status is merged into settings — fall through
       case 'service-status':
+      // falls through
+      case 'settings': {
         return (
-          <div className="space-y-8">
-            {/* Metrics Overview */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-6">
-              <MetricCard 
-                title="Total Case Studies" 
-                value={caseStudies.length} 
-                subtitle="Case studies available in the system."
-                IconComponent={FolderOpen}
-                // trend={8.2}
-              />
-              <MetricCard 
-                title="Model runs" 
-                value={metrics.processingTime} 
-                subtitle="Scenarios that have produced model output files."
-                IconComponent={Play}
-              />
-            </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* ── Column A: status & activity ── */}
+            <div className="space-y-6">
+              {/* Metric cards */}
+              <div className="grid grid-cols-2 gap-4">
+                <MetricCard 
+                  title="Total Case Studies" 
+                  value={caseStudies.length} 
+                  subtitle="Case studies available in the system."
+                  IconComponent={FolderOpen}
+                />
+                <MetricCard 
+                  title="Model runs" 
+                  value={metrics.processingTime} 
+                  subtitle="Scenarios that have produced model output files."
+                  IconComponent={Play}
+                />
+              </div>
 
-            {/* System Status */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Service Status */}
               <DashboardCard title="Service Status">
-                <div className="space-y-4">
+                <div className="space-y-3">
                   <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-lg">
                     <div className="flex items-center gap-3">
                       <div className="w-12 h-12 bg-wpBlue rounded-lg flex items-center justify-center">
@@ -647,7 +677,7 @@ function Dashboard() {
                     </div>
                     <StatusIndicator status={backendStatus} />
                   </div>
-                  
+
                   <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-lg">
                     <div className="flex items-center gap-3">
                       <div className="w-12 h-12 bg-wpGreen rounded-lg flex items-center justify-center">
@@ -688,9 +718,23 @@ function Dashboard() {
                       </div>
                     </div>
                   </div>
+
+                  <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <div className="w-12 h-12 bg-wpBrown-500 rounded-lg flex items-center justify-center">
+                        <Activity className="text-white" size={24} />
+                      </div>
+                      <div>
+                        <h4 className="font-medium text-gray-900">QMRA model</h4>
+                        <p className="text-sm text-gray-500">Quantitative microbial risk assessment</p>
+                      </div>
+                    </div>
+                    <StatusIndicator status={qmraStatus} />
+                  </div>
                 </div>
               </DashboardCard>
 
+              {/* Quick Actions */}
               <DashboardCard title="Quick Actions">
                 <div className="space-y-3">
                   <button 
@@ -699,12 +743,6 @@ function Dashboard() {
                   >
                     <ExternalLink size={18} /> Open GLOWPA Interface
                   </button>
-                  {/*<button 
-                    className="w-full bg-wpBrown-500 hover:bg-wpBrown-900 text-white font-medium px-4 py-3 rounded-lg transition-colors duration-200 flex items-center justify-center gap-2"
-                    onClick={() => window.open('http://localhost:5000/api/health', '_blank')}
-                  >
-                     <Search size={18} /> Check Backend Health
-                  </button>*/}
                   <button 
                     className="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium px-4 py-3 rounded-lg transition-colors duration-200 flex items-center justify-center gap-2"
                     onClick={refreshAll}
@@ -713,182 +751,261 @@ function Dashboard() {
                   </button>
                 </div>
               </DashboardCard>
+
+              {/* Recent Activity */}
+              <DashboardCard title="Recent Activity">
+                {recentActivity.length === 0 ? (
+                  <p className="text-sm text-gray-400 italic">No recent activity found.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {recentActivity.slice(0, 5).map((ev, i) => {
+                      const iconEl = ev.type === 'output'
+                        ? <CheckCircle className="w-4 h-4 text-wpGreen-800 flex-shrink-0" />
+                        : ev.type === 'scenario'
+                          ? <BarChart2 className="w-4 h-4 text-wpBlue-300 flex-shrink-0" />
+                          : <FolderOpen className="w-4 h-4 text-wpBlue flex-shrink-0" />;
+                      return (
+                        <div key={i} className="flex items-center gap-3 p-3 bg-wpGray-100 rounded-lg">
+                          {iconEl}
+                          <div className="min-w-0 flex-1">
+                            <span className="text-sm text-gray-700 block truncate">{ev.message}</span>
+                            {ev.detail && <span className="text-xs text-gray-400 truncate block">{ev.detail}</span>}
+                          </div>
+                          <span className="text-xs text-gray-400 flex-shrink-0">{ev.rel}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </DashboardCard>
             </div>
 
-            {/* Activity Log */}
-            <DashboardCard title="Recent Activity">
-              {recentActivity.length === 0 ? (
-                <p className="text-sm text-gray-400 italic">No recent activity found.</p>
-              ) : (
-                <div className="space-y-2">
-                  {recentActivity.slice(0, 5).map((ev, i) => {
-                    const iconEl = ev.type === 'output'
-                      ? <CheckCircle className="w-4 h-4 text-wpGreen-800 flex-shrink-0" />
-                      : ev.type === 'scenario'
-                        ? <BarChart2 className="w-4 h-4 text-wpBlue-300 flex-shrink-0" />
-                        : <FolderOpen className="w-4 h-4 text-wpBlue flex-shrink-0" />;
-                    return (
-                      <div key={i} className="flex items-center gap-3 p-3 bg-wpGray-100 rounded-lg">
-                        {iconEl}
-                        <div className="min-w-0 flex-1">
-                          <span className="text-sm text-gray-700 block truncate">{ev.message}</span>
-                          {ev.detail && <span className="text-xs text-gray-400 truncate block">{ev.detail}</span>}
-                        </div>
-                        <span className="text-xs text-gray-400 flex-shrink-0">{ev.rel}</span>
-                      </div>
-                    );
-                  })}
+            {/* ── Column B: display & developer settings ── */}
+            <div className="space-y-6">
+              <DashboardCard title="Map Display">
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
+                    <div>
+                      <p className="text-sm font-medium text-gray-800">Continuous colour gradient</p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        When on (default), each grid cell is coloured from the full continuous YlOrRd gradient, providing a precise colour for every emission value. When off, values are snapped to the nearest discrete log₁₀ magnitude class — useful for reading exact categories.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setHeatmapView(!heatmapView)}
+                      className={`ml-6 relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-wpBlue focus:ring-offset-2 ${
+                        heatmapView ? 'bg-wpBlue' : 'bg-gray-300'
+                      }`}
+                      role="switch"
+                      aria-checked={heatmapView}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                          heatmapView ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-gray-800">Choropleth threshold</p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        # of valid raster pixels that determine whether maps should be projected in choropleth mode (filled polygons) or raster mode. Increase to prefer choropleth for coarser grids. Set to 0 to always use raster mode.
+                      </p>
+                    </div>
+                    <input
+                      type="number"
+                      min={0}
+                      max={1000}
+                      step={1}
+                      value={choroplethPixelThreshold}
+                      onChange={e => setChoroplethPixelThreshold(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                      className="ml-6 w-20 px-2 py-1 text-sm border border-gray-300 rounded-lg text-center focus:outline-none focus:ring-2 focus:ring-wpBlue"
+                    />
+                  </div>
+                  <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
+                    <div>
+                      <p className="text-sm font-medium text-gray-800">Consistent colour scale across case studies</p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        When on (default), the map colour scale maximum is fixed at log₁₀ = 17 so that maps from different case studies are directly comparable. When off, the maximum is derived from the loaded raster file, using the full colour range for each map individually.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setFixedColorScale(!fixedColorScale)}
+                      className={`ml-6 relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-wpBlue focus:ring-offset-2 ${
+                        fixedColorScale ? 'bg-wpBlue' : 'bg-gray-300'
+                      }`}
+                      role="switch"
+                      aria-checked={fixedColorScale}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                          fixedColorScale ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
                 </div>
-              )}
-            </DashboardCard>
+              </DashboardCard>
+
+              <DashboardCard title="Developer">
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
+                    <div>
+                      <p className="text-sm font-medium text-gray-800">Development mode — preserve RDS files</p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        When on, the <code className="font-mono text-xs">.RDS</code> files generated during a model run are kept on disk instead of being automatically deleted. Useful for inspecting or reusing converted data between runs.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setDebugMode(!debugMode)}
+                      className={`ml-6 relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-wpBlue focus:ring-offset-2 ${
+                        debugMode ? 'bg-wpBlue' : 'bg-gray-300'
+                      }`}
+                      role="switch"
+                      aria-checked={debugMode}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                          debugMode ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                </div>
+              </DashboardCard>
+            </div>
           </div>
-        );
-      
-      case 'case-study-detail': {
-        const csSlug    = location.pathname.split('/').filter(Boolean)[1] || '';
-        const matchedCs = caseStudies.find(c => toCsSlug(c) === csSlug);
-        const csId      = matchedCs?.id || '';
-        return (
-          <CaseStudyPage
-            csId={csId}
-            csSlug={csSlug}
-            onGoToAnalytics={(id) => {
-              const cs = caseStudies.find(c => c.id === id);
-              if (cs) {
-                setAnalyticsCaseStudy(cs);
-                setResultsState(prev => ({ ...prev, caseStudyId: id }));
-              }
-              navigate('/analytics');
-            }}
-          />
         );
       }
 
-      case 'case-studies':
+      case 'case-studies': {
+        const urlParts   = location.pathname.split('/').filter(Boolean);
+        const csSlug     = urlParts[1] || '';
+        const matchedCs  = csSlug ? caseStudies.find(c => toCsSlug(c) === csSlug) : null;
+        const detailCsId = matchedCs?.id || '';
+
         return (
-          <div className="space-y-8">
-            {/* Case Study Management */}
-            <div className="flex items-center justify-between mb-6">
-              <div className="flex gap-3">
-                <label className="cursor-pointer bg-wpBlue hover:bg-wpBlue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors">
-                  <Upload size={18} />
-                  Upload .zip file
+          <div className="flex h-full overflow-hidden">
+
+            {/* ── Left panel: case study list (1/4) ── */}
+            <div className="w-1/4 flex-shrink-0 border-r border-gray-200 overflow-y-auto bg-white flex flex-col">
+              {/* Toolbar */}
+              <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-100 flex-shrink-0">
+                <label className="cursor-pointer bg-wpBlue hover:bg-wpBlue-300 text-white px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-xs font-medium transition-colors">
+                  <Upload size={14} />
+                  Upload .zip
                   <input
                     type="file"
                     accept=".zip"
                     className="hidden"
                     onChange={(e) => {
                       const file = e.target.files[0];
-                      if (file) {
-                        uploadCaseStudy(file).then(() => {
-                          console.log('Case study uploaded successfully');
-                        }).catch((error) => {
-                          console.error('Upload failed:', error);
-                        });
-                      }
+                      if (file) uploadCaseStudy(file).catch(console.error);
                     }}
                   />
                 </label>
-                <button 
+                <button
                   onClick={reloadCaseStudies}
-                  className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg flex items-center gap-2 transition-colors"
+                  className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-xs font-medium transition-colors"
                 >
-                  <RefreshCw size={18} />
-                  Refresh
+                  <RefreshCw size={14} /> Refresh
                 </button>
+              </div>
+
+              {/* List */}
+              <div className="flex-1 overflow-y-auto divide-y divide-gray-100">
+                {caseStudies.length === 0 ? (
+                  <div className="text-center py-10 text-gray-400 px-4">
+                    <FolderOpen className="mx-auto mb-3 text-gray-200" size={36} />
+                    <p className="text-sm">No case studies available</p>
+                  </div>
+                ) : caseStudies.map(caseStudy => {
+                  const isSelected = toCsSlug(caseStudy) === csSlug;
+                  return (
+                    <div
+                      key={caseStudy.id}
+                      onClick={() => navigate(`/case-studies/${toCsSlug(caseStudy)}`)}
+                      className={`group flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors ${
+                        isSelected
+                          ? 'bg-wpBlue/5 border-l-2 border-wpBlue'
+                          : 'hover:bg-gray-50 border-l-2 border-transparent'
+                      }`}
+                    >
+                      <FolderOpen className={isSelected ? 'text-wpBlue' : 'text-gray-400'} size={18} />
+                      <div className="flex-1 min-w-0">
+                        <p className={`text-sm font-medium truncate ${isSelected ? 'text-wpBlue' : 'text-gray-800'}`}>{caseStudy.name}</p>
+                        {caseStudy.folder_name && (
+                          <p className="text-xs text-gray-400 truncate">data/{caseStudy.folder_name}</p>
+                        )}
+                      </div>
+                      <div className="flex-shrink-0 text-xs text-gray-400 group-hover:text-wpBlue flex items-center gap-0.5">
+                        <span>preview</span>
+                        <ChevronRight size={12} />
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
-            {/* Case Studies Grid */}
-            <DashboardCard title="Available Case Studies">
-              <div className="space-y-4">
-                {caseStudies.length > 0 ? caseStudies.map(caseStudy => (
-                  <div 
-                    key={caseStudy.id} 
-                    onClick={() => handleCaseStudySelect(caseStudy)}
-                    className="p-4 border rounded-lg border-gray-200 hover:border-wpBlue-300 hover:bg-gray-50 transition-all cursor-pointer"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <FolderOpen className="text-wpBlue" size={24} />
-                        <div>
-                          <h4 className="font-medium text-gray-900">{caseStudy.name}</h4>
-                          <p className="text-sm text-gray-500">{caseStudy.description || 'No description'}</p>
-                          {caseStudy.folder_name && (
-                            <p className="text-xs text-blue-600 mt-1">📁 data/{caseStudy.folder_name}</p>
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div className="flex gap-1">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              viewDatapackage(caseStudy.id);
-                            }}
-                            className="p-2 text-wpBlue-600 hover:bg-wpBlue-100 rounded transition-colors"
-                            title="Edit metadata"
-                          >
-                            <Edit size={16} />
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteCaseStudy(caseStudy);
-                            }}
-                            className="p-2 text-red-600 hover:bg-red-100 rounded transition-colors"
-                            title="Delete case study"
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
+            {/* ── Right panel: case study detail (3/4) ── */}
+            <div className="flex-1 overflow-y-auto">
+              {matchedCs ? (
+                <CaseStudyPage
+                  key={detailCsId}
+                  csId={detailCsId}
+                  csSlug={csSlug}
+                  onGoToScenarios={(id) => {
+                    const cs = caseStudies.find(c => c.id === id);
+                    if (cs) {
+                      setSelectedCaseStudy(cs);
+                      setAnalyticsCaseStudy(cs);
+                    }
+                  }}
+                  onGoToAnalytics={(id) => {
+                    const cs = caseStudies.find(c => c.id === id);
+                    if (cs) {
+                      setSelectedCaseStudy(cs);
+                      setAnalyticsCaseStudy(cs);
+                      setResultsState(prev => ({ ...prev, caseStudyId: id }));
+                    }
+                    navigate('/analytics');
+                  }}
+                  onEdit={(id) => viewDatapackage(id)}
+                  onDelete={(cs) => handleDeleteCaseStudy(cs)}
+                />
+              ) : (
+                <div className="flex items-center justify-center h-full text-gray-400">
+                  <div className="text-center">
+                    <FolderOpen size={48} className="mx-auto mb-3 text-gray-200" />
+                    <p className="text-sm">Select a case study to view details</p>
                   </div>
-                )) : (
-                  <div className="text-center py-8 text-gray-500">
-                    <FolderOpen className="mx-auto mb-4 text-gray-300" size={48} />
-                    <p>No case studies available</p>
-                    <p className="text-sm mt-1">Upload a ZIP file or create a new case study to get started</p>
-                  </div>
-                )}
-              </div>
-            </DashboardCard>
+                </div>
+              )}
+            </div>
           </div>
         );
+      }
       
       case 'scenarios': {
-        /* Shared header: case study selector + New Scenario button */
-        const scenariosHeader = (
-          <div className="flex items-center gap-4 p-6 bg-wpWhite-100 flex-shrink-0">
-            <select
-              value={selectedCaseStudy?.id ?? ""}
-              onChange={(e) => {
-                if (!e.target.value) {
-                  navigate('/scenarios');
-                  return;
-                }
-                const cs = caseStudies.find(c => c.id === e.target.value);
-                if (cs) navigate(`/scenarios/${toCsSlug(cs)}`);
-              }}
-              className="px-3 py-3 border text-sm border-wpBrown bg-wpGray-200 text-wpBlue font-bold font-inter rounded-lg focus:ring-2 focus:ring-wpBlue focus:border-transparent"
-            >
-              <FileText size={16} className="text-gray-400" />
-              <option value="">Select a case study…</option>
-              {caseStudies.map(cs => (
-                <option key={cs.id} value={cs.id}>{cs.name}</option>
-              ))}
-            </select>
-            <button
-              onClick={handleCreateNewScenario}
-              disabled={!selectedCaseStudy}
-              className="flex items-center gap-2 px-4 py-2 bg-wpGreen text-sm rounded-lg hover:bg-wpGreen-600 text-wpBlue font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <Plus size={16} />
-              New Scenario
-            </button>
-          </div>
-        );
+
+        if (activeTab === 'qmra-config') {
+          /* QMRA configuration tab */
+          return (
+            <div className="flex flex-col h-full p-6">
+              <div className="flex-1 overflow-auto">
+                <QmraCaseStudyPanel
+                  caseStudyId={selectedCaseStudy?.id}
+                  scenarios={analyticsScenarios.filter(s => s.has_hydrology)}
+                />
+              </div>
+            </div>
+          );
+        }
 
         if (activeTab !== 'main') {
           /* Detail view: full-height, no card wrapper, no scroll wrapper */
@@ -898,7 +1015,7 @@ function Dashboard() {
           const urlSubcategory = urlParts[4] ?? null;
           const caseStudySlug  = selectedCaseStudy ? toCsSlug(selectedCaseStudy) : (urlParts[1] ?? '');
           return (
-            <div className="flex flex-col h-full overflow-hidden p-6 pt-0">
+            <div className="flex flex-col h-full overflow-hidden p-6">
               <div className="flex-1 overflow-hidden">
                 <ScenarioDetailView
                   scenarioId={activeTab}
@@ -923,8 +1040,7 @@ function Dashboard() {
 
         /* Main tab: scrollable card grid */
         return (
-          <div className="flex flex-col h-full p-6 pt-0">
-            {scenariosHeader}
+          <div className="flex flex-col h-full p-6">
             <div className="flex-1 overflow-auto">
               <DashboardCard>
             {selectedCaseStudy && (
@@ -937,7 +1053,7 @@ function Dashboard() {
                 {!selectedCaseStudy ? (
                   <div className="text-center py-12 text-gray-500">
                     <FolderOpen className="mx-auto mb-4 text-gray-300" size={48} />
-                    <p>Select a case study above to view its scenarios</p>
+                    <p>Select a case study from the top bar to view its scenarios</p>
                   </div>
                 ) : loading ? (
                   <div className="flex items-center justify-center py-12">
@@ -971,12 +1087,21 @@ function Dashboard() {
         );
       }
       
-      case 'analytics':
+      case 'summary': {
+        return (
+          <ScenarioSummaryView
+            caseStudyId={selectedCaseStudy?.id || null}
+          />
+        );
+      }
+
+      case 'analytics': {
+        const baselineId = analyticsScenarios.find(s => s.is_baseline && s.has_outputs)?.id || null;
         return (
           <ResultsView
             caseStudies={caseStudies}
             initialCaseStudyId={resultsState.caseStudyId || analyticsCaseStudy?.id || selectedCaseStudy?.id}
-            initialScenarioId={resultsState.scenarioId}
+            initialScenarioId={resultsState.scenarioId || baselineId}
             onCaseStudyChange={(cs) => {
               setAnalyticsCaseStudy(cs);
               setSelectedCaseStudy(cs);
@@ -984,108 +1109,8 @@ function Dashboard() {
             }}
           />
         );
-
-      case 'settings': {
-        return (
-          <div className="space-y-8">
-            <DashboardCard title="Map Display">
-              <div className="space-y-4">
-                <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
-                  <div>
-                    <p className="text-sm font-medium text-gray-800">Continuous colour gradient</p>
-                    <p className="text-xs text-gray-500 mt-0.5">
-                      When on (default), each grid cell is coloured from the full continuous YlOrRd gradient, providing a precise colour for every emission value. When off, values are snapped to the nearest discrete log₁₀ magnitude class — useful for reading exact categories.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setHeatmapView(!heatmapView)}
-                    className={`ml-6 relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-wpBlue focus:ring-offset-2 ${
-                      heatmapView ? 'bg-wpBlue' : 'bg-gray-300'
-                    }`}
-                    role="switch"
-                    aria-checked={heatmapView}
-                  >
-                    <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-                        heatmapView ? 'translate-x-6' : 'translate-x-1'
-                      }`}
-                    />
-                  </button>
-                </div>
-                <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-gray-800">Choropleth threshold</p>
-                    <p className="text-xs text-gray-500 mt-0.5">
-                      # of valid raster pixels that determine whether maps should be projected in choropleth mode (filled polygons) or raster mode. Increase to prefer choropleth for coarser grids. Set to 0 to always use raster mode.
-                    </p>
-                  </div>
-                  <input
-                    type="number"
-                    min={0}
-                    max={1000}
-                    step={1}
-                    value={choroplethPixelThreshold}
-                    onChange={e => setChoroplethPixelThreshold(Math.max(0, parseInt(e.target.value, 10) || 0))}
-                    className="ml-6 w-20 px-2 py-1 text-sm border border-gray-300 rounded-lg text-center focus:outline-none focus:ring-2 focus:ring-wpBlue"
-                  />
-                </div>
-                <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
-                  <div>
-                    <p className="text-sm font-medium text-gray-800">Consistent colour scale across case studies</p>
-                    <p className="text-xs text-gray-500 mt-0.5">
-                      When on (default), the map colour scale maximum is fixed at log₁₀ = 17 so that maps from different case studies are directly comparable. When off, the maximum is derived from the loaded raster file, using the full colour range for each map individually.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setFixedColorScale(!fixedColorScale)}
-                    className={`ml-6 relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-wpBlue focus:ring-offset-2 ${
-                      fixedColorScale ? 'bg-wpBlue' : 'bg-gray-300'
-                    }`}
-                    role="switch"
-                    aria-checked={fixedColorScale}
-                  >
-                    <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-                        fixedColorScale ? 'translate-x-6' : 'translate-x-1'
-                      }`}
-                    />
-                  </button>
-                </div>
-              </div>
-            </DashboardCard>
-            <DashboardCard title="Developer">
-              <div className="space-y-4">
-                <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
-                  <div>
-                    <p className="text-sm font-medium text-gray-800">Development mode — preserve RDS files</p>
-                    <p className="text-xs text-gray-500 mt-0.5">
-                      When on, the <code className="font-mono text-xs">.RDS</code> files generated during a model run are kept on disk instead of being automatically deleted. Useful for inspecting or reusing converted data between runs.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setDebugMode(!debugMode)}
-                    className={`ml-6 relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-wpBlue focus:ring-offset-2 ${
-                      debugMode ? 'bg-wpBlue' : 'bg-gray-300'
-                    }`}
-                    role="switch"
-                    aria-checked={debugMode}
-                  >
-                    <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-                        debugMode ? 'translate-x-6' : 'translate-x-1'
-                      }`}
-                    />
-                  </button>
-                </div>
-              </div>
-            </DashboardCard>
-          </div>
-        );
       }
-      
+
       default:
         return null;
     }
@@ -1093,14 +1118,15 @@ function Dashboard() {
 
   return (
     <div className="min-h-screen bg-wpGray-100 flex flex-col">
-      {/* Top Navbar */}
-      <div id="app-navbar" className="bg-wpWhite-100 border-b border-gray-200 h-24 shadow-sm flex items-center px-6 py-3 gap-6 flex-shrink-0">
-        {/* Logo */}
-        <div className="flex items-center gap-2 w-56 flex-shrink-0">
-          <div className="w-16 h-16 rounded-lg flex items-center justify-center">
+      {/* Combined header block */}
+      <div className="flex flex-row bg-wpWhite-100 shadow-sm flex-shrink-0 border-b border-gray-200">
+
+        {/* Logo column — spans both rows */}
+        <div id="app-logo" className="flex flex-row items-center px-5 py-2 border-r border-gray-200 flex-shrink-0 gap-3 w-72">
+          <div className="flex-shrink-0">
                   <svg
-      width="316"
-      height="200"
+      width="84"
+      height="50"
       viewBox="0 0 316 200"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
@@ -1122,88 +1148,126 @@ function Dashboard() {
     </svg>
             </div>
             <div>
-              <h2 className="font-bold text-2xl text-wpBlue font-outfit"><span className="text-wpGreen">Water</span>Path</h2>
-              <p className="text-xs font-medium uppercase text-gray-500 tracking-wide text-wpBlue">Scenario Builder</p>
+              <h2 className="font-bold text-2xl text-wpBlue font-outfit leading-none"><span className="text-wpGreen">Water</span>Path</h2>
+              <p className="text-xs font-medium uppercase text-gray-400 tracking-wide">Scenario Builder</p>
             </div>
           </div>
 
-        {/* Page title */}
-        <div className="flex-1 pl-2">
-          <h1 className="text-xl font-bold text-wpBlue">
-            {navigationItems.find(item => item.id === activeSection)?.label || 'Dashboard'}
-          </h1>
-          <p className="text-wpBlue-900 text-xs mt-0.5">
-            {navigationItems.find(item => item.id === activeSection)?.description || ''}
-          </p>
-        </div>
+        {/* Right column: utility row + primary tab strip */}
+        <div className="flex flex-col flex-1 min-w-0">
 
-        {/* Refresh button */}
-        <button
-          className="bg-wpBlue hover:bg-wpBlue-800 text-white px-4 py-2 rounded-lg font-medium transition-colors duration-200 disabled:opacity-50 flex items-center gap-2 flex-shrink-0"
-          onClick={refreshAll}
-          disabled={loading}
-        >
-          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-          {loading ? 'Refreshing...' : 'Refresh'}
-        </button>
-      </div>
+          {/* Utility row: secondary nav items — right-aligned */}
+          <div id="app-navbar" className="h-11 flex items-center px-4 gap-1 border-b border-gray-100 justify-end">
+            {['case-studies', 'settings'].map(id => {
+              const item = navigationItems.find(i => i.id === id);
+              if (!item) return null;
+              const IconComponent = item.icon;
+              const isActive = activeSection === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => handleNavigation(item.id)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors duration-200 ${
+                    isActive
+                      ? 'bg-wpBlue/10 text-wpBlue'
+                      : 'text-gray-500 hover:text-wpBlue hover:bg-gray-100'
+                  }`}
+                >
+                  <IconComponent size={13} />
+                  {item.label}
+                </button>
+              );
+            })}
+          </div>
 
-      {/* Body row: sidebar + content */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Left Sidebar */}
-        <div id="app-sidebar" className="w-64 bg-wpWhite-100 border-r border-gray-200 flex flex-col flex-shrink-0">
-          {/* Navigation */}
-          <nav className="flex-1 p-4 overflow-y-auto">
-            <div className="space-y-2">
-              {navigationItems.map((item) => {
+          {/* Primary tab strip: workflow tabs + last-updated + refresh */}
+          <div id="app-nav-tabs" className="flex items-center px-2">
+            {/* Global case study picker */}
+            <div className="flex items-center pl-3 pr-1 mr-1 self-stretch gap-2">
+              <select
+                value={selectedCaseStudy?.id ?? ''}
+                onChange={(e) => {
+                  if (e.target.value === '') {
+                    navigate('/case-studies');
+                    return;
+                  }
+                  const cs = caseStudies.find(c => c.id === e.target.value);
+                  if (!cs) return;
+                  setSelectedCaseStudy(cs);
+                  setAnalyticsCaseStudy(cs);
+                  setResultsState(prev => ({ ...prev, caseStudyId: cs.id }));
+                  if (activeSection === 'scenarios') navigate(`/scenarios/${toCsSlug(cs)}`);
+                  else fetchScenarios(cs.id);
+                }}
+                className={`px-2 py-1 border text-xs bg-wpGray-100 text-wpBlue font-semibold rounded-lg focus:ring-2 focus:ring-wpBlue focus:border-transparent ${
+                  !selectedCaseStudy && ['scenarios', 'analytics'].includes(activeSection)
+                    ? 'border-red-500 ring-1 ring-red-400'
+                    : 'border-wpBrown'
+                }`}
+              >
+                <option value="">{selectedCaseStudy ? 'Manage case studies…' : 'Select case study…'}</option>
+                {caseStudies.map(cs => (
+                  <option key={cs.id} value={cs.id}>{cs.name}</option>
+                ))}
+              </select>
+              <ChevronRight size={14} className="text-gray-300 flex-shrink-0" />
+            </div>
+            {navigationItems
+              .filter(i => ['scenarios', 'analytics'].includes(i.id) || (i.id === 'summary' && !!selectedCaseStudy))
+              .map((item) => {
                 const IconComponent = item.icon;
+                const isActive = activeSection === item.id;
                 return (
                   <button
                     key={item.id}
                     onClick={() => handleNavigation(item.id)}
-                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors duration-200 ${
-                      activeSection === item.id
-                        ? 'bg-wpBlue text-white shadow-md'
-                        : 'text-gray-700 hover:bg-gray-100'
+                    className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors duration-200 whitespace-nowrap ${
+                      isActive
+                        ? 'border-wpBlue text-wpBlue'
+                        : 'border-transparent text-gray-500 hover:text-wpBlue hover:border-gray-300'
                     }`}
                   >
-                    <IconComponent size={20} />
-                    <div className="flex-1">
-                      <div className="font-medium">{item.label}</div>
-                      <div className={`text-xs ${
-                        activeSection === item.id ? 'text-wpBlue-100' : 'text-gray-500'
-                      }`}>
-                        {item.description}
-                      </div>
-                    </div>
+                    <IconComponent size={15} />
+                    {item.label}
                   </button>
                 );
               })}
-            </div>
-          </nav>
 
-          {/* Sidebar Footer */}
-          <div className="p-4 border-t border-gray-200">
-            <div className="flex items-center gap-2 text-xs text-gray-500">
-              <Clock size={14} />
-              <span>Last updated: {metrics.lastUpdate}</span>
+            <div className="flex-1" />
+
+            {/* Last updated */}
+            <div className="flex items-center gap-1.5 text-xs text-gray-400 flex-shrink-0">
+              <Clock size={13} />
+              <span>{metrics.lastUpdate}</span>
             </div>
+
+            {/* Refresh button */}
+            <button
+              className="ml-3 bg-wpBlue hover:bg-wpBlue-800 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-colors duration-200 disabled:opacity-50 flex items-center gap-1.5 flex-shrink-0"
+              onClick={refreshAll}
+              disabled={loading}
+            >
+              <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
+              {loading ? 'Refreshing…' : 'Refresh'}
+            </button>
           </div>
+
         </div>
+      </div>
 
-        {/* Main Content Area */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Scenario Tabs - only show when in scenario section and case study is selected */}
-          {activeSection === 'scenarios' && <ScenarioTabBar
-            onCreateScenario={selectedCaseStudy ? handleCreateNewScenario : null}
-            caseStudySlug={selectedCaseStudy ? toCsSlug(selectedCaseStudy) : ''}
-            onBeforeTabChange={safeNavigate}
-          />}
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Scenario Tabs - only show when in scenario section and case study is selected */}
+        {activeSection === 'scenarios' && <ScenarioTabBar
+          onCreateScenario={selectedCaseStudy ? handleCreateNewScenario : null}
+          caseStudySlug={selectedCaseStudy ? toCsSlug(selectedCaseStudy) : ''}
+          onBeforeTabChange={safeNavigate}
+          showQmraTab={analyticsScenarios.some(s => s.has_hydrology)}
+        />}
 
-          {/* Main Content */}
-          <div className={(activeSection === 'scenarios' || activeSection === 'analytics') ? 'flex-1 overflow-hidden' : 'flex-1 p-6'}>
-            {renderContent()}
-          </div>
+        {/* Main Content */}
+        <div className={(activeSection === 'scenarios' || activeSection === 'analytics' || activeSection === 'case-studies' || activeSection === 'summary') ? 'flex-1 overflow-hidden' : 'flex-1 p-6'}>
+          {renderContent()}
         </div>
       </div>
       
@@ -1303,8 +1367,9 @@ function App() {
   return (
     <Router>
       <Routes>
-        <Route path="/" element={<Navigate to="/service-status" replace />} />
-        <Route path="/service-status" element={<Dashboard />} />
+        <Route path="/" element={<Navigate to="/case-studies" replace />} />
+        <Route path="/service-status" element={<Navigate to="/settings" replace />} />
+        <Route path="/settings" element={<Dashboard />} />
         <Route path="/case-studies" element={<Dashboard />} />
         <Route path="/case-studies/:csId" element={<Dashboard />} />
         <Route path="/scenarios" element={<Dashboard />} />
@@ -1314,6 +1379,7 @@ function App() {
         <Route path="/scenarios/:csSlug/:scenarioSlug/:category/:subcategory" element={<Dashboard />} />
         <Route path="/model" element={<Dashboard />} />
         <Route path="/analytics" element={<Dashboard />} />
+        <Route path="/summary" element={<Dashboard />} />
         <Route path="/settings" element={<Dashboard />} />
       </Routes>
     </Router>
