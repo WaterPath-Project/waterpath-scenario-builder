@@ -4,8 +4,17 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
-import { Play, RefreshCw, CheckCircle, AlertTriangle, ChevronDown, ChevronRight, SlidersHorizontal } from 'lucide-react';
+import { Play, RefreshCw, CheckCircle, AlertTriangle, ChevronDown, ChevronRight, SlidersHorizontal, Map as MapIcon } from 'lucide-react';
+import { MapContainer, TileLayer, useMap } from 'react-leaflet';
+import GeoRasterLayer from 'georaster-layer-for-leaflet';
+import parseGeoraster from 'georaster';
+import proj4 from 'proj4';
+import 'leaflet/dist/leaflet.css';
+import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle } from './Dialog';
 import RiskIcon from '../../assets/icons/risk.svg';
+
+// Required by georaster-layer-for-leaflet to reproject TIFs not in WGS84
+if (typeof window !== 'undefined') window.proj4 = proj4;
 
 // Constants
 const ROUTE_ORDER = ['drinking', 'swimming', 'flooding', 'open_drain', 'playing', 'washing_clothes'];
@@ -254,6 +263,169 @@ function PathwayCard({ route, pc, onChange, treatmentAvailable, advanced = true 
   );
 }
 
+// ── Treatment raster preview (drinking-water treatment wired into QMRA) ──────
+
+// Default color map matching the backend TREATMENT_CODE_COLORS.
+// The map is also fetched from /qmra/treatment-codes so it stays in sync.
+const DEFAULT_CODE_COLORS = {
+  0: '#d1d5db', 1: '#d1d5db', 2: '#d1d5db', 3: '#d1d5db', 4: '#d1d5db',
+  5: '#bfdbfe', 6: '#60a5fa', 7: '#2563eb', 8: '#1e3a8a',
+};
+
+function TreatmentRasterLayer({ tifUrl, codeColors }) {
+  const map = useMap();
+  const layerRef = useRef(null);
+  useEffect(() => {
+    if (!tifUrl || !map) return;
+    let cancelled = false;
+    const colors = codeColors || DEFAULT_CODE_COLORS;
+    (async () => {
+      try {
+        const ab = await fetch(tifUrl).then(r => r.arrayBuffer());
+        const gr = await parseGeoraster(ab);
+        if (cancelled) return;
+        const nd = gr.noDataValue;
+        const layer = new GeoRasterLayer({
+          georaster: gr,
+          opacity: 0.9,
+          resolution: 256,
+          caching: false,
+          pixelValuesToColorFn: ([v]) => {
+            if (v == null || v === nd || isNaN(v)) return null;
+            const code = Math.round(v);
+            return colors[code] ?? '#94a3b8';
+          },
+        });
+        if (layerRef.current) { try { map.removeLayer(layerRef.current); } catch (_) {} }
+        layer.addTo(map);
+        layerRef.current = layer;
+        try {
+          const bounds = layer.getBounds();
+          if (bounds?.isValid?.()) map.fitBounds(bounds, { padding: [16, 16] });
+        } catch (_) {}
+      } catch (_) {}
+    })();
+    return () => {
+      cancelled = true;
+      if (layerRef.current) { try { map.removeLayer(layerRef.current); } catch (_) {} layerRef.current = null; }
+    };
+  }, [tifUrl, map, codeColors]); // eslint-disable-line react-hooks/exhaustive-deps
+  return null;
+}
+
+function TreatmentLegend({ legend }) {
+  if (!legend?.length) return null;
+  // Only show codes that are actually present in the raster, plus any absent ones dimmed
+  const present = legend.filter(e => e.present);
+  const absent  = legend.filter(e => !e.present && e.code >= 5); // show absent treatment codes too
+  const entries = present.length > 0 ? [...present, ...absent] : legend.filter(e => e.code >= 5);
+  return (
+    <div className="mt-3">
+      <p className="text-xs font-semibold text-gray-600 mb-2">Treatment levels (GloWPaQMRA codes)</p>
+      <div className="flex flex-col gap-1">
+        {entries.map(e => (
+          <div key={e.code} className={`flex items-start gap-2.5 ${!e.present && 'opacity-35'}`}>
+            <span
+              className="flex-shrink-0 w-5 h-5 rounded border border-gray-300 mt-0.5"
+              style={{ background: e.color }}
+            />
+            <div className="min-w-0">
+              <span className="text-xs font-medium text-gray-800">
+                {e.code} — {e.label}
+              </span>
+              {e.steps?.length > 0 && (
+                <span className="text-xs text-gray-500 ml-1.5">
+                  ({e.steps.join(' → ')})
+                </span>
+              )}
+              {!e.present && <span className="text-xs text-gray-400 ml-1.5 italic">not in this dataset</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="text-xs text-gray-400 mt-2">
+        Cells with no treatment (codes 0–4) are shown in gray and receive no log-reduction in the QMRA model.
+      </p>
+    </div>
+  );
+}
+
+function TreatmentMap({ caseStudyId }) {
+  const [legend, setLegend]   = useState(null);
+  const [failed, setFailed]   = useState(false);
+  const tifUrl = caseStudyId ? `/api/case-studies/${caseStudyId}/qmra/treatment-tif` : null;
+
+  useEffect(() => {
+    if (!caseStudyId) return;
+    let alive = true;
+    axios.get(`/api/case-studies/${caseStudyId}/qmra/treatment-codes`)
+      .then(({ data }) => { if (alive) setLegend(data.legend || []); })
+      .catch(() => { if (alive) setFailed(true); });
+    return () => { alive = false; };
+  }, [caseStudyId]);
+
+  // Build code→color map from legend for the raster layer
+  const codeColors = legend
+    ? Object.fromEntries(legend.map(e => [e.code, e.color]))
+    : DEFAULT_CODE_COLORS;
+
+  if (failed) {
+    return <p className="text-sm text-gray-500">No treatment raster found for this case study.</p>;
+  }
+  return (
+    <div className="space-y-1">
+      <MapContainer center={[0, 0]} zoom={2} style={{ height: 400, width: '100%', borderRadius: 8 }}>
+        <TileLayer url="https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png" attribution="&copy; CARTO &copy; OSM" />
+        <TreatmentRasterLayer tifUrl={tifUrl} codeColors={codeColors} />
+        <TileLayer url="https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png" attribution="" zIndex={650} pane="overlayPane" />
+      </MapContainer>
+      <p className="text-xs text-gray-400">
+        Treatment raster wired into the drinking-water pathway. Log-reduction values are sampled per treatment step at run time.
+      </p>
+      <TreatmentLegend legend={legend} />
+    </div>
+  );
+}
+
+// ── Aggregate re-run status line (mirrors standard scenario execution) ───────
+function RerunStatus({ status, progress }) {
+  if (status === 'running') {
+    return (
+      <div className="flex items-center gap-1.5 text-blue-700 text-xs">
+        <RefreshCw size={13} className="animate-spin" />
+        {progress
+          ? `Running QMRA — ${progress.done}/${progress.total} scenario${progress.total !== 1 ? 's' : ''} done`
+          : 'Running QMRA…'}
+      </div>
+    );
+  }
+  if (status === 'success') {
+    const n = progress?.success ?? progress?.total ?? 0;
+    return (
+      <div className="flex items-center gap-1.5 text-green-600 text-xs">
+        <CheckCircle size={13} /> Done — {n} scenario{n !== 1 ? 's' : ''} completed.
+      </div>
+    );
+  }
+  if (status === 'partial') {
+    const err = progress?.error ?? 0;
+    const ok  = progress?.success ?? 0;
+    return (
+      <div className="flex items-center gap-1.5 text-orange-600 text-xs">
+        <AlertTriangle size={13} /> Completed with {err} error{err !== 1 ? 's' : ''} ({ok} succeeded).
+      </div>
+    );
+  }
+  if (status === 'error') {
+    return (
+      <div className="flex items-center gap-1.5 text-red-600 text-xs">
+        <AlertTriangle size={13} /> Failed to run QMRA.
+      </div>
+    );
+  }
+  return null;
+}
+
 // Main component
 export default function QmraCaseStudyPanel({ caseStudyId, scenarios = [] }) {
   const [config, setConfig]                     = useState(DEFAULT_CONFIG);
@@ -262,9 +434,14 @@ export default function QmraCaseStudyPanel({ caseStudyId, scenarios = [] }) {
   const [saveOk, setSaveOk]                     = useState(false);
   const [rerunStatus, setRerunStatus]           = useState('idle');
   const [rerunInfo, setRerunInfo]               = useState(null);
+  const [rerunProgress, setRerunProgress]       = useState(null); // { total, done, success, error }
   const [advanced, setAdvanced]                 = useState(false);
   const isFirstLoad   = useRef(true);
   const autoSaveTimer = useRef(null);
+  const pollRef       = useRef(null);
+
+  // Stop polling on unmount.
+  useEffect(() => () => clearInterval(pollRef.current), []);
 
   useEffect(() => {
     if (!caseStudyId) return;
@@ -310,11 +487,51 @@ export default function QmraCaseStudyPanel({ caseStudyId, scenarios = [] }) {
 
   const handleRerunAll = useCallback(async () => {
     if (!caseStudyId) return;
-    setRerunStatus('running'); setRerunInfo(null);
+    clearInterval(pollRef.current);
+    setRerunStatus('running'); setRerunInfo(null); setRerunProgress(null);
+
+    let runs = [];
     try {
       const { data } = await axios.post(`/api/case-studies/${caseStudyId}/qmra/rerun-all`);
-      setRerunStatus('success'); setRerunInfo(data);
-    } catch (_) { setRerunStatus('error'); }
+      setRerunInfo(data);
+      runs = data.runs || [];
+    } catch (_) {
+      setRerunStatus('error');
+      return;
+    }
+
+    if (!runs.length) {
+      setRerunStatus('success');
+      setRerunProgress({ total: 0, done: 0, success: 0, error: 0 });
+      return;
+    }
+
+    setRerunProgress({ total: runs.length, done: 0, success: 0, error: 0 });
+    const statuses = {};
+    const isTerminal = s => ['success', 'error', 'timeout'].includes(s);
+
+    pollRef.current = setInterval(async () => {
+      await Promise.all(runs.map(async ({ run_id }) => {
+        if (isTerminal(statuses[run_id])) return;
+        try {
+          const { data } = await axios.get(`/api/qmra/run-status/${run_id}`);
+          statuses[run_id] = data.status;
+        } catch (_) {
+          statuses[run_id] = 'error';
+        }
+      }));
+
+      const vals    = runs.map(r => statuses[r.run_id]);
+      const done    = vals.filter(isTerminal).length;
+      const success = vals.filter(s => s === 'success').length;
+      const error   = vals.filter(s => s === 'error' || s === 'timeout').length;
+      setRerunProgress({ total: runs.length, done, success, error });
+
+      if (done >= runs.length) {
+        clearInterval(pollRef.current);
+        setRerunStatus(error > 0 ? (success > 0 ? 'partial' : 'error') : 'success');
+      }
+    }, 2000);
   }, [caseStudyId]);
 
   const hasHydrology     = scenarios.length > 0;
@@ -338,6 +555,22 @@ export default function QmraCaseStudyPanel({ caseStudyId, scenarios = [] }) {
         >
           Reset to defaults
         </button>
+        <Dialog>
+          <DialogTrigger asChild>
+            <button
+              title="View the treatment raster wired into the QMRA drinking-water pathway"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium text-gray-600 border-gray-300 bg-white hover:bg-gray-50 transition-colors"
+            >
+              <MapIcon size={13} /> View treatment data
+            </button>
+          </DialogTrigger>
+          <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Treatment raster</DialogTitle>
+            </DialogHeader>
+            <TreatmentMap caseStudyId={caseStudyId} />
+          </DialogContent>
+        </Dialog>
         <button
           onClick={() => setAdvanced(v => !v)}
           title={advanced ? 'Switch to standard view' : 'Switch to advanced view'}
@@ -372,15 +605,10 @@ export default function QmraCaseStudyPanel({ caseStudyId, scenarios = [] }) {
           <div className="border-t border-gray-100 pt-3 space-y-2">
             <button onClick={handleRerunAll} disabled={rerunStatus === 'running' || !hasHydrology}
               className="flex items-center gap-2 px-4 py-2 rounded-lg bg-wpBlue text-white text-sm font-semibold hover:bg-wpBlue-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
-              {rerunStatus === 'running' ? <><RefreshCw size={14} className="animate-spin" /> Starting&hellip;</> : <><Play size={14} /> Re-run risk (all scenarios)</>}
+              {rerunStatus === 'running' ? <><RefreshCw size={14} className="animate-spin" /> Running&hellip;</> : <><Play size={14} /> Re-run risk (all scenarios)</>}
             </button>
             {!hasHydrology && <p className="text-xs text-gray-400">No scenarios with concentration outputs found. Run the GloWPa model first.</p>}
-            {rerunStatus === 'success' && rerunInfo && (
-              <div className="flex items-center gap-1.5 text-green-600 text-xs"><CheckCircle size={13} /> Started {rerunInfo.started} run{rerunInfo.started !== 1 ? 's' : ''}.</div>
-            )}
-            {rerunStatus === 'error' && (
-              <div className="flex items-center gap-1.5 text-red-600 text-xs"><AlertTriangle size={13} /> Failed to start re-run.</div>
-            )}
+            <RerunStatus status={rerunStatus} progress={rerunProgress} />
           </div>
         </div>
       )}
@@ -442,19 +670,10 @@ export default function QmraCaseStudyPanel({ caseStudyId, scenarios = [] }) {
             <p className="text-xs text-gray-500">Re-run QMRA for every scenario in this case study that has concentration outputs, using the configuration above.</p>
             <button onClick={handleRerunAll} disabled={rerunStatus === 'running' || !hasHydrology}
               className="flex items-center gap-2 px-4 py-2 rounded-lg bg-wpBlue text-white text-sm font-semibold hover:bg-wpBlue-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
-              {rerunStatus === 'running' ? <><RefreshCw size={14} className="animate-spin" /> Starting&hellip;</> : <><Play size={14} /> Re-run risk (all scenarios)</>}
+              {rerunStatus === 'running' ? <><RefreshCw size={14} className="animate-spin" /> Running&hellip;</> : <><Play size={14} /> Re-run risk (all scenarios)</>}
             </button>
             {!hasHydrology && <p className="text-xs text-gray-400">No scenarios with concentration outputs found. Run the GloWPa model first.</p>}
-            {rerunStatus === 'success' && rerunInfo && (
-              <div className="flex items-center gap-1.5 text-green-600 text-xs">
-                <CheckCircle size={13} /> Started {rerunInfo.started} run{rerunInfo.started !== 1 ? 's' : ''}.
-              </div>
-            )}
-            {rerunStatus === 'error' && (
-              <div className="flex items-center gap-1.5 text-red-600 text-xs">
-                <AlertTriangle size={13} /> Failed to start re-run.
-              </div>
-            )}
+            <RerunStatus status={rerunStatus} progress={rerunProgress} />
           </div>
 
         </div>{/* end left column */}

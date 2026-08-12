@@ -3,6 +3,8 @@ import { RotateCcw, Save, ChevronDown, ChevronRight, ChevronUp, AlertTriangle, T
 import axios from 'axios';
 import DataGridView from './DataGridView';
 import AreaSelector from './AreaSelector';
+import AreaEditModeToggle from './AreaEditModeToggle';
+import { scaleGroupProportional } from './areaEditUtils';
 
 // ─── Color palette ────────────────────────────────────────────────────────────
 
@@ -418,6 +420,7 @@ const IntegerField = ({ label, value, onChange }) => (
 // empty Set = All; non-empty = specific indices. Persisted across scenario switches.
 let _persistedIndices = null;     // Set<number> | null  (null = not yet set)
 let _persistedSfxTab  = '_urb';   // Urban/Rural tab selection
+let _persistedMode    = 'all';    // 'all' | 'individual'
 
 // ─── SanitationLadderInner ────────────────────────────────────────────────────
 
@@ -436,6 +439,18 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, isFractionsM
   const [activeSfxTab, setActiveSfxTab] = useState(() => _persistedSfxTab);
 
   useEffect(() => { _persistedSfxTab  = activeSfxTab; }, [activeSfxTab]);
+
+  // Edit mode: 'all' = adjust every region proportionally (no pills);
+  // 'individual' = pick one or more regions via AreaSelector.
+  const [editMode, setEditMode] = useState(() => _persistedMode);
+  useEffect(() => { _persistedMode = editMode; }, [editMode]);
+  const handleModeChange = useCallback((m) => {
+    setEditMode(m);
+    // Entering individual mode with nothing picked → default to the first area.
+    if (m === 'individual' && selectedIndices.size === 0) {
+      setSelectedIndices(new Set([0]));
+    }
+  }, [selectedIndices]);
 
   const [localValues, setLocalValues] = useState(() => initialRows.map(parseRow));
 
@@ -552,12 +567,12 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, isFractionsM
     }
   }, [canSave, localValues, initialRows, scenario.id, onDirtyChange, onSaved]);
 
+  const isAllSelected = editMode === 'all';
   const selectedArr  = useMemo(() =>
-    selectedIndices.size === 0
-      ? initialRows.map((_, i) => i)   // empty Set = All
+    isAllSelected || selectedIndices.size === 0
+      ? initialRows.map((_, i) => i)   // all-mode (or nothing picked) = every area
       : Array.from(selectedIndices).sort((a, b) => a - b),
-  [selectedIndices, initialRows]);
-  const isAllSelected = selectedIndices.size === 0;
+  [isAllSelected, selectedIndices, initialRows]);
 
   // ── Raw data
   // Derive raw columns from what's actually present in the first row (preserves CSV order from
@@ -648,15 +663,19 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, isFractionsM
     <div className="space-y-4">
 
       {/* ── Toolbar ─────────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <AreaSelector
-          labels={initialRows.map((r, i) => r.subarea || r.iso || `Area ${i + 1}`)}
-          selectedIndices={selectedIndices}
-          onChange={setSelectedIndices}
-          badges={areaBadges}
-        />
+      {editMode === 'individual' && initialRows.length > 1 && (
+        <div className="flex items-center gap-3 flex-wrap">
+          <AreaSelector
+            labels={initialRows.map((r, i) => r.subarea || r.iso || `Area ${i + 1}`)}
+            selectedIndices={selectedIndices}
+            onChange={setSelectedIndices}
+            badges={areaBadges}
+            allowAll={false}
+          />
+        </div>
+      )}
 
-        <div className="flex items-center gap-2 flex-shrink-0">
+      <div className="flex items-center gap-2 flex-shrink-0">
           {isDirty && (
             <>
               <span className="w-2 h-2 rounded-full bg-orange-400" title="Unsaved changes" />
@@ -677,7 +696,6 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, isFractionsM
               </button>
             </>
           )}
-        </div>
       </div>
 
       {/* ── Validation banner ─────────────────────────────────────────────── */}
@@ -711,8 +729,19 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, isFractionsM
                   return keySfx === '_urb' ? uf > 0 : uf < 1;
                 })
               : editIndices;
-            if (targets.length > 1) {
-              // Proportional scaling: preserve relative differences, move average to new value
+            const baseName = keySfx ? key.slice(0, key.length - keySfx.length) : key;
+            if (TECH_FIELDS.includes(baseName)) {
+              // Technology mix must sum to 100%: scale this field proportionally and
+              // redistribute the remaining mass across the other tech fields so every
+              // affected area still sums to its original total (never blocks saving).
+              const groupKeys = TECH_FIELDS.map((f) => `${f}${keySfx}`);
+              setLocalValues((prev) => {
+                const next = scaleGroupProportional(prev, targets, groupKeys, key, value);
+                markDirty(next);
+                return next;
+              });
+            } else if (targets.length > 1) {
+              // Standalone field (treatment / management): proportional scaling only.
               updateFieldProportional(targets, key, value);
             } else {
               updateField(targets, key, value);
@@ -730,6 +759,9 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, isFractionsM
                   </h4>
                 </div>
                 <div className="flex items-center gap-3 flex-shrink-0">
+                  {initialRows.length > 1 && (
+                    <AreaEditModeToggle mode={editMode} onChange={handleModeChange} />
+                  )}
                   <button
                     onClick={() => setShowJMPLadder((v) => !v)}
                     title="Toggle sanitation ladder view"

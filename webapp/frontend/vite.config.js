@@ -4,6 +4,10 @@ import react from '@vitejs/plugin-react'
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
+  // Explicit SPA mode: Vite's dev middleware serves index.html as a fallback
+  // for any GET that doesn't match a static file. This is the default but we
+  // pin it so future config changes don't silently regress deep-link support.
+  appType: 'spa',
   server: {
     host: '0.0.0.0',
     port: 3000,

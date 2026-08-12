@@ -6,8 +6,10 @@ import proj4 from 'proj4';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import axios from 'axios';
-import { RefreshCw, BarChart2, AlertTriangle, ArrowRight, X, Droplets, Trees, ArrowUpRight, ArrowDownRight, Minus, Maximize2, Minimize2, Download, Printer, Play, Pause } from 'lucide-react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { RefreshCw, BarChart2, AlertTriangle, ArrowRight, X, Droplets, Trees, ArrowUpRight, ArrowDownRight, Minus, Plus, Maximize2, Minimize2, Download, Printer } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './Dialog';
+import { paths } from '../routes';
 
 import RiskPanel from './RiskPanel';
 import EmissionsTabIcon      from '../../assets/icons/emissions.svg';
@@ -634,7 +636,7 @@ function GeoTiffLayer({ url, hlCtx }) {
 
     (async () => {
       try {
-        const ab = await fetch(url).then(r => r.arrayBuffer());
+        const ab = await fetch(url, { cache: 'no-store' }).then(r => r.arrayBuffer());
         const gr = await parseGeoraster(ab);
         if (cancelled) return;
 
@@ -769,6 +771,12 @@ function MapExportControls({ title }) {
 
   return (
     <div style={{ position: 'absolute', top: 10, right: 10, zIndex: 1000, display: 'flex', flexDirection: 'column', gap: 5 }}>
+      <button className={btnCls} onClick={() => map.zoomIn()} title="Zoom in">
+        <Plus size={13}/>
+      </button>
+      <button className={btnCls} onClick={() => map.zoomOut()} title="Zoom out">
+        <Minus size={13}/>
+      </button>
       <button className={btnCls} onClick={handleFullscreen} title={isFs ? 'Exit fullscreen' : 'Fullscreen'}>
         {isFs ? <Minimize2 size={13}/> : <Maximize2 size={13}/>}
       </button>
@@ -1622,7 +1630,7 @@ function HydrologyDiffGeoTiffLayer({ url, hlCtx, onError, onStats, scale: scaleP
 
     (async () => {
       try {
-        const res = await fetch(url);
+        const res = await fetch(url, { cache: 'no-store' });
         if (!res.ok) { if (!cancelled) onError?.(); return; }
         const ab = await res.arrayBuffer();
         const gr = await parseGeoraster(ab);
@@ -2130,10 +2138,61 @@ function MapWithSidePanel({
   );
 }
 
+// ─── Concentration area dialog ────────────────────────────────────────────────────────────────
+// Shown when a polygon on the Concentrations map is clicked. Displays the annual-average
+// concentration for that area alongside the calendar month with the highest concentration.
+
+function ConcentrationAreaDialog({ area, avgAreaStats, onClose }) {
+  if (!area) return null;
+  const M3_TO_L = 1000;
+  const stats = avgAreaStats?.[area.iso];
+
+  const peakMonth = stats?.peak_month ?? null;
+  const peakVal   = peakMonth != null ? stats?.by_month?.[String(peakMonth)] : null;
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 bg-gray-50 border-b border-gray-200">
+          <div>
+            <p className="font-semibold text-gray-900">{area.name}</p>
+            <p className="text-xs text-gray-400">viral particles / L</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded hover:bg-gray-200"><X size={16} /></button>
+        </div>
+        <div className="px-5 py-4 space-y-3">
+          {stats ? (
+            <>
+              <div>
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Monthly average</p>
+                <p className="text-2xl font-bold font-outfit tabular-nums text-wpBlue">{formatScientific((stats.mean ?? 0) / M3_TO_L)}</p>
+              </div>
+              <div className="pt-2 border-t border-gray-100">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Highest month</p>
+                {peakMonth != null ? (
+                  <div className="flex items-baseline gap-2">
+                    <p className="text-2xl font-bold font-outfit tabular-nums text-wpTeal">{MONTH_LABELS[peakMonth - 1]}</p>
+                    {peakVal != null && (
+                      <span className="text-sm font-mono text-gray-500">{formatScientific(peakVal / M3_TO_L)}</span>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-400 italic">No monthly breakdown available</p>
+                )}
+              </div>
+            </>
+          ) : (
+            <p className="text-xs text-gray-400 italic">No data available for this area</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondaryScenarioId, areaNames, pathogen }) {
   // 'avg' = averaged view (default); 1–12 = specific month
   const [month,        setMonth]        = useState('avg');
-  const [animating,    setAnimating]    = useState(false);
   const [showDiff,     setShowDiff]     = useState(true);  // show % deviation from avg when month selected
   const [activeOverlay, setActiveOverlay] = useState(null); // null | 'flow' | 'temp' | 'ssrd' | 'runoff'
   const [minAccPct,    setMinAccPct]    = useState(5);     // river network density filter
@@ -2148,8 +2207,10 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
   const [diffError, setDiffError] = useState(false); // true when comparison diff fetch failed
   const [diffStats, setDiffStats] = useState(null);  // {min, max, absMax, scale} from loaded diff raster
   const [areaStats, setAreaStats] = useState(null);  // {iso: {mean, max, count}}
+  const [areaStatsLoading, setAreaStatsLoading] = useState(false);
   const [areaStatMode, setAreaStatMode] = useState('mean'); // 'mean' | 'max'
-  const animTimerRef = useRef(null);
+  const [avgAreaStats, setAvgAreaStats] = useState(null); // {iso: {mean, max, count, by_month, peak_month}} — always the annual-average breakdown, used by the area-click dialog
+  const [clickedArea, setClickedArea] = useState(null); // {iso, name} — set when a polygon on the Concentrations map is clicked
   const hlCtx = useRef({ band: null, redraw: null });
   const [hlNorm, setHlNorm] = useState(null);
 
@@ -2163,13 +2224,10 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
   const filesForMetric = hydrologyFiles?.concentration || {};
   const availMonths    = Object.keys(filesForMetric).map(Number).sort((a, b) => a - b);
 
-  // Primary scenario absolute raster (always shown as base layer)
+  // Primary scenario annual-average raster (always shown as the base layer)
   const rasterUrl = (() => {
     if (!scenarioId || !hasConc) return null;
-    if (month === 'avg') return `/api/scenarios/${scenarioId}/hydrology-average?metric=concentration&_v=concentration`;
-    const file = filesForMetric[String(month)];
-    if (!file) return null;
-    return `/api/scenarios/${scenarioId}/output-raster/${file}?_v=concentration-${month}`;
+    return `/api/scenarios/${scenarioId}/hydrology-average?metric=concentration&_v=concentration`;
   })();
 
   // Diff URL:
@@ -2252,21 +2310,6 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
   const ssrdColorFn   = useCallback((norm) => ssrdColorFromNorm(norm),   []); // eslint-disable-line react-hooks/exhaustive-deps
   const runoffColorFn = useCallback((norm) => runoffColorFromNorm(norm), []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Animation: cycle through availMonths at 1 s/step
-  useEffect(() => {
-    if (!animating) { clearInterval(animTimerRef.current); return; }
-    // Start from current month, or first if on avg
-    if (month === 'avg') setMonth(availMonths[0] ?? 1);
-    animTimerRef.current = setInterval(() => {
-      setMonth(prev => {
-        const idx = availMonths.indexOf(prev);
-        const next = availMonths[(idx + 1) % availMonths.length];
-        return next ?? prev;
-      });
-    }, 1000);
-    return () => clearInterval(animTimerRef.current);
-  }, [animating]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // ── Raster stats: sum/max/count over valid pixels
   useEffect(() => {
     if (!rasterUrl) { setRasterStats(null); setStatsLoading(false); return; }
@@ -2332,8 +2375,9 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
 
   // ── Area stats for sidebar breakdown
   useEffect(() => {
-    if (!scenarioId) { setAreaStats(null); return; }
+    if (!scenarioId) { setAreaStats(null); setAreaStatsLoading(false); return; }
     let cancelled = false;
+    setAreaStatsLoading(true);
     setAreaStats(null);
     (async () => {
       try {
@@ -2342,9 +2386,28 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
         const data = await res.json();
         if (!cancelled && !data.error) setAreaStats(data);
       } catch (_) {}
+      finally {
+        if (!cancelled) setAreaStatsLoading(false);
+      }
     })();
     return () => { cancelled = true; };
   }, [scenarioId, month]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Annual-average area stats (independent of the selected month): powers the area-click
+  // dialog so it can always show the average concentration and the peak month for that area.
+  useEffect(() => {
+    if (!scenarioId) { setAvgAreaStats(null); return; }
+    let cancelled = false;
+    setAvgAreaStats(null);
+    (async () => {
+      try {
+        const res  = await fetch(`/api/scenarios/${scenarioId}/hydrology-area-stats?metric=concentration&month=avg`);
+        const data = await res.json();
+        if (!cancelled && !data.error) setAvgAreaStats(data);
+      } catch (_) {}
+    })();
+    return () => { cancelled = true; };
+  }, [scenarioId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!hydrologyFiles) return null;
   if (!hasConc) return null;
@@ -2364,6 +2427,22 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
   }, [areaStats, areaStatMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const areaBarMax = rankedAreas[0]?.[areaStatMode] ?? 1;
+
+  // Click handler for area polygons on the Concentrations map: highlight on hover, open the
+  // peak-month/average dialog on click.
+  const onAreaFeature = useCallback((feature, layer) => {
+    const iso  = feature.properties.iso;
+    const name = areaNames?.[String(iso)] || feature.properties.NAME_4 || feature.properties.NAME_3 || feature.properties.NAME_2 || feature.properties.NAME_1 || feature.properties.NAME_0 || feature.properties.subarea || `Area ${iso}`;
+    layer.on('mouseover', () => {
+      layer.bindTooltip(name, { sticky: true });
+      layer.setStyle({ fillColor: '#0B4159', fillOpacity: 0.15, weight: 1.5, color: '#0f172a', opacity: 0.9 });
+      layer.bringToFront();
+    });
+    layer.on('mouseout', () => {
+      layer.setStyle({ fillColor: 'transparent', fillOpacity: 0, color: '#1e293b', weight: 0.6, opacity: 0.5 });
+    });
+    layer.on('click', () => setClickedArea({ iso: String(iso), name }));
+  }, [areaNames]);
 
   // Legend block (used inside MapWithSidePanel legendChildren)
   const legendBlock = (
@@ -2473,44 +2552,12 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
     </div>
   );
 
-  // Title controls (animate, avg, absolute/diff toggle, overlay controls)
-  const titleControls = (
-    <div className="flex items-center gap-2 flex-wrap">
-      <div className="flex items-center gap-1.5">
-        <button
-          onClick={() => setAnimating(a => !a)}
-          title={animating ? 'Pause' : 'Animate through months'}
-          className="flex items-center justify-center w-7 h-7 rounded-full bg-wpBlue/10 text-wpBlue hover:bg-wpBlue/20 transition-colors flex-shrink-0"
-        >
-          {animating ? <Pause size={13} /> : <Play size={13} />}
-        </button>
-        <button
-          onClick={() => { setMonth('avg'); setAnimating(false); setShowDiff(false); }}
-          className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
-            month === 'avg' ? 'bg-wpTeal text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-          }`}
-        >
-          Avg
-        </button>
-      </div>
-      {!isComparison && month !== 'avg' && (
-        <button
-          onClick={() => setShowDiff(d => !d)}
-          title={showDiff ? 'Show absolute monthly values' : 'Show deviation from annual average'}
-          className="px-3 py-1.5 rounded-xl border border-gray-200 text-sm font-medium text-wpBlue hover:bg-gray-100 transition-colors flex-shrink-0"
-        >
-          {showDiff ? 'Absolute' : 'Δ avg'}
-        </button>
-      )}
-    </div>
-  );
-
   // Right panel: top stats + area list + month pills
   const sidePanelContent = (
     <>
       {/* ── Top stats block */}
       <div className="flex-shrink-0 mb-3 pb-2 border-b border-gray-100">
-        <p className="text-lg font-outfit font-semibold text-wpBlue uppercase tracking-wide mb-1">Concentration ({areaStatMode === 'mean' ? 'mean' : 'peak'})</p>
+        <p className="text-lg font-outfit font-semibold text-wpBlue uppercase tracking-wide mb-1">Concentrations ({areaStatMode === 'mean' ? 'mean' : 'peak'})</p>
         {rasterStats ? (
           <div>
             <p className="text-3xl font-bold font-outfit tabular-nums text-wpBlue">{formatScientific(areaStatMode === 'mean' ? globalMean : globalPeak)}</p>
@@ -2539,11 +2586,15 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
       </div>
 
       {/* ── Area breakdown header */}
-      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide flex-shrink-0 mb-1">By area</p>
+      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide flex-shrink-0 mb-1">Concentrations by area</p>
 
       {/* ── Area bar list */}
       <div className="overflow-y-auto flex-1 space-y-0.5 pr-1">
-        {rankedAreas.length > 0 ? rankedAreas.map(({ iso, mean: meanVal, max: maxVal }) => {
+        {areaStatsLoading ? (
+          <div className="text-xs text-gray-400 text-center py-3 flex items-center justify-center gap-1.5">
+            <RefreshCw size={11} className="animate-spin" /> Loading area data…
+          </div>
+        ) : rankedAreas.length > 0 ? rankedAreas.map(({ iso, mean: meanVal, max: maxVal }) => {
           const val     = areaStatMode === 'mean' ? meanVal : maxVal;
           const barPct  = areaBarMax > 0 ? (val / areaBarMax) * 100 : 0;
           const name    = areaNames?.[iso] || `Area ${iso}`;
@@ -2565,14 +2616,13 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
       {availMonths.length > 0 && (
         <div className="flex-shrink-0 border-t border-gray-100 pt-2 mt-1">
           {/* Inline controls above pills */}
-          <div className="flex items-center gap-1.5 mb-1">
+          <div className="flex items-center gap-1.5 mb-1 flex-wrap">
             <button
-              onClick={() => setAnimating(a => !a)}
-              title={animating ? 'Pause' : 'Animate through months'}
-              className="flex items-center justify-center w-6 h-6 rounded-full bg-wpBlue/10 text-wpBlue hover:bg-wpBlue/20 transition-colors flex-shrink-0"
-            >
-              {animating ? <Pause size={11} /> : <Play size={11} />}
-            </button>
+              onClick={() => { setMonth('avg'); setShowDiff(false); }}
+              className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
+                month === 'avg' ? 'bg-wpTeal text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+            >Monthly average</button>
             {!isComparison && month !== 'avg' && (
               <div className="flex rounded-xl overflow-hidden border border-gray-200 text-xs flex-shrink-0">
                 <button
@@ -2580,21 +2630,16 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
                   className={`px-2 py-0.5 font-medium transition-colors ${
                     showDiff ? 'bg-white text-wpBlue' : 'text-wpBlue/60 bg-gray-100 hover:bg-gray-200'
                   }`}
-                >\u0394 avg</button>
+                >Difference from average</button>
                 <button
                   onClick={() => setShowDiff(false)}
                   className={`px-2 py-0.5 font-medium transition-colors ${
                     !showDiff ? 'bg-white text-wpBlue' : 'text-wpBlue/60 bg-gray-100 hover:bg-gray-200'
                   }`}
-                >Absolute</button>
+                >Absolute values</button>
               </div>
             )}
-            <button
-              onClick={() => { setMonth('avg'); setAnimating(false); setShowDiff(false); }}
-              className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
-                month === 'avg' ? 'bg-wpTeal text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}
-            >Avg</button>
+            
           </div>
           <div className="grid grid-cols-6 gap-0.5">
             {availMonths.map(m => {
@@ -2610,7 +2655,7 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
               return (
                 <button
                   key={m}
-                  onClick={() => { setMonth(m); setAnimating(false); setShowDiff(true); }}
+                  onClick={() => { setMonth(m); setShowDiff(true); }}
                   className={`flex flex-col items-center px-0.5 py-1 rounded text-sm transition-colors ${
                     sel ? 'bg-wpBlue text-white' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
                   }`}
@@ -2634,9 +2679,9 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
   );
 
   return (
+    <>
     <MapWithSidePanel
       title={pathogen ? `${pathogen.charAt(0).toUpperCase() + pathogen.slice(1)} Concentrations` : 'Concentrations'}
-      titleControls={titleControls}
       isComparison={isComparison}
       hasGeodata={!!geojson}
       height={520}
@@ -2654,9 +2699,11 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
             key={`hydro-${scenarioId}-${geojson?.features?.length}`}
             data={geojson}
             style={() => ({ fillColor: 'transparent', fillOpacity: 0, color: '#1e293b', weight: 0.6, opacity: 0.5 })}
+            onEachFeature={onAreaFeature}
           />
           <TileLayer url={TILE_LABELS_URL} pane="labelsPane" />
           <FitBounds geojson={geojson} />
+          <MapExportControls title={'Concentrations'} />
           {!isComparison && showFlow && <TileLayer url={TILE_URL} pane="waterPane" opacity={0.9} />}
           {!isComparison && showFlow && <FlowArrowLayer key={`flow-${scenarioId}-${month}-${minAccPct}`} scenarioId={scenarioId} month={month} minAccPct={minAccPct} onLegendData={setFlowLegend} />}
           <LegendMapTooltip hlNorm={hlNorm} effectiveLogMax={LOG_MAX} isDiff={!!diffUrl} diffScale={hydroScale ?? diffStats?.scale ?? 100} />
@@ -2671,6 +2718,8 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
       }
       sidePanelChildren={sidePanelContent}
     />
+    <ConcentrationAreaDialog area={clickedArea} avgAreaStats={avgAreaStats} onClose={() => setClickedArea(null)} />
+    </>
   );
 }
 
@@ -2818,34 +2867,61 @@ async function loadScenarioOutputs(scId) {
 
 // ─── Main component ────────────────────────────────────────────────────────────────────────────────
 
-export default function ResultsView({ caseStudies, initialCaseStudyId, initialScenarioId, onCaseStudyChange }) {
+export default function ResultsView({ caseStudies, initialCaseStudyId, initialScenarioIds, initialEmissionType, initialArea, onCaseStudyChange }) {
   const { choroplethPixelThreshold } = useSettingsStore();
+  const navigate = useNavigate();
+  const location = useLocation();
 
   const [selectedCsId,       setSelectedCsId]       = useState(initialCaseStudyId || '');
   const [availableScenarios, setAvailableScenarios] = useState([]);
   const [scenariosLoading,   setScenariosLoading]   = useState(false);
 
   // Up to 2 selected scenario IDs.  index 0 = primary, index 1 = secondary
-  const [selectedScIds, setSelectedScIds] = useState(initialScenarioId ? [initialScenarioId] : []);
-  const [emissionType,  setEmissionType]  = useState('water');
+  const [selectedScIds, setSelectedScIds] = useState(() => (initialScenarioIds || []).slice(0, 2));
+  const [emissionType,  setEmissionType]  = useState(initialEmissionType === 'land' ? 'land' : 'water');
 
   // Cached data keyed by scenario id.  Value: output object | 'loading' | 'error'
   const [scenarioData, setScenarioData] = useState({});
 
   // Area filter: null = all, Set<string iso> = specific
-  const [selectedAreas, setSelectedAreas] = useState(null);
+  const [selectedAreas, setSelectedAreas] = useState(() => (initialArea ? new Set([initialArea]) : null));
   const [clickedArea,   setClickedArea]   = useState(null);
   const [activeTab,     setActiveTab]     = useState('emissions');
   const [driverData] = useState(null);
 
-  // ── Sync externally supplied IDs
+  // ── Sync externally supplied IDs (e.g. resolved from the URL on deep-link / case-study switch)
   useEffect(() => { if (initialCaseStudyId) setSelectedCsId(initialCaseStudyId); }, [initialCaseStudyId]);
   useEffect(() => {
-    if (initialScenarioId) setSelectedScIds(prev => prev.includes(initialScenarioId) ? prev : [initialScenarioId]);
-  }, [initialScenarioId]);
+    const next = (initialScenarioIds || []).slice(0, 2);
+    if (!next.length) return;
+    setSelectedScIds(prev => (prev.length === next.length && prev.every((id, i) => id === next[i])) ? prev : next);
+  }, [initialScenarioIds]);
+  useEffect(() => { if (initialEmissionType === 'land' || initialEmissionType === 'water') setEmissionType(initialEmissionType); }, [initialEmissionType]);
+  useEffect(() => {
+    if (!initialArea) return;
+    setSelectedAreas(prev => (prev && prev.size === 1 && prev.has(initialArea)) ? prev : new Set([initialArea]));
+  }, [initialArea]);
   useEffect(() => {
     if (!selectedCsId && !initialCaseStudyId && caseStudies.length === 1) setSelectedCsId(caseStudies[0].id);
   }, [caseStudies]); // eslint-disable-line
+
+  // ── Write scenario picks / emission type / area filter back into the URL so
+  // the current comparison view is a shareable, deep-linkable, refresh-safe link.
+  // Guarded on scenariosLoading to avoid a spurious URL clear while the scenario
+  // list (needed to resolve ids -> names) is still in flight after a case-study switch.
+  useEffect(() => {
+    if (!selectedCsId || scenariosLoading) return;
+    if (!location.pathname.startsWith('/analytics/')) return;
+    const cs = caseStudies.find(c => c.id === selectedCsId);
+    if (!cs) return;
+    const scenarioNames = selectedScIds
+      .map(id => availableScenarios.find(s => s.id === id)?.name)
+      .filter(Boolean);
+    const area = (selectedAreas && selectedAreas.size) ? [...selectedAreas][0] : '';
+    const target = paths.analytics(cs, { scenarios: scenarioNames, emissionType, area });
+    const current = `${location.pathname}${location.search}`;
+    if (target !== current) navigate(target, { replace: true });
+  }, [selectedCsId, selectedScIds, emissionType, selectedAreas, availableScenarios, scenariosLoading, caseStudies, location.pathname, location.search]); // eslint-disable-line
 
   // ── Load scenario list
   useEffect(() => {
@@ -2884,8 +2960,9 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
     });
   }, [JSON.stringify(selectedScIds)]); // eslint-disable-line
 
-  // Reset area filter on primary change
-  const prevPrimRef = useRef(null);
+  // Reset area filter on primary change (but not on the initial mount, so a
+  // deep-linked `area` query param survives the first render).
+  const prevPrimRef = useRef(selectedScIds[0] || null);
   useEffect(() => {
     const prim = selectedScIds[0] || null;
     if (prim !== prevPrimRef.current) { setSelectedAreas(null); prevPrimRef.current = prim; }

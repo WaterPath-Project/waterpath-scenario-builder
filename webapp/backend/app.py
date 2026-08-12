@@ -64,8 +64,8 @@ if __name__ == '__main__':
     frontend_thread.start()
 
     print("Starting Flask servers...")
-    print("Frontend server: http://localhost:3000")
-    print("Backend API server: http://localhost:5000")
+    print("Frontend server: http://127.0.0.1:3000")
+    print("Backend API server: http://127.0.0.1:5000")
 
     # Start backend server with SocketIO
     state.socketio.run(state.app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)

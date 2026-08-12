@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import axios from 'axios';
 import { RotateCcw, Save, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
 import AreaSelector from './AreaSelector';
+import AreaEditModeToggle from './AreaEditModeToggle';
+import { scaleProportional, scaleGroupProportional } from './areaEditUtils';
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle } from './Dialog';
 import useScenarioStore from '../store/scenarioStore';
 import { MapContainer, TileLayer, useMap, GeoJSON as LeafletGeoJSON } from 'react-leaflet';
@@ -57,6 +59,19 @@ const LIVESTOCK_POP_LABELS = {
   mass_young: 'Body mass young [kg]',
   mass_adult: 'Body mass adult [kg]',
   manure_per_mass: 'Manure / body mass [kg/kg]',
+};
+
+// Real-world names for the IPCC/Vermeulen-2017 macro-regions used by the
+// 'iso' column in isodata_<animal>.csv (verified against the source
+// vermeulen_2017/ippc_region_animal.csv used by GloWPa's data prep).
+const IPCC_REGION_NAMES = {
+  1: 'Africa',
+  2: 'Asia',
+  3: 'Europe',
+  4: 'Latin America',
+  5: 'NENA (Near East / North Africa)',
+  6: 'North America',
+  7: 'Oceania',
 };
 
 // manure_management.csv: column format = SYSTEM_animal (last _ token = animal)
@@ -132,12 +147,11 @@ function csvFieldnamesForSave(rows, visibleFieldnames) {
 // ---------------------------------------------------------------------------
 // StepperInput
 // ---------------------------------------------------------------------------
-function StepperInput({ value, onChange, step = 1, min, max, percent = false, decimals, inputClassName }) {
+function StepperInput({ value, onChange, step = 1, min, max, percent = false, decimals, suffix, inputClassName }) {
   const [raw, setRaw] = useState(asText(value));
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState('');
   const valid = raw === '' || isValidNumber(raw);
-
   useEffect(() => {
     setRaw(asText(value));
     setEditing(false);
@@ -178,10 +192,10 @@ function StepperInput({ value, onChange, step = 1, min, max, percent = false, de
     onChange(s);
   };
 
-  const displayLabel = toDisplay(raw) + (percent ? '%' : '');
+  const displayLabel = toDisplay(raw) + (percent ? '%' : (suffix || ''));
 
   return (
-    <div className="flex items-center gap-0.5 text-xs">
+    <div className="flex items-center gap-0.5 text-sm">
       <button type="button" onClick={() => nudge(-step)}
         className="px-1 py-1 text-gray-400 hover:text-wpBlue hover:bg-gray-50 rounded select-none" tabIndex={-1}>−</button>
       {editing ? (
@@ -194,11 +208,11 @@ function StepperInput({ value, onChange, step = 1, min, max, percent = false, de
             if (e.key === 'Enter') commit(e.target.value);
             if (e.key === 'Escape') setEditing(false);
           }}
-          className={`${inputClassName ?? 'w-14'} px-1 py-0.5 text-center border border-wpBlue-300 rounded focus:outline-none focus:ring-1 focus:ring-wpBlue-400 ${valid ? 'text-gray-800' : 'text-red-500'}`}
+          className={`${inputClassName ?? 'w-14'} px-1 py-0.5 text-center text-sm border border-wpBlue-300 rounded focus:outline-none focus:ring-1 focus:ring-wpBlue-400 ${valid ? 'text-gray-800' : 'text-red-500'}`}
         />
       ) : (
         <span
-          className={`${inputClassName ?? 'w-14'} px-1 py-0.5 text-center tabular-nums cursor-text hover:bg-gray-100 rounded select-none ${valid ? 'text-gray-800' : 'text-red-500'}`}
+          className={`${inputClassName ?? 'w-14'} px-1 py-0.5 text-center text-sm tabular-nums cursor-text hover:bg-gray-100 rounded select-none ${valid ? 'text-gray-800' : 'text-red-500'}`}
           title="Click to type a value"
           onClick={() => { setEditText(toDisplay(raw)); setEditing(true); }}
         >
@@ -227,16 +241,16 @@ function RawDataView({ rows, fieldnames }) {
       </button>
       {open && (
         <div className="overflow-auto max-h-64">
-          <table className="w-full text-xs font-mono">
+          <table className="w-full text-sm font-mono">
             <thead className="bg-gray-50 sticky top-0">
               <tr>{fieldnames.map((f) => (
-                <th key={f} className="px-2 py-1 text-left text-gray-500 whitespace-nowrap border-b border-gray-200">{f}</th>
+                <th key={f} className="px-2 py-1 text-left text-sm text-gray-500 whitespace-nowrap border-b border-gray-200">{f}</th>
               ))}</tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {rows.map((row, i) => (
                 <tr key={i}>{fieldnames.map((f) => (
-                  <td key={f} className="px-2 py-1 whitespace-nowrap text-gray-600">{asText(row[f])}</td>
+                  <td key={f} className="px-2 py-1 whitespace-nowrap text-sm text-gray-600">{asText(row[f])}</td>
                 ))}</tr>
               ))}
             </tbody>
@@ -617,13 +631,10 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved, onHeadCou
     setError('');
     setHeadsSummary({ status: 'loading', error: '', areas: [], animals: [], byArea: {}, totalsByAnimal: {} });
     try {
-      const [r, availRes, headsRes] = await Promise.all([
+      const [r, headsRes] = await Promise.all([
         axios.get(`/api/scenarios/${scenario.id}/livestock-population`),
-        axios.get(`/api/scenarios/${scenario.id}/livestock-available-animals`).catch(() => null),
         axios.get(`/api/scenarios/${scenario.id}/livestock-heads-by-area`).catch(() => null),
       ]);
-      const available = availRes?.data?.animals ?? null;
-      setAvailableAnimals(available);
 
       if (headsRes?.data && !headsRes.data.error) {
         const totals = headsRes.data.totals_by_animal || {};
@@ -691,7 +702,8 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved, onHeadCou
 
   // Step sizes per field
   const stepFor = (f) => {
-    if (['frac_young', 'prev_young', 'prev_adult'].includes(f)) return 0.001; // 0.1 pp in raw fraction units
+    if (f === 'frac_young') return 0.001; // 0.1 pp in raw fraction units
+    if (['prev_young', 'prev_adult'].includes(f)) return 0.1; // 0.1 pp (stored as percent 0-100)
     if (f === 'manure_per_mass') return 0.1;
     if (['mass_young', 'mass_adult'].includes(f)) return 1;
     return 1; // excr_young, excr_adult, excr_day
@@ -722,11 +734,18 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved, onHeadCou
     return errs;
   }, [rows, fieldnames, areaLabels]);
 
+  // Areas here are IPCC/Vermeulen-2017 macro-regions (from each animal's own
+  // 'iso' column), NOT the case study's human districts/GIDs — those are an
+  // unrelated numbering space. Fall back to a real region name (or a
+  // generic label as a last resort) if the backend didn't provide one.
   const effectiveAreaLabels = useMemo(() => {
     if (areaLabels.length > 0) return areaLabels;
     const first = rows[0];
     if (first?.areaRows?.length) {
-      return first.areaRows.map((ar, i) => ar.subarea || ar.iso || ar.gid || `Area ${i + 1}`);
+      return first.areaRows.map((ar, i) => {
+        const name = IPCC_REGION_NAMES[parseInt(ar.iso, 10)];
+        return name ? `${name}` : `IPCC Region ${ar.iso || i + 1}`;
+      });
     }
     return [];
   }, [areaLabels, rows]);
@@ -860,7 +879,11 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved, onHeadCou
       />
 
       {effectiveAreaLabels.length > 1 && (
-        <div className="px-3 py-2 border-b border-gray-100">
+        <div className="px-3 py-2 border-b border-gray-100 space-y-1.5">
+          <p className="text-xs text-gray-400">
+            Regions below are IPCC/Vermeulen macro-regions used for biological parameters
+            (prevalence, excretion, body mass) &mdash; not the case study&apos;s local districts.
+          </p>
           <AreaSelector
             labels={effectiveAreaLabels}
             selectedIndices={selectedIndices}
@@ -870,9 +893,9 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved, onHeadCou
       )}
 
       <div className="overflow-auto p-3">
-        <table className="text-xs border-collapse">
+        <table className="text-sm border-collapse">
           <thead>
-            <tr className="bg-gray-50 text-gray-500 tracking-wide text-xs">
+            <tr className="bg-gray-50 text-gray-500 tracking-wide text-sm">
               <th className="px-3 py-2 text-left font-medium sticky left-0 bg-gray-50 z-10 whitespace-nowrap">Animal</th>
               {headsSummary.status === 'done' && (
                 <th className="px-2 py-2 text-left font-medium whitespace-nowrap">Head count</th>
@@ -912,7 +935,7 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved, onHeadCou
                     const isNA = (isPoultry && NON_POULTRY_FIELDS.has(f)) || (!isPoultry && POULTRY_ONLY_FIELDS.has(f));
                     if (isNA) {
                       return (
-                        <td key={f} className="px-1 py-1 text-center text-gray-300 text-xs">−</td>
+                        <td key={f} className="px-1 py-1 text-center text-sm text-gray-300">−</td>
                       );
                     }
                     return (
@@ -922,8 +945,9 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved, onHeadCou
                           onChange={(v) => updateFieldForSelectedAreas(rowIdx, f, v)}
                           step={stepFor(f)}
                           min={0}
-                          max={['frac_young', 'prev_young', 'prev_adult'].includes(f) ? 1 : undefined}
-                          percent={['frac_young', 'prev_young', 'prev_adult'].includes(f)}
+                          max={f === 'frac_young' ? 1 : ['prev_young', 'prev_adult'].includes(f) ? 100 : undefined}
+                          percent={f === 'frac_young'}
+                          suffix={['prev_young', 'prev_adult'].includes(f) ? '%' : undefined}
                         />
                       </td>
                     );
@@ -1092,21 +1116,22 @@ function ManureManagementEditor({ scenario, onDirtyChange, onSaved, animalsWithH
     return m;
   }, [rows, avgRow, animals, colMap]);
 
-  // Cell change: single row or delta-distribute across all rows in "All" mode
-  const handleCellChange = useCallback((ri, col, v) => {
-    if (ri !== -1) {
-      setRows((prev) => prev.map((r, i) => i === ri ? { ...r, [col]: v } : r));
-    } else {
-      const avgVal = typeof avgRow[col] === 'number' ? avgRow[col] : parseFloat(String(avgRow[col])) || 0;
-      const newVal = parseFloat(v) || 0;
-      const delta = newVal - avgVal;
-      setRows((prev) => prev.map((r) => {
-        const cur = parseFloat(r[col]) || 0;
-        const next = Math.max(0, Math.min(1, Math.round((cur + delta) * 1e9) / 1e9));
-        return { ...r, [col]: String(next) };
-      }));
-    }
-  }, [avgRow]);
+  // Edit mode: 'all' = adjust every area proportionally; 'individual' = pick area(s).
+  const [editMode, setEditMode] = useState('all');
+  const handleModeChange = useCallback((m) => {
+    setEditMode(m);
+    if (m === 'all') setSelectedIndices(new Set());
+    else setSelectedIndices((prev) => (prev.size ? prev : new Set([0])));
+  }, []);
+
+  // Cell change: scale this field proportionally across the target areas and
+  // redistribute the remaining mass so each area's systems still sum to 100%.
+  const handleCellChange = useCallback((ri, col, v, animal) => {
+    const groupKeys = [...(colMap.get(animal)?.values() || [])];
+    const newVal = parseFloat(v) || 0;
+    const targets = ri === -1 ? rows.map((_, i) => i) : [ri];
+    setRows((prev) => scaleGroupProportional(prev, targets, groupKeys, col, newVal, { asString: true }));
+  }, [colMap, rows]);
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -1144,14 +1169,17 @@ function ManureManagementEditor({ scenario, onDirtyChange, onSaved, animalsWithH
         onSave={handleSave}
         onReset={handleReset}
         validationErrors={validationErrors}
+        rightSlot={rows.length > 1 ? <AreaEditModeToggle mode={editMode} onChange={handleModeChange} /> : null}
       />
-      {rows.length > 1 && (
-        <div className="px-3 py-2 border-b border-gray-100">
-          <AreaSelector labels={rows.map((r, i) => r.area_name || r.iso || r.gid || `Area ${i + 1}`)} selectedIndices={selectedIndices} onChange={setSelectedIndices} />
+      {rows.length > 1 && editMode === 'individual' && (
+        <div className="px-3 py-2 border-b border-gray-100 flex items-center gap-3 flex-wrap">
+          {editMode === 'individual' && (
+            <AreaSelector labels={rows.map((r, i) => r.area_name || r.iso || r.gid || `Area ${i + 1}`)} selectedIndices={selectedIndices} onChange={setSelectedIndices} allowAll={false} />
+          )}
         </div>
       )}
       <div className="overflow-auto p-3">
-        <table className="text-xs border-collapse w-full">
+        <table className="text-sm border-collapse w-full">
           <thead>
             <tr className="bg-gray-50 text-gray-500 uppercase tracking-wide">
               <th className="px-3 py-2 text-left font-medium whitespace-nowrap sticky left-0 bg-gray-50 z-10">System</th>
@@ -1173,7 +1201,7 @@ function ManureManagementEditor({ scenario, onDirtyChange, onSaved, animalsWithH
               /* "All" mode — show one averaged section */
               <React.Fragment>
                 <tr className="bg-blue-50">
-                  <td colSpan={animals.length + 1} className="px-3 py-1.5 text-xs font-semibold text-wpBlue">
+                  <td colSpan={animals.length + 1} className="px-3 py-1.5 text-sm font-semibold text-wpBlue">
                     All areas (average)
                   </td>
                 </tr>
@@ -1190,7 +1218,7 @@ function ManureManagementEditor({ scenario, onDirtyChange, onSaved, animalsWithH
                         <td key={animal} className={`px-1 py-1 ${hasSumWarn ? 'bg-amber-50' : ''}`}>
                           <StepperInput
                             value={String(avgRow[col] ?? 0)}
-                            onChange={(v) => handleCellChange(-1, col, v)}
+                            onChange={(v) => handleCellChange(-1, col, v, animal)}
                             step={0.001} min={0} max={1} percent={true}
                           />
                         </td>
@@ -1206,7 +1234,7 @@ function ManureManagementEditor({ scenario, onDirtyChange, onSaved, animalsWithH
                   <React.Fragment key={ri}>
                     {rows.length > 1 && (
                       <tr className="bg-blue-50">
-                        <td colSpan={animals.length + 1} className="px-3 py-1.5 text-xs font-semibold text-wpBlue">
+                        <td colSpan={animals.length + 1} className="px-3 py-1.5 text-sm font-semibold text-wpBlue">
                           {row.area_name || row.iso || row.gid}
                         </td>
                       </tr>
@@ -1224,7 +1252,7 @@ function ManureManagementEditor({ scenario, onDirtyChange, onSaved, animalsWithH
                             <td key={animal} className={`px-1 py-1 ${hasSumWarn ? 'bg-amber-50' : ''}`}>
                               <StepperInput
                                 value={row[col]}
-                                onChange={(v) => handleCellChange(ri, col, v)}
+                                onChange={(v) => handleCellChange(ri, col, v, animal)}
                                 step={0.001} min={0} max={1} percent={true}
                               />
                             </td>
@@ -1383,21 +1411,23 @@ function GroupedCsvEditor({ scenario, filename, title, hint, suffixLabels, check
     return m;
   }, [rows, avgRow, animals, colMap, checkSum]);
 
-  // Cell change: single row or delta-distribute across all rows in "All" mode
-  const handleCellChange = useCallback((ri, col, v) => {
-    if (ri !== -1) {
-      setRows((prev) => prev.map((r, i) => i === ri ? { ...r, [col]: v } : r));
-    } else {
-      const avgVal = typeof avgRow[col] === 'number' ? avgRow[col] : parseFloat(String(avgRow[col])) || 0;
-      const newVal = parseFloat(v) || 0;
-      const delta = newVal - avgVal;
-      setRows((prev) => prev.map((r) => {
-        const cur = parseFloat(r[col]) || 0;
-        const next = Math.max(0, Math.min(1, Math.round((cur + delta) * 1e9) / 1e9));
-        return { ...r, [col]: String(next) };
-      }));
-    }
-  }, [avgRow]);
+  // Edit mode: 'all' = adjust every area proportionally; 'individual' = pick area(s).
+  const [editMode, setEditMode] = useState('all');
+  const handleModeChange = useCallback((m) => {
+    setEditMode(m);
+    if (m === 'all') setSelectedIndices(new Set());
+    else setSelectedIndices((prev) => (prev.size ? prev : new Set([0])));
+  }, []);
+
+  // Cell change: proportional scaling across target areas. For sum-to-1 groups
+  // (checkSum) also redistribute the remaining mass to preserve the 100% total.
+  const handleCellChange = useCallback((ri, col, v, animal) => {
+    const newVal = parseFloat(v) || 0;
+    const targets = ri === -1 ? rows.map((_, i) => i) : [ri];
+    setRows((prev) => checkSum
+      ? scaleGroupProportional(prev, targets, [...(colMap.get(animal)?.values() || [])], col, newVal, { asString: true })
+      : scaleProportional(prev, targets, col, newVal, { asString: true }));
+  }, [colMap, rows, checkSum]);
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -1435,14 +1465,15 @@ function GroupedCsvEditor({ scenario, filename, title, hint, suffixLabels, check
         onSave={handleSave}
         onReset={handleReset}
         validationErrors={validationErrors}
+        rightSlot={rows.length > 1 ? <AreaEditModeToggle mode={editMode} onChange={handleModeChange} /> : null}
       />
-      {rows.length > 1 && (
+      {rows.length > 1 && editMode === 'individual' && (
         <div className="px-3 py-2 border-b border-gray-100">
-          <AreaSelector labels={rows.map((r, i) => r.area_name || r.iso || r.gid || `Area ${i + 1}`)} selectedIndices={selectedIndices} onChange={setSelectedIndices} />
+          <AreaSelector labels={rows.map((r, i) => r.area_name || r.iso || r.gid || `Area ${i + 1}`)} selectedIndices={selectedIndices} onChange={setSelectedIndices} allowAll={false} />
         </div>
       )}
       <div className="overflow-auto p-3">
-        <table className="text-xs border-collapse w-full">
+        <table className="text-sm border-collapse w-full">
           <thead>
             <tr className="bg-gray-50 text-gray-500 uppercase tracking-wide">
               <th className="px-3 py-2 text-left font-medium whitespace-nowrap sticky left-0 bg-gray-50 z-10">
@@ -1466,7 +1497,7 @@ function GroupedCsvEditor({ scenario, filename, title, hint, suffixLabels, check
               /* "All" mode — show one averaged section */
               <React.Fragment>
                 <tr className="bg-blue-50">
-                  <td colSpan={animals.length + 1} className="px-3 py-1.5 text-xs font-semibold text-wpBlue">
+                  <td colSpan={animals.length + 1} className="px-3 py-1.5 text-sm font-semibold text-wpBlue">
                     All areas (average)
                   </td>
                 </tr>
@@ -1483,7 +1514,7 @@ function GroupedCsvEditor({ scenario, filename, title, hint, suffixLabels, check
                         <td key={animal} className={`px-1 py-1 ${hasSumWarn ? 'bg-amber-50' : ''}`}>
                           <StepperInput
                             value={String(avgRow[col] ?? 0)}
-                            onChange={(v) => handleCellChange(-1, col, v)}
+                            onChange={(v) => handleCellChange(-1, col, v, animal)}
                             step={0.001} min={0} max={1} percent={true}
                           />
                         </td>
@@ -1499,7 +1530,7 @@ function GroupedCsvEditor({ scenario, filename, title, hint, suffixLabels, check
                   <React.Fragment key={ri}>
                     {rows.length > 1 && (
                       <tr className="bg-blue-50">
-                        <td colSpan={animals.length + 1} className="px-3 py-1.5 text-xs font-semibold text-wpBlue">
+                        <td colSpan={animals.length + 1} className="px-3 py-1.5 text-sm font-semibold text-wpBlue">
                           {row.area_name || row.iso || row.gid}
                         </td>
                       </tr>
@@ -1517,7 +1548,7 @@ function GroupedCsvEditor({ scenario, filename, title, hint, suffixLabels, check
                             <td key={animal} className={`px-1 py-1 ${hasSumWarn ? 'bg-amber-50' : ''}`}>
                               <StepperInput
                                 value={row[col]}
-                                onChange={(v) => handleCellChange(ri, col, v)}
+                                onChange={(v) => handleCellChange(ri, col, v, animal)}
                                 step={0.001} min={0} max={1} percent={true}
                               />
                             </td>
@@ -1542,23 +1573,44 @@ function GroupedCsvEditor({ scenario, filename, title, hint, suffixLabels, check
 // ---------------------------------------------------------------------------
 function AnimalIntensiveSlider({ animal, intensiveFrac, onChange }) {
   const icon = ICONS[animal] || LivestockEmissionsIcon;
-  const pctInt = (intensiveFrac * 100).toFixed(1);
-  const pctExt = ((1 - intensiveFrac) * 100).toFixed(1);
+  const pctInt = Math.max(0, Math.min(100, intensiveFrac * 100));
+  const pctExt = 100 - pctInt;
+  const extWidth = `${pctExt.toFixed(3)}%`;
+  const intWidth = `${pctInt.toFixed(3)}%`;
+  const sliderValue = 1 - intensiveFrac;
 
   return (
-    <div className="flex items-center gap-3 py-2 border-b border-gray-100 last:border-0">
+    <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-x-3 gap-y-1 py-3 border-b border-gray-100 last:border-0">
       <div className="flex items-center gap-1.5 w-28 shrink-0">
         <img src={icon} alt={animal} className="w-4 h-4" />
         <span className="text-xs font-semibold text-wpBlue capitalize">{animalLabel(animal)}</span>
       </div>
-      <span className="text-xs text-gray-400 w-20 text-right shrink-0">{pctExt}% Ext.</span>
-      <input
-        type="range" min={0} max={1} step={0.001}
-        value={intensiveFrac}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-        className="flex-1" style={{ accentColor: '#0B4159' }}
-      />
-      <span className="text-xs text-gray-400 w-20 shrink-0">{pctInt}% Int.</span>
+      <div className="space-y-1">
+        <div className="relative h-4">
+          <div className="absolute inset-0 overflow-hidden rounded-full border border-gray-200 bg-slate-100 shadow-inner">
+            <div className="absolute inset-y-0 left-0 bg-wpBlue/85" style={{ width: extWidth }} />
+            <div className="absolute inset-y-0 right-0 bg-wpGreen/85" style={{ width: intWidth }} />
+            <div className="absolute inset-0 flex items-stretch text-[9px] font-semibold tabular-nums text-white">
+              <div className="flex min-w-0 items-center justify-center px-2" style={{ width: extWidth }}>
+                <span className="drop-shadow-sm">{pctExt.toFixed(1)}%</span>
+              </div>
+              <div className="flex min-w-0 items-center justify-center px-2" style={{ width: intWidth }}>
+                <span className="drop-shadow-sm">{pctInt.toFixed(1)}%</span>
+              </div>
+            </div>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.001}
+            value={sliderValue}
+            onChange={(e) => onChange(1 - parseFloat(e.target.value))}
+            className="split-slider absolute inset-0 z-10 h-4 w-full cursor-pointer"
+            style={{ '--thumb-color': '#0B4159', '--thumb-border-color': '#8DD0A4' }}
+          />
+        </div>
+      </div>
     </div>
   );
 }
@@ -1670,18 +1722,30 @@ function ProductionSystemsEditor({ scenario, onDirtyChange, onSaved, animalsWith
     return result;
   }, [rows, animals, colMap]);
 
+  // Edit mode: 'all' = adjust every area proportionally; 'individual' = pick area(s).
+  const [editMode, setEditMode] = useState('all');
+  const handleModeChange = useCallback((m) => {
+    setEditMode(m);
+    if (m === 'all') setSelectedIndices(new Set());
+    else setSelectedIndices((prev) => (prev.size ? prev : new Set([0])));
+  }, []);
+
   const handleSliderChange = useCallback((rowIdx, animal, newIntensiveFrac) => {
     const { i: iCol, e: eCol } = colMap.get(animal) || {};
     if (!iCol || !eCol) return;
-    const iVal = String(Math.round(newIntensiveFrac * 1e6) / 1e6);
-    const eVal = String(Math.round((1 - newIntensiveFrac) * 1e6) / 1e6);
-    if (rowIdx === -1) {
-      // "All" mode: set absolute value for every row
-      setRows((prev) => prev.map((r) => ({ ...r, [iCol]: iVal, [eCol]: eVal })));
-    } else {
-      setRows((prev) => prev.map((r, i) => i === rowIdx ? { ...r, [iCol]: iVal, [eCol]: eVal } : r));
-    }
-  }, [colMap]);
+    const targets = rowIdx === -1 ? rows.map((_, i) => i) : [rowIdx];
+    const set = new Set(targets);
+    // Scale the intensive fraction proportionally toward the new target average,
+    // then set extensive = 1 − intensive so every area stays balanced.
+    setRows((prev) => {
+      const scaled = scaleProportional(prev, targets, iCol, newIntensiveFrac);
+      return scaled.map((r, i) => {
+        if (!set.has(i)) return r;
+        const iv = Math.min(1, Math.max(0, parseFloat(r[iCol]) || 0));
+        return { ...r, [iCol]: String(Math.round(iv * 1e6) / 1e6), [eCol]: String(Math.round((1 - iv) * 1e6) / 1e6) };
+      });
+    });
+  }, [colMap, rows]);
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -1721,13 +1785,23 @@ function ProductionSystemsEditor({ scenario, onDirtyChange, onSaved, animalsWith
         onSave={handleSave}
         onReset={handleReset}
         validationErrors={validationErrors}
-        rightSlot={null}
+        rightSlot={rows.length > 1 ? <AreaEditModeToggle mode={editMode} onChange={handleModeChange} /> : null}
       />
-      {rows.length > 1 && (
-        <div className="px-3 py-2 border-b border-gray-100">
-          <AreaSelector labels={rows.map((r, i) => r.area_name || r.iso || r.gid || `Area ${i + 1}`)} selectedIndices={selectedIndices} onChange={setSelectedIndices} />
+      {rows.length > 1 && editMode === 'individual' && (
+        <div className="px-3 py-2 border-b border-gray-100 flex items-center gap-3 flex-wrap">
+          <AreaSelector labels={rows.map((r, i) => r.area_name || r.iso || r.gid || `Area ${i + 1}`)} selectedIndices={selectedIndices} onChange={setSelectedIndices} allowAll={false} />
         </div>
       )}
+      <div className="px-4 pt-4 pb-1 flex items-center gap-4 text-[10px] font-semibold uppercase tracking-[0.18em] text-gray-400">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-full bg-wpBlue" />
+          Extensive
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-full bg-wpGreen" />
+          Intensive
+        </span>
+      </div>
       <div className="p-4 space-y-6">
         {selectedIndices.size === 0 && rows.length > 1 ? (
           /* "All" mode — show averaged sliders; editing sets absolute value to all rows */

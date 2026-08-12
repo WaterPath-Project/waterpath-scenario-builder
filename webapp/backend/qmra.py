@@ -3,18 +3,26 @@ required to run the GloWPaQMRA package, builds R wrapper scripts equivalent
 to ``qmra_run.R`` from the upstream library, executes them inside the
 ``qmra-container`` via Docker exec, and exposes the results to the UI.
 
+The generated R script is a scratch artifact: it is written to a temporary
+subfolder and deleted once the run finishes (success or failure), so it never
+lingers in the persisted output tree. The QMRA config is likewise not
+duplicated per scenario -- the shared config lives once under
+``input/baseline/qmra/qmra_config.json`` (see ``_baseline_qmra_config_path``).
+
 Fixed layout per scenario (previous run is overwritten each time):
 
   data/<case_study>/output/<scenario_folder>/qmra/
-      qmra_run.R                # generated wrapper script
-      qmra_config.json          # resolved config snapshot
-      qmra.log                  # combined stdout/stderr
-      monthly/                  # output of monthly QMRA run
-          annual_risk.tif
-          expected_cases.tif
-          <pathogen>_jan.tif … <pathogen>_dec.tif
-      daily/                    # output of daily QMRA run
-          <pathogen>_jan.tif … <pathogen>_dec.tif
+      qmra.log                      # combined stdout/stderr of the last run
+      combined/                     # all enabled routes combined
+          monthly/                  # monthly-compounded run
+              annual_risk.tif       # 12-month compounded probability of infection
+              expected_cases.tif    # annual_risk (q0.5) x population
+              <pathogen>_jan.tif … <pathogen>_dec.tif
+          daily/                    # single-day exposure run
+              <pathogen>_jan.tif … <pathogen>_dec.tif
+      routes/<route>/               # same structure, isolated per route
+          monthly/
+          daily/
 """
 
 import json
@@ -28,7 +36,7 @@ from datetime import datetime
 from flask import jsonify, request, send_file
 
 import state
-from fs_utils import _locate_scenario
+from fs_utils import _locate_scenario, find_geodata_shapefile
 from state import DOCKER_SOCK, model_runs
 
 
@@ -175,13 +183,76 @@ def _conc_tifs(cs_path, folder):
 
 
 def _pop_rasters(cs_path, folder):
-    """Return (poprural_path, popurban_path) for the scenario, or (None, None)."""
-    base = os.path.join(cs_path, 'input', folder, 'human_emissions')
-    rural  = os.path.join(base, 'poprural.tif')
-    urban  = os.path.join(base, 'popurban.tif')
-    if os.path.exists(rural) and os.path.exists(urban):
-        return rural, urban
+    """Return (poprural_path, popurban_path) for the scenario, or (None, None).
+
+    Search order:
+      1. input/<folder>/human_emissions/  — baseline layout
+      2. input/<folder>/                  — projection layout (SSP scenarios)
+      3. input/baseline/human_emissions/  — fallback to baseline population
+    """
+    candidates = [
+        os.path.join(cs_path, 'input', folder, 'human_emissions'),
+        os.path.join(cs_path, 'input', folder),
+        os.path.join(cs_path, 'input', 'baseline', 'human_emissions'),
+    ]
+    for base in candidates:
+        rural = os.path.join(base, 'poprural.tif')
+        urban = os.path.join(base, 'popurban.tif')
+        if os.path.exists(rural) and os.path.exists(urban):
+            return rural, urban
     return None, None
+
+
+def _pop_grid_for(cs_path, folder, ref_path):
+    """Return total population (rural+urban) resampled onto the grid of ref_path.
+
+    Used to compute population-weighted ("average person's") risk. Returns a
+    numpy float64 array aligned to ref_path, or None if population data or
+    dependencies are unavailable.
+    """
+    try:
+        import numpy as np
+        import rasterio as rio
+        from rasterio.warp import reproject, Resampling
+    except ImportError:
+        return None
+    rural, urban = _pop_rasters(cs_path, folder)
+    if not (rural and urban):
+        return None
+    try:
+        with rio.open(ref_path) as ref:
+            dst_transform = ref.transform
+            dst_crs       = ref.crs
+            dst_shape     = (ref.height, ref.width)
+    except Exception:
+        return None
+
+    pop_sum = np.zeros(dst_shape, dtype='float64')
+    for p in (rural, urban):
+        dst = np.zeros(dst_shape, dtype='float64')
+        try:
+            with rio.open(p) as psrc:
+                reproject(
+                    source=rio.band(psrc, 1),
+                    destination=dst,
+                    src_transform=psrc.transform, src_crs=psrc.crs,
+                    dst_transform=dst_transform, dst_crs=dst_crs,
+                    resampling=Resampling.bilinear,
+                )
+                pnd = psrc.nodata
+        except Exception:
+            return None
+        if pnd is not None:
+            try:
+                pndv = float(pnd)
+                if not np.isnan(pndv):
+                    dst[dst == pndv] = 0.0
+            except (TypeError, ValueError):
+                pass
+        dst[~np.isfinite(dst)] = 0.0
+        dst[dst < 0] = 0.0
+        pop_sum += dst
+    return pop_sum
 
 
 def _qmra_base(cs_path, folder):
@@ -194,6 +265,135 @@ def _qmra_has_output(cs_path, folder):
     return os.path.exists(
         os.path.join(_qmra_base(cs_path, folder), 'combined', 'monthly', 'annual_risk.tif')
     )
+
+
+def _baseline_qmra_dir(cs_path):
+    """Directory holding the shared QMRA config/inputs, imported under baseline."""
+    return os.path.join(cs_path, 'input', 'baseline', 'qmra')
+
+
+def _baseline_qmra_config_path(cs_path):
+    """Path to the shared baseline QMRA config JSON (source of truth on import)."""
+    return os.path.join(_baseline_qmra_dir(cs_path), 'qmra_config.json')
+
+
+def _treatment_tif(cs_path, folder):
+    """Locate the drinking-water treatment raster for a scenario, or None.
+
+    Imported case studies place it under ``input/<folder>/qmra/treatment.tif``
+    with a shared copy under ``input/baseline/qmra/treatment.tif``. Older
+    layouts kept it directly under the scenario input dir. The first existing
+    candidate wins, falling back to the shared baseline copy.
+    """
+    candidates = (
+        os.path.join(cs_path, 'input', folder, 'qmra', 'treatment.tif'),
+        os.path.join(cs_path, 'input', folder, 'treatment.tif'),
+        os.path.join(cs_path, 'input', folder, 'human_emissions', 'treatment.tif'),
+        os.path.join(cs_path, 'output', folder, 'treatment.tif'),
+        os.path.join(_baseline_qmra_dir(cs_path), 'treatment.tif'),
+    )
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _qmra_available(cs_path):
+    """True if the imported case study has a baseline QMRA folder and config JSON.
+
+    This is the signal that QMRA can be configured/run for the case study and
+    that the "QMRA" tab should appear above the scenarios bar.
+    """
+    return os.path.isfile(_baseline_qmra_config_path(cs_path))
+
+
+def _load_baseline_qmra_config(cs_path):
+    """Load the shared baseline QMRA config JSON, or None if absent/invalid."""
+    path = _baseline_qmra_config_path(cs_path)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f'[QMRA] Error loading baseline config {path}: {e}')
+        return None
+
+
+def _save_baseline_qmra_config(cs_path, config):
+    """Persist the shared baseline QMRA config JSON."""
+    qdir = _baseline_qmra_dir(cs_path)
+    os.makedirs(qdir, exist_ok=True)
+    with open(_baseline_qmra_config_path(cs_path), 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=2)
+
+
+def _baseline_config_to_panel(cfg):
+    """Convert an imported baseline QMRA config (exposure_groups list + routes)
+    into the panel schema (pathways dict) expected by QmraCaseStudyPanel.
+
+    Falls back to DEFAULT_QMRA_CONFIG values for anything missing. If the config
+    already looks like the panel schema (has 'pathways'), it is returned as-is.
+    """
+    if not cfg:
+        return dict(DEFAULT_QMRA_CONFIG)
+    if cfg.get('pathways'):
+        return cfg
+
+    routes_enabled = set(cfg.get('routes') or ['drinking'])
+    include_boiling = bool(cfg.get('include_boiling', False))
+
+    pathways = {}
+    for grp in (cfg.get('exposure_groups') or []):
+        route = grp.get('route') or grp.get('name')
+        if not route:
+            continue
+        vtype = grp.get('type', 'triangular')
+        if vtype == 'poisson':
+            volume = {'type': 'poisson', 'lambda': grp.get('lambda', 1.0)}
+            if 'glass' in grp:
+                volume['glass'] = grp['glass']
+        else:
+            volume = {
+                'type': 'triangular',
+                'min':  grp.get('min', 1.0),
+                'mode': grp.get('mode', 10.0),
+                'max':  grp.get('max', 50.0),
+            }
+        freq_raw = grp.get('frequency', 365)
+        if isinstance(freq_raw, dict):
+            dist = freq_raw.get('dist')
+            if dist == 'nbinom':
+                frequency = {'type': 'nbinom', 'size': freq_raw.get('size', 0.4),
+                             'prob': freq_raw.get('prob', 0.11)}
+            elif dist == 'poisson':
+                frequency = {'type': 'poisson', 'lambda': freq_raw.get('lambda', 1.0)}
+            else:
+                frequency = {'type': 'fixed', 'value': 365}
+        else:
+            frequency = {'type': 'fixed', 'value': freq_raw}
+
+        pc = {
+            'enabled':   route in routes_enabled,
+            'volume':    volume,
+            'frequency': frequency,
+        }
+        if route == 'drinking':
+            pc['boiling'] = include_boiling
+            pc['use_treatment'] = bool(cfg.get('treatment_raster'))
+        pathways[route] = pc
+
+    # Ensure every default route is represented.
+    for route, default_pc in DEFAULT_QMRA_CONFIG['pathways'].items():
+        pathways.setdefault(route, dict(default_pc))
+
+    return {
+        'mci':       cfg.get('mci', DEFAULT_QMRA_CONFIG['mci']),
+        'model':     cfg.get('model', DEFAULT_QMRA_CONFIG['model']),
+        'quantiles': cfg.get('quantiles', DEFAULT_QMRA_CONFIG['quantiles']),
+        'bp_params': cfg.get('bp_params', DEFAULT_QMRA_CONFIG['bp_params']),
+        'pathways':  pathways,
+    }
 
 
 def _load_qmra_config(cs_path, folder):
@@ -464,7 +664,7 @@ def _qmra_container_running():
         return False
 
 
-def _execute_qmra_run(run_id, container_script_path, run_dir):
+def _execute_qmra_run(run_id, container_script_path, run_dir, script_host_path=None):
     """Background thread: run the generated R script inside qmra-container."""
     try:
         model_runs[run_id]['status'] = 'running'
@@ -519,6 +719,17 @@ def _execute_qmra_run(run_id, container_script_path, run_dir):
         model_runs[run_id]['stderr'] = (
             f'{exc}\n{traceback.format_exc()}'
         )
+    finally:
+        # The generated script is a scratch artifact -- never leave it behind
+        # in the persisted (visible) scenario output tree.
+        if script_host_path:
+            try:
+                os.remove(script_host_path)
+                parent = os.path.dirname(script_host_path)
+                if os.path.isdir(parent) and not os.listdir(parent):
+                    os.rmdir(parent)
+            except OSError:
+                pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -540,15 +751,7 @@ def qmra_availability(scenario_id):
     conc_files = _conc_tifs(cs_path, folder)
     pathogen = _scenario_pathogen(scenario_id)
 
-    treatment_tif = None
-    for candidate in (
-        os.path.join(cs_path, 'input', folder, 'treatment.tif'),
-        os.path.join(cs_path, 'input', folder, 'human_emissions', 'treatment.tif'),
-        os.path.join(cs_path, 'output', folder, 'treatment.tif'),
-    ):
-        if os.path.exists(candidate):
-            treatment_tif = candidate
-            break
+    treatment_tif = _treatment_tif(cs_path, folder)
 
     pop_rural, pop_urban = _pop_rasters(cs_path, folder)
 
@@ -582,13 +785,8 @@ def qmra_get_config(scenario_id):
         return jsonify(saved), 200
 
     # Return defaults with treatment-availability flag.
-    treatment_available = any(os.path.exists(c) for c in (
-        os.path.join(cs_path, 'input', folder, 'treatment.tif'),
-        os.path.join(cs_path, 'input', folder, 'human_emissions', 'treatment.tif'),
-        os.path.join(cs_path, 'output', folder, 'treatment.tif'),
-    ))
     cfg = dict(DEFAULT_QMRA_CONFIG)
-    cfg['treatment_available'] = treatment_available
+    cfg['treatment_available'] = bool(_treatment_tif(cs_path, folder))
     return jsonify(cfg), 200
 
 
@@ -641,14 +839,9 @@ def _trigger_qmra_run(scenario_id, cs, folder):
     drinking_pc = pathway_configs.get('drinking', {})
     treatment_path_container = None
     if bool(drinking_pc.get('use_treatment', False)):
-        for candidate in (
-            os.path.join(cs_path, 'input', folder, 'treatment.tif'),
-            os.path.join(cs_path, 'input', folder, 'human_emissions', 'treatment.tif'),
-            os.path.join(cs_path, 'output', folder, 'treatment.tif'),
-        ):
-            if os.path.exists(candidate):
-                treatment_path_container = _to_cont(candidate)
-                break
+        treatment_host = _treatment_tif(cs_path, folder)
+        if treatment_host:
+            treatment_path_container = _to_cont(treatment_host)
 
     conc_dir_host  = _conc_dir(cs_path, folder)
     conc_dir_cont  = '/app/data/' + os.path.relpath(conc_dir_host, _data_root()).replace(os.sep, '/')
@@ -680,7 +873,12 @@ def _trigger_qmra_run(scenario_id, cs, folder):
         pop_urban_path=pop_urban_cont,
     )
 
-    script_host = os.path.join(qmra_dir_host, 'qmra_run.R')
+    # Scratch location for the generated script -- deleted once the run
+    # finishes (see _execute_qmra_run's `finally` block) so it never lingers
+    # in the persisted output tree alongside the actual results.
+    run_tmp_dir = os.path.join(qmra_dir_host, '.tmp_run')
+    os.makedirs(run_tmp_dir, exist_ok=True)
+    script_host = os.path.join(run_tmp_dir, 'qmra_run.R')
     with open(script_host, 'w', encoding='utf-8') as f:
         f.write(script)
     script_cont = '/app/data/' + os.path.relpath(script_host, _data_root()).replace(os.sep, '/')
@@ -698,6 +896,7 @@ def _trigger_qmra_run(scenario_id, cs, folder):
     threading.Thread(
         target=_execute_qmra_run,
         args=(run_id, script_cont, qmra_dir_host),
+        kwargs={'script_host_path': script_host},
         daemon=True,
     ).start()
     return run_id
@@ -783,20 +982,88 @@ def qmra_output_files(scenario_id):
     return jsonify({'combined': combined, 'routes': routes_result}), 200
 
 
+def _parse_band(desc):
+    """Return (route, q_float) from e.g. 'drinking_untreated_monthly_q0.5'."""
+    if not desc:
+        return None, None
+    for sep in ('_monthly_q', '_daily_q'):
+        if sep in desc:
+            route_with_treatment, q_str = desc.split(sep, 1)
+            route = route_with_treatment.rsplit('_', 1)[0]
+            try:
+                return route, float(q_str)
+            except ValueError:
+                return None, None
+    return None, None
+
+
+def _select_band_index(descs, route, target_q):
+    """Return the 1-based band index for `route` at quantile `target_q`, or None.
+
+    A single route/quantile pair can have several scenario variants baked into
+    the same multi-band TIF (e.g. 'untreated' vs 'treated', with/without
+    boiling) when the pathway config enables treatment/boiling. The *last*
+    matching band reflects the fully-configured option (R lists the plain
+    scenario first and the treated/boiled variants after), so we keep the
+    last match -- this mirrors the pre-existing "prefer treated" behaviour.
+    """
+    idx = None
+    for i, d in enumerate(descs):
+        r, q = _parse_band(d)
+        if r != route or q is None or abs(q - target_q) > 0.001:
+            continue
+        idx = i + 1
+    return idx
+
+
+def _band_stats(arr, nodata):
+    import numpy as np
+    d = arr.astype(float)
+    if nodata is not None:
+        try:
+            nd_val = float(nodata)
+            if not np.isnan(nd_val):
+                d[d == nd_val] = np.nan
+        except (TypeError, ValueError):
+            pass
+    valid = d[np.isfinite(d)]
+    if len(valid) == 0:
+        return None
+    positive = valid[valid > 0]
+    return {
+        'mean':          float(np.mean(valid)),
+        'mean_pos':      float(np.mean(positive)) if len(positive) else None,
+        'count':         int(len(valid)),
+        'nonzero_count': int(len(positive)),
+    }
+
+
 def qmra_stats(scenario_id):
     """Return per-route risk stats for a given combined output TIF.
 
     Query params:
       output_type  'monthly' (default) or 'daily'
       file         filename in combined/<output_type>/ (default: annual_risk.tif)
+      quantile     which quantile ('0.025', '0.5', '0.975', ...) is used for the
+                   population-weighted figures and the map band index (default '0.5')
 
     Response shape:
         {
           combined: { risk: {'q0.025': {mean, count, nonzero_count}, ...}, cases: {...} },
           routes:   { drinking: { risk: {...} }, ... },
           monthly:  { combined: [jan_mean, ..., dec_mean], ... }
-                     (only populated when file == 'annual_risk.tif')
+                     (unweighted per-cell mean, one value per calendar month;
+                     only populated when file == 'annual_risk.tif')
+          monthly_pop_weighted: { combined: [jan, ..., dec], ... }
+                     (population-weighted equivalent of `monthly`, same
+                     availability condition)
+          bands: { route: band_index }  -- band index of `route` at `quantile`
         }
+    `combined.cases` (expected annual infections = combined risk at `quantile`
+    × population, summed per-cell) is recomputed live from annual_risk.tif at
+    the requested quantile -- it is NOT read from the fixed, always-q0.5
+    expected_cases.tif -- so it updates whenever `quantile` changes, and is
+    only populated when file == 'annual_risk.tif' and output_type == 'monthly'.
     """
     output_type = request.args.get('output_type', 'monthly')
     file_name   = request.args.get('file', 'annual_risk.tif')
@@ -804,6 +1071,10 @@ def qmra_stats(scenario_id):
         return jsonify({'error': 'Invalid output_type'}), 400
     if '..' in file_name or '/' in file_name or '\\' in file_name:
         return jsonify({'error': 'Invalid file parameter'}), 400
+    try:
+        target_q = float(request.args.get('quantile', '0.5'))
+    except ValueError:
+        return jsonify({'error': 'Invalid quantile'}), 400
 
     try:
         cs, folder = _locate_scenario(scenario_id)
@@ -818,41 +1089,10 @@ def qmra_stats(scenario_id):
 
     base = _qmra_base(cs['folder_path'], folder)
 
-    def _band_stats(arr, nodata):
-        d = arr.astype(float)
-        if nodata is not None:
-            try:
-                nd_val = float(nodata)
-                if not np.isnan(nd_val):
-                    d[d == nd_val] = np.nan
-            except (TypeError, ValueError):
-                pass
-        valid = d[np.isfinite(d)]
-        if len(valid) == 0:
-            return None
-        return {
-            'mean':          float(np.mean(valid)),
-            'count':         int(len(valid)),
-            'nonzero_count': int(np.sum(valid > 0)),
-        }
-
-    def _parse_band(desc):
-        """Return (route, q_float) from e.g. 'drinking_untreated_monthly_q0.5'."""
-        if not desc:
-            return None, None
-        for sep in ('_monthly_q', '_daily_q'):
-            if sep in desc:
-                route_with_treatment, q_str = desc.split(sep, 1)
-                route = route_with_treatment.rsplit('_', 1)[0]
-                try:
-                    return route, float(q_str)
-                except ValueError:
-                    return None, None
-        return None, None
-
     # ── Per-route, per-quantile stats from the selected TIF ──────────────────
     combined_risk = {}
     routes_risk   = {}
+    band_index    = {}   # route -> 1-based band index of its `quantile` layer
     ar_path = os.path.join(base, 'combined', output_type, file_name)
     if os.path.exists(ar_path):
         with rio.open(ar_path) as src:
@@ -864,75 +1104,134 @@ def qmra_stats(scenario_id):
                     continue
                 st    = _band_stats(src.read(i + 1), nd)
                 q_key = f'q{q:.3f}'
+                if abs(q - target_q) <= 0.001:
+                    band_index[route] = i + 1
                 if route == 'combined':
                     combined_risk[q_key] = st
                 else:
                     routes_risk.setdefault(route, {})[q_key] = st
 
-    # ── Expected infections: only available alongside annual_risk.tif ──────────
-    combined_cases = None
-    ec_path = os.path.join(base, 'combined', 'monthly', 'expected_cases.tif')
-    if file_name == 'annual_risk.tif' and output_type == 'monthly' and os.path.exists(ec_path):
-        with rio.open(ec_path) as src:
-            d  = src.read(1).astype(float)
-            nd = src.nodata
-            if nd is not None:
-                try:
-                    nd_val = float(nd)
-                    if not np.isnan(nd_val):
-                        d[d == nd_val] = np.nan
-                except (TypeError, ValueError):
-                    pass
-            valid = d[np.isfinite(d) & (d > 0)]
-            if len(valid) > 0:
-                combined_cases = {
-                    'sum':   float(np.sum(valid)),
-                    'mean':  float(np.mean(valid)),
-                    'count': int(len(valid)),
-                }
+    # ── Population-weighted ("average person's") risk, per route + combined ────
+    # Weight each cell's `quantile` risk by its population, so the headline
+    # reflects the risk of a typical person rather than a typical map cell.
+    pop_weighted = {}
+    pop_total    = None
+    combined_band_at_q = None  # captured below for the expected-infections calc
+    pop_grid     = _pop_grid_for(cs['folder_path'], folder, ar_path) if os.path.exists(ar_path) else None
+    if pop_grid is not None:
+        with rio.open(ar_path) as src:
+            descs = src.descriptions or []
+            nd    = src.nodata
+            for i, desc in enumerate(descs):
+                route, q = _parse_band(desc)
+                if route is None or abs(q - target_q) > 0.001:
+                    continue
+                band = src.read(i + 1).astype('float64')
+                if nd is not None:
+                    try:
+                        ndv = float(nd)
+                        if not np.isnan(ndv):
+                            band[band == ndv] = np.nan
+                    except (TypeError, ValueError):
+                        pass
+                band[(band < 0) | (band > 1.0)] = np.nan
+                if band.shape != pop_grid.shape:
+                    continue
+                mask = np.isfinite(band)
+                w    = pop_grid[mask]
+                rv   = band[mask]
+                tp   = float(np.sum(w))
+                if tp > 0:
+                    pop_weighted[route] = float(np.sum(rv * w) / tp)
+                    pop_total = tp
+                if route == 'combined':
+                    combined_band_at_q = band
 
-    # ── Monthly q0.5 variation (only for annual_risk.tif) ──────────────────────
+    # ── Expected infections: combined risk *at the selected quantile* × ────────
+    # population, summed over all valid cells. Recomputed dynamically here
+    # (rather than reading the fixed, always-q0.5 expected_cases.tif) so the
+    # headline figure tracks the selected quantile, matching the per-area
+    # breakdown returned by qmra_area_stats.
+    combined_cases = None
+    if file_name == 'annual_risk.tif' and output_type == 'monthly' and combined_band_at_q is not None:
+        product = combined_band_at_q * pop_grid
+        valid = product[np.isfinite(product) & (product > 0)]
+        if len(valid) > 0:
+            combined_cases = {
+                'sum':   float(np.sum(valid)),
+                'mean':  float(np.mean(valid)),
+                'count': int(len(valid)),
+            }
+
+    # ── Monthly variation at `quantile` (only for annual_risk.tif) ─────────────
+    # Each per-month TIF can hold several scenario variants of the *same*
+    # route/quantile band (e.g. 'untreated' then 'treated', if treatment is
+    # configured) -- exactly like the annual file above. We therefore build a
+    # fixed-length (12) array per route and let the *last* matching band win
+    # for each month, instead of appending every match (which used to produce
+    # arrays with more entries than months, silently shifting every later
+    # month's value -- this was the source of the "month trends don't agree
+    # with annual" bug).
     MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun',
               'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
-    monthly_by_route = {}
+    monthly_by_route      = {}
+    monthly_pop_weighted  = {}
     conc_dir = os.path.join(base, 'combined', 'monthly')
     if file_name == 'annual_risk.tif' and os.path.isdir(conc_dir):
         all_files = os.listdir(conc_dir)
-        for month in MONTHS:
-            month_file = next(
-                (os.path.join(conc_dir, f) for f in all_files
-                 if f.lower().endswith(f'_{month}.tif')),
-                None,
-            )
+        month_files = [
+            next((os.path.join(conc_dir, f) for f in all_files
+                  if f.lower().endswith(f'_{month}.tif')), None)
+            for month in MONTHS
+        ]
+        for m_idx, month_file in enumerate(month_files):
             if not month_file:
-                for rn in monthly_by_route:
-                    monthly_by_route[rn].append(None)
                 continue
             try:
                 with rio.open(month_file) as src:
                     descs = src.descriptions or []
                     nd    = src.nodata
-                    found = set()
+                    month_vals     = {}   # route -> last-matching q0.5 mean this month
+                    month_pop_vals = {}   # route -> last-matching q0.5 pop-weighted this month
                     for i, desc in enumerate(descs):
                         route, q = _parse_band(desc)
-                        if route is None or abs(q - 0.5) > 0.001:
+                        if route is None or abs(q - target_q) > 0.001:
                             continue
                         st = _band_stats(src.read(i + 1), nd)
-                        monthly_by_route.setdefault(route, []).append(
-                            st['mean'] if st else None
-                        )
-                        found.add(route)
-                    for rn in list(monthly_by_route):
-                        if rn not in found:
-                            monthly_by_route[rn].append(None)
+                        month_vals[route] = st['mean'] if st else None
+                        if pop_grid is not None:
+                            band = src.read(i + 1).astype('float64')
+                            if nd is not None:
+                                try:
+                                    ndv = float(nd)
+                                    if not np.isnan(ndv):
+                                        band[band == ndv] = np.nan
+                                except (TypeError, ValueError):
+                                    pass
+                            band[(band < 0) | (band > 1.0)] = np.nan
+                            if band.shape == pop_grid.shape:
+                                mask = np.isfinite(band)
+                                w    = pop_grid[mask]
+                                tp   = float(np.sum(w))
+                                if tp > 0:
+                                    month_pop_vals[route] = float(np.sum(band[mask] * w) / tp)
+                    for route, val in month_vals.items():
+                        monthly_by_route.setdefault(route, [None] * len(MONTHS))[m_idx] = val
+                    for route, val in month_pop_vals.items():
+                        monthly_pop_weighted.setdefault(route, [None] * len(MONTHS))[m_idx] = val
             except Exception:
-                for rn in monthly_by_route:
-                    monthly_by_route[rn].append(None)
+                pass
 
     return jsonify({
         'combined': {'risk': combined_risk, 'cases': combined_cases},
         'routes':   {r: {'risk': v} for r, v in routes_risk.items()},
         'monthly':  monthly_by_route,
+        'monthly_pop_weighted': monthly_pop_weighted,
+        'population_weighted': {
+            'risk':       pop_weighted,
+            'population': pop_total,
+        },
+        'bands': band_index,
     }), 200
 
 
@@ -962,8 +1261,12 @@ def qmra_raster(scenario_id, route_key, output_type, filename):
 
     if not os.path.exists(tif_path):
         return jsonify({'error': 'File not found'}), 404
-    return send_file(tif_path, mimetype='image/tiff', as_attachment=False,
+    resp = send_file(tif_path, mimetype='image/tiff', as_attachment=False,
                      download_name=filename)
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+    return resp
 
 
 def qmra_log(scenario_id):
@@ -1021,48 +1324,172 @@ def _data_root():
 def qmra_cs_get_config(case_study_id):
     """Return QMRA config shared across all scenarios in a case study.
 
-    Reads the first row that has a qmra_config JSON blob, otherwise returns DEFAULT_QMRA_CONFIG.
+    Source of truth is the imported baseline config JSON
+    (input/baseline/qmra/qmra_config.json), converted to the panel schema.
+    Falls back to the qmra_config blob in scenario_metadata.csv, then defaults.
     """
     import csv as _csv
     cs = next((c for c in state.case_studies if c['id'] == case_study_id), None)
     if not cs:
         return jsonify({'error': 'Case study not found'}), 404
-    meta = os.path.join(cs['folder_path'], 'config', 'scenario_metadata.csv')
+    cs_path = cs['folder_path']
+
+    # 1) Prefer the imported baseline config JSON.
+    baseline_cfg = _load_baseline_qmra_config(cs_path)
+    if baseline_cfg:
+        panel_cfg = _baseline_config_to_panel(baseline_cfg)
+        panel_cfg['qmra_available'] = True
+        return jsonify(panel_cfg), 200
+
+    # 2) Fall back to a saved blob in scenario_metadata.csv.
+    meta = os.path.join(cs_path, 'config', 'scenario_metadata.csv')
     if os.path.exists(meta):
         try:
             with open(meta, 'r', newline='', encoding='utf-8') as f:
                 for row in _csv.DictReader(f):
                     blob = row.get('qmra_config', '').strip()
                     if blob:
-                        return jsonify(json.loads(blob)), 200
+                        cfg = json.loads(blob)
+                        cfg['qmra_available'] = _qmra_available(cs_path)
+                        return jsonify(cfg), 200
         except Exception as e:
             print(f'[QMRA] Error reading CS config: {e}')
-    return jsonify(DEFAULT_QMRA_CONFIG), 200
+
+    default_cfg = dict(DEFAULT_QMRA_CONFIG)
+    default_cfg['qmra_available'] = _qmra_available(cs_path)
+    return jsonify(default_cfg), 200
 
 
 def qmra_cs_put_config(case_study_id):
-    """Save QMRA config JSON blob to ALL scenario rows in scenario_metadata.csv."""
+    """Save QMRA config for a case study.
+
+    Writes to the baseline config JSON (source of truth) and mirrors the blob to
+    every scenario row in scenario_metadata.csv for backward compatibility.
+    """
     import csv as _csv
     cs = next((c for c in state.case_studies if c['id'] == case_study_id), None)
     if not cs:
         return jsonify({'error': 'Case study not found'}), 404
+    cs_path = cs['folder_path']
     body = request.get_json(force=True, silent=True) or {}
-    meta = os.path.join(cs['folder_path'], 'config', 'scenario_metadata.csv')
-    if not os.path.exists(meta):
-        return jsonify({'error': 'No scenario metadata found'}), 404
+    body.pop('qmra_available', None)
+
+    # 1) Persist to the baseline config JSON (source of truth).
     try:
-        with open(meta, 'r', newline='', encoding='utf-8') as f:
-            rows = list(_csv.DictReader(f))
-        blob = json.dumps(body)
-        for row in rows:
-            row['qmra_config'] = blob
-        with open(meta, 'w', newline='', encoding='utf-8') as f:
-            writer = _csv.DictWriter(f, fieldnames=state.SCENARIO_METADATA_FIELDS, extrasaction='ignore')
-            writer.writeheader()
-            writer.writerows(rows)
-        return jsonify({'ok': True}), 200
+        if os.path.isdir(_baseline_qmra_dir(cs_path)):
+            _save_baseline_qmra_config(cs_path, body)
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        print(f'[QMRA] Error saving baseline config: {e}')
+
+    # 2) Mirror to scenario_metadata.csv for backward compatibility.
+    meta = os.path.join(cs_path, 'config', 'scenario_metadata.csv')
+    if os.path.exists(meta):
+        try:
+            with open(meta, 'r', newline='', encoding='utf-8') as f:
+                rows = list(_csv.DictReader(f))
+            blob = json.dumps(body)
+            for row in rows:
+                row['qmra_config'] = blob
+            with open(meta, 'w', newline='', encoding='utf-8') as f:
+                writer = _csv.DictWriter(f, fieldnames=state.SCENARIO_METADATA_FIELDS, extrasaction='ignore')
+                writer.writeheader()
+                writer.writerows(rows)
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    return jsonify({'ok': True}), 200
+
+
+def qmra_cs_treatment_tif(case_study_id):
+    """Serve the shared baseline QMRA treatment raster for client-side map preview."""
+    cs = next((c for c in state.case_studies if c['id'] == case_study_id), None)
+    if not cs:
+        return jsonify({'error': 'Case study not found'}), 404
+    tif_path = _treatment_tif(cs['folder_path'], 'baseline')
+    if not tif_path:
+        return jsonify({'error': 'Treatment raster not found'}), 404
+    return send_file(tif_path, mimetype='image/tiff', as_attachment=False,
+                     download_name='treatment.tif')
+
+
+# Treatment code definitions derived from generate_qmra_lut() in GloWPaQMRA.
+# Codes 5–8 map to the treatment.regimes in the R package; code 0 is used for
+# cells with no treatment (untreated/surface water).  Any other value found in
+# the raster is shown as "Unknown (code N)".
+TREATMENT_CODE_LABELS = {
+    0: {'label': 'No treatment',        'steps': []},
+    1: {'label': 'No treatment',        'steps': []},
+    2: {'label': 'No treatment',        'steps': []},
+    3: {'label': 'No treatment',        'steps': []},
+    4: {'label': 'No treatment',        'steps': []},
+    5: {
+        'label': 'Basic treatment',
+        'steps': ['Chlorination', 'Coagulation/flocculation', 'Rapid sand filtration'],
+    },
+    6: {
+        'label': 'Conventional treatment',
+        'steps': ['Chlorination', 'Coagulation/flocculation', 'GAC', 'Chlorination'],
+    },
+    7: {
+        'label': 'Advanced treatment',
+        'steps': ['Coagulation/flocculation', 'Ozonation', 'Rapid sand filtration', 'GAC', 'Chlorination'],
+    },
+    8: {
+        'label': 'Advanced treatment (MF)',
+        'steps': ['Microfiltration', 'Coagulation/flocculation', 'RSF', 'UV', 'GAC', 'Microfiltration', 'Chlorination'],
+    },
+}
+
+TREATMENT_CODE_COLORS = {
+    0: '#d1d5db',   # gray-300  – no treatment
+    1: '#d1d5db',
+    2: '#d1d5db',
+    3: '#d1d5db',
+    4: '#d1d5db',
+    5: '#bfdbfe',   # blue-200  – basic
+    6: '#60a5fa',   # blue-400  – conventional
+    7: '#2563eb',   # blue-600  – advanced
+    8: '#1e3a8a',   # blue-900  – advanced MF
+}
+
+
+def qmra_cs_treatment_codes(case_study_id):
+    """Return the treatment code legend: labels, step lists, colours, and unique
+    code values present in the baseline treatment raster."""
+    cs = next((c for c in state.case_studies if c['id'] == case_study_id), None)
+    if not cs:
+        return jsonify({'error': 'Case study not found'}), 404
+
+    tif_path = _treatment_tif(cs['folder_path'], 'baseline')
+    present_codes = []
+    if tif_path:
+        try:
+            import rasterio
+            with rasterio.open(tif_path) as src:
+                data = src.read(1)
+                nodata = src.nodata
+                vals = set(data.flatten().tolist())
+                vals.discard(nodata)
+                vals.discard(float('nan'))
+                present_codes = sorted([int(v) for v in vals if not (isinstance(v, float) and (v != v))])
+        except Exception:
+            pass  # rasterio may not be installed; skip raster inspection
+
+    legend = []
+    for code in sorted(TREATMENT_CODE_LABELS):
+        info = TREATMENT_CODE_LABELS[code]
+        legend.append({
+            'code':    code,
+            'label':   info['label'],
+            'steps':   info['steps'],
+            'color':   TREATMENT_CODE_COLORS.get(code, '#94a3b8'),
+            'present': code in present_codes,
+        })
+
+    return jsonify({
+        'legend':        legend,
+        'present_codes': present_codes,
+        'has_tif':       bool(tif_path),
+    }), 200
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1072,9 +1499,11 @@ def qmra_cs_put_config(case_study_id):
 def qmra_diff_tif():
     """Return a float32 GeoTIFF of (B − A) / A × 100 % for two QMRA combined output files.
 
-    Query params: scA, scB, output_type (monthly|daily), file (e.g. annual_risk.tif)
+    Query params: scA, scB, output_type (monthly|daily), file (e.g. annual_risk.tif),
+    quantile (which quantile band to diff, default '0.5').
     Returns nodata=-9999 float32 GeoTIFF in WGS-84.  Band 1 holds the first (or only)
-    matching band; for multi-band TIFs (annual_risk.tif) we use the q0.5 combined band.
+    matching band; for multi-band TIFs (annual_risk.tif) we use the combined band at
+    `quantile` (last-matching scenario variant, e.g. 'treated' if configured).
     """
     import io
     import numpy as np
@@ -1090,6 +1519,10 @@ def qmra_diff_tif():
         return jsonify({'error': 'Invalid output_type'}), 400
     if '..' in file_name or '/' in file_name or '\\' in file_name:
         return jsonify({'error': 'Invalid file parameter'}), 400
+    try:
+        target_q = float(request.args.get('quantile', '0.5'))
+    except ValueError:
+        return jsonify({'error': 'Invalid quantile'}), 400
 
     try:
         import rasterio
@@ -1111,14 +1544,7 @@ def qmra_diff_tif():
                 nd     = src.nodata
                 src_tf = src.transform
                 src_crs = src.crs or wgs84
-                # Pick the q0.5 combined band if available, else band 1
-                band_idx = 1
-                for i, d in enumerate(descs):
-                    if d and '_q0.5' in d and d.startswith('combined'):
-                        band_idx = i + 1
-                        break
-                    elif d and '_q0.5' in d and band_idx == 1:
-                        band_idx = i + 1  # fallback: any q0.5
+                band_idx = _select_band_index(descs, 'combined', target_q) or 1
                 data = src.read(band_idx).astype(np.float32)
                 bounds = src.bounds
             if nd is not None:
@@ -1174,8 +1600,12 @@ def qmra_diff_tif():
             memfile.seek(0)
             data_bytes = memfile.read()
 
-        return send_file(io.BytesIO(data_bytes), mimetype='image/tiff',
+        resp = send_file(io.BytesIO(data_bytes), mimetype='image/tiff',
                          as_attachment=False, download_name='risk_diff.tif')
+        resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        resp.headers['Pragma'] = 'no-cache'
+        resp.headers['Expires'] = '0'
+        return resp
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 404
     except Exception as exc:
@@ -1183,15 +1613,21 @@ def qmra_diff_tif():
 
 
 def qmra_area_stats(scenario_id):
-    """Return per-ISO median risk (q0.5) from a QMRA combined output TIF.
+    """Return per-ISO risk from a QMRA combined output TIF, at a given quantile.
 
     Query params:
       output_type  'monthly' (default) or 'daily'
       file         filename in combined/<output_type>/ (default: annual_risk.tif)
+      quantile     which quantile ('0.025', '0.5', '0.975', ...) to read (default '0.5')
 
     Returns:
-      { iso: { risk: float, count: int } }
-    where `risk` is the median (q0.5) probability value per polygon.
+      { iso: { risk: float, count: int, routes: { route: float, ... }, cases: float|None } }
+    where `risk` is the requested-quantile combined probability value per
+    polygon, `routes` gives the same for each individual exposure pathway
+    present in the file (used by the region-click risk breakdown), and
+    `cases` is the expected annual infections for that polygon (combined
+    risk at `quantile` × population, summed per-cell) -- only populated when
+    `file == 'annual_risk.tif'` and population rasters are available.
     """
     output_type = request.args.get('output_type', 'monthly')
     file_name   = request.args.get('file', 'annual_risk.tif')
@@ -1199,6 +1635,10 @@ def qmra_area_stats(scenario_id):
         return jsonify({'error': 'Invalid output_type'}), 400
     if '..' in file_name or '/' in file_name or '\\' in file_name:
         return jsonify({'error': 'Invalid file parameter'}), 400
+    try:
+        target_q = float(request.args.get('quantile', '0.5'))
+    except ValueError:
+        return jsonify({'error': 'Invalid quantile'}), 400
 
     try:
         import numpy as np
@@ -1206,6 +1646,7 @@ def qmra_area_stats(scenario_id):
         from rasterio.mask import mask as rio_mask
         from rasterio.warp import transform_geom
         from rasterio.crs import CRS
+        from rasterio.features import geometry_mask
         import fiona
     except ImportError:
         return jsonify({'error': 'rasterio/numpy/fiona not available'}), 500
@@ -1220,13 +1661,9 @@ def qmra_area_stats(scenario_id):
     if not os.path.exists(tif_path):
         return jsonify({'error': f'File not found: {file_name}'}), 404
 
-    geo_dir = os.path.join(cs['folder_path'], 'input', 'baseline', 'geodata')
-    if not os.path.isdir(geo_dir):
+    shp_path = find_geodata_shapefile(cs['folder_path'], folder)
+    if not shp_path:
         return jsonify({'error': 'No geodata folder'}), 404
-    shp_files = [f for f in os.listdir(geo_dir) if f.endswith('.shp')]
-    if not shp_files:
-        return jsonify({'error': 'No shapefile found'}), 404
-    shp_path = os.path.join(geo_dir, shp_files[0])
 
     try:
         result = {}
@@ -1236,18 +1673,42 @@ def qmra_area_stats(scenario_id):
             nodata     = src.nodata
             wgs84      = 'EPSG:4326'
 
-            # Pick q0.5 combined band; fall back to band 1
-            band_idx = 1
-            for i, d in enumerate(descs):
-                if d and '_q0.5' in d and 'combined' in d:
-                    band_idx = i + 1
-                    break
-            elif_fallback = band_idx == 1
-            if elif_fallback:
-                for i, d in enumerate(descs):
-                    if d and '_q0.5' in d:
-                        band_idx = i + 1
-                        break
+            # Pick the combined band, plus one band per available pathway
+            # route, all at `target_q` (last-matching scenario variant wins
+            # -- see _select_band_index).
+            combined_idx = _select_band_index(descs, 'combined', target_q) or 1
+            route_keys = []
+            seen = set()
+            for desc in descs:
+                r, _q = _parse_band(desc)
+                if r and r != 'combined' and r not in seen:
+                    seen.add(r)
+                    route_keys.append(r)
+            band_keys    = ['combined'] + route_keys
+            band_indexes = [combined_idx]
+            for r in route_keys:
+                band_indexes.append(_select_band_index(descs, r, target_q) or combined_idx)
+
+            # Full-grid combined band + resampled population, used to derive
+            # per-area *expected infections* (risk_cell × population_cell,
+            # summed within each polygon) that track the selected quantile --
+            # unlike the fixed expected_cases.tif (always baked at q0.5).
+            pop_grid = None
+            combined_band_full = None
+            if file_name == 'annual_risk.tif' and output_type == 'monthly':
+                pop_grid = _pop_grid_for(cs['folder_path'], folder, tif_path)
+                if pop_grid is not None:
+                    combined_band_full = src.read(combined_idx).astype('float64')
+                    if nodata is not None:
+                        try:
+                            ndv = float(nodata)
+                            if not np.isnan(ndv):
+                                combined_band_full[combined_band_full == ndv] = np.nan
+                        except (TypeError, ValueError):
+                            pass
+                    combined_band_full[(combined_band_full < 0) | (combined_band_full > 1.0)] = np.nan
+                    if combined_band_full.shape != pop_grid.shape:
+                        combined_band_full = None
 
             with fiona.open(shp_path) as shp:
                 shp_crs_str = shp.crs_wkt or wgs84
@@ -1260,20 +1721,55 @@ def qmra_area_stats(scenario_id):
                         geom_r = geom
                     try:
                         out, _ = rio_mask(src, [geom_r], crop=True, all_touched=True,
-                                          filled=True, nodata=np.nan, indexes=[band_idx])
-                        vals = out[0].astype(float)
-                        if nodata is not None:
-                            try:
-                                vals[vals == float(nodata)] = np.nan
-                            except Exception:
-                                pass
-                        vals[vals < 0]   = np.nan
-                        vals[vals > 1.0] = np.nan
-                        valid = vals[~np.isnan(vals)]
-                        if len(valid):
+                                          filled=True, nodata=np.nan, indexes=band_indexes)
+                        combined_val   = None
+                        combined_count = 0
+                        routes_out     = {}
+                        for pos, key in enumerate(band_keys):
+                            vals = out[pos].astype(float)
+                            if nodata is not None:
+                                try:
+                                    vals[vals == float(nodata)] = np.nan
+                                except Exception:
+                                    pass
+                            vals[vals < 0]   = np.nan
+                            vals[vals > 1.0] = np.nan
+                            valid = vals[~np.isnan(vals)]
+                            # Average over populated (nonzero) cells so this matches
+                            # the headline "area-average" figure; background zero
+                            # cells inside the polygon would otherwise dilute it.
+                            positive = valid[valid > 0]
+                            if len(positive):
+                                mean_val = float(np.mean(positive))
+                                if key == 'combined':
+                                    combined_val   = mean_val
+                                    combined_count = int(len(positive))
+                                else:
+                                    routes_out[key] = mean_val
+                        if combined_val is not None:
+                            cases_val = None
+                            if combined_band_full is not None and pop_grid is not None:
+                                try:
+                                    feat_mask = geometry_mask(
+                                        [geom_r], out_shape=combined_band_full.shape,
+                                        transform=src.transform, invert=True,
+                                    )
+                                    valid_c = (
+                                        feat_mask
+                                        & np.isfinite(combined_band_full) & (combined_band_full > 0)
+                                        & np.isfinite(pop_grid)
+                                    )
+                                    if np.any(valid_c):
+                                        cases_val = float(np.sum(
+                                            combined_band_full[valid_c] * pop_grid[valid_c]
+                                        ))
+                                except Exception:
+                                    cases_val = None
                             result[iso] = {
-                                'risk':  float(np.mean(valid)),
-                                'count': int(len(valid)),
+                                'risk':   combined_val,
+                                'count':  combined_count,
+                                'routes': routes_out,
+                                'cases':  cases_val,
                             }
                     except Exception:
                         pass
@@ -1302,6 +1798,8 @@ def register_routes(app, frontend_app):
         ('/api/case-studies/<case_study_id>/qmra/rerun-all',                                  ['POST'], qmra_rerun_all),
         ('/api/case-studies/<case_study_id>/qmra/config',                                     ['GET'],  qmra_cs_get_config),
         ('/api/case-studies/<case_study_id>/qmra/config',                                     ['PUT'],  qmra_cs_put_config),
+        ('/api/case-studies/<case_study_id>/qmra/treatment-tif',                              ['GET'],  qmra_cs_treatment_tif),
+        ('/api/case-studies/<case_study_id>/qmra/treatment-codes',                            ['GET'],  qmra_cs_treatment_codes),
     ]
     for rule, methods, view in routes:
         app.add_url_rule(rule, endpoint=f'main_{view.__name__}', view_func=view, methods=methods)

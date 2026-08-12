@@ -6,6 +6,7 @@ import 'leaflet/dist/leaflet.css';
 import axios from 'axios';
 import { TrendingUp, Calendar, ChartColumn, Edit, Trash2 } from 'lucide-react';
 import SSPScenarioDialog from './SSPScenarioDialog';
+import { paths } from '../routes';
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
 const FLOW_LABEL_W   = 160;          // wider to fit inline description text
@@ -81,31 +82,40 @@ function FitBoundsToData({ geojson }) {
 }
 
 // ─── ScenarioFlowDiagram ─────────────────────────────────────────────────────
-function ScenarioFlowDiagram({ scenarios, emissionTotals, colorScale, onCreateScenario, onRunScenario, runningScenarios, onNavigateScenario }) {
+function ScenarioFlowDiagram({ scenarios, emissionTotals, riskTotals, colorScale, emissionRange, onCreateScenario, onRunScenario, runningScenarios, onNavigateScenario }) {
   const baseline = useMemo(
     () => scenarios.find(s => String(s.is_baseline).toLowerCase() === 'true'),
     [scenarios]
   );
   const baselinePathogen = baseline?.pathogen || '';
 
-  const baselineTotal = useMemo(() => {
-    if (!baseline?.has_outputs) return null;
-    return emissionTotals[baseline.id] ?? null;
-  }, [baseline, emissionTotals]);
-
   const numRows  = 1 + FLOW_ALL_SSPS.length;
   const svgH     = FLOW_HEADER_H + numRows * FLOW_ROW_H + 20;
   const baselineY = flowRowY(0);
 
-  // Continuous diverging color for a run stop
+  // Color for a run stop — normalized across the full scenario range with baseline as the anchor.
   const stopColor = useCallback((sc) => {
     if (!sc?.has_outputs) return null;
-    const total = emissionTotals?.[sc.id];
+    const hasRiskData = riskTotals && Object.values(riskTotals).some(v => v != null && v > 0);
+    const totals = hasRiskData ? riskTotals : emissionTotals;
+    const total = totals?.[sc.id];
     if (total == null) return '#d1d5db';
-    if (String(sc.is_baseline).toLowerCase() === 'true') return BASELINE_STOP_COLOR;
-    if (baselineTotal == null) return SSP_FLOW_COLOR;
-    return emissionColorFromRatio(total / baselineTotal, colorScale);
-  }, [emissionTotals, baselineTotal, colorScale]);
+    if (!emissionRange) return sc.is_baseline ? BASELINE_STOP_COLOR : SSP_FLOW_COLOR;
+    const { min, max, baselineValue, baselinePosition } = emissionRange;
+    if (baselineValue == null || min == null || max == null) return sc.is_baseline ? BASELINE_STOP_COLOR : SSP_FLOW_COLOR;
+    if (total === baselineValue && String(sc.is_baseline).toLowerCase() === 'true') return BASELINE_STOP_COLOR;
+
+    let ratio;
+    if (total <= baselineValue) {
+      const denom = baselineValue - min;
+      ratio = denom === 0 ? baselinePosition : baselinePosition * ((total - min) / denom);
+    } else {
+      const denom = max - baselineValue;
+      ratio = denom === 0 ? baselinePosition : baselinePosition + (1 - baselinePosition) * ((total - baselineValue) / denom);
+    }
+
+    return emissionColorFromRatio(Math.max(0, Math.min(1, ratio)), colorScale);
+  }, [emissionTotals, riskTotals, colorScale, emissionRange]);
 
   const stopMap = useMemo(() => {
     const m = {};
@@ -226,10 +236,10 @@ function ScenarioFlowDiagram({ scenarios, emissionTotals, colorScale, onCreateSc
                   gap: 3,
                 }}
               >
-                <div style={{ fontSize: 10, fontWeight: 700, color: SSP_FLOW_COLOR, letterSpacing: '0.07em' }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: SSP_FLOW_COLOR, letterSpacing: '0.07em' }}>
                   SSP{k}
                 </div>
-                <div style={{ fontSize: 8, lineHeight: 1.4, color: '#64748b' }}>
+                <div style={{ fontSize: 14, lineHeight: 1.4, color: '#64748b' }}>
                   {SSP_INLINE_DESCRIPTIONS[k]}
                 </div>
               </div>
@@ -324,14 +334,18 @@ function ScenarioFlowDiagram({ scenarios, emissionTotals, colorScale, onCreateSc
 }
 
 // ─── CaseStudyPage ────────────────────────────────────────────────────────────
-export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAnalytics, onEdit, onDelete }) {
+export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAnalytics, onEdit, onDelete, initialScenarios = null }) {
   const navigate = useNavigate();
 
   const [metadata,         setMetadata]         = useState(null);
-  const [scenarios,        setScenarios]        = useState([]);
+  // Seed from prop when the parent already has analytics data for this case study.
+  const [scenarios,        setScenarios]        = useState(
+    () => (initialScenarios?.length && initialScenarios[0]?.case_study_id === csId) ? initialScenarios : []
+  );
   const [scenariosVersion, setScenariosVersion] = useState(0);
   const [geodata,          setGeodata]          = useState(null);
   const [emissionTotals,   setEmissionTotals]   = useState({});
+  const [riskTotals,       setRiskTotals]       = useState({});
   const [runningScenarios, setRunningScenarios] = useState({});
   const [sspDialogOpen,    setSspDialogOpen]    = useState(false);
   const [pendingSSPData,   setPendingSSPData]   = useState(null);
@@ -344,13 +358,25 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
       .catch(() => setMetadata(null));
   }, [csId]);
 
-  // Load scenario list (re-runs when scenariosVersion changes)
+  // Sync from parent prop when it arrives asynchronously (parent loads analytics
+  // in parallel; the prop may be empty on first render and arrive shortly after).
+  useEffect(() => {
+    if (initialScenarios?.length && initialScenarios[0]?.case_study_id === csId) {
+      setScenarios(initialScenarios);
+    }
+  }, [initialScenarios]); // eslint-disable-line
+
+  // Fetch scenario list.  Skipped on initial mount when the parent already
+  // provided scenarios for this case study (avoids a redundant analytics call).
+  // Re-runs after a model run completes (scenariosVersion > 0).
   useEffect(() => {
     if (!csId) return;
+    const hasFromParent = initialScenarios?.length && initialScenarios[0]?.case_study_id === csId;
+    if (hasFromParent && scenariosVersion === 0) return;
     axios.get(`/api/case-studies/${csId}/analytics`)
       .then(({ data }) => setScenarios(data.scenarios || []))
-      .catch(() => setScenarios([]));
-  }, [csId, scenariosVersion]);
+      .catch(() => {});
+  }, [csId, scenariosVersion]); // eslint-disable-line
 
   // Load baseline geodata for the map
   useEffect(() => {
@@ -379,6 +405,25 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
           setEmissionTotals(prev => ({ ...prev, [s.id]: sumIsoTotals(res.data?.iso_totals) }));
         })
         .catch(() => { /* leave as null — will show gray */ });
+    });
+  }, [scenarios]); // eslint-disable-line
+
+  // Try to fetch QMRA risk totals (population-weighted combined risk) for completed scenarios
+  useEffect(() => {
+    const toFetch = scenarios.filter(s => s.has_outputs && !(s.id in riskTotals));
+    toFetch.forEach(s => {
+      setRiskTotals(prev => ({ ...prev, [s.id]: null })); // mark in-flight
+      axios.get(`/api/scenarios/${s.id}/qmra/availability`)
+        .then(({ data }) => {
+          if (!data.has_qmra_output) return null;
+          return axios.get(`/api/scenarios/${s.id}/qmra/stats`);
+        })
+        .then(res => {
+          if (!res) return;
+          const val = res.data?.pop_weighted?.combined ?? null;
+          if (val != null) setRiskTotals(prev => ({ ...prev, [s.id]: val }));
+        })
+        .catch(() => { /* leave as null */ });
     });
   }, [scenarios]); // eslint-disable-line
 
@@ -438,53 +483,54 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
   const scenarioCount = scenarios.filter(s => String(s.is_baseline).toLowerCase() !== 'true').length;
   const runCount      = scenarios.filter(s => s.has_outputs).length;
 
-  // Dynamic emission color scale — adapts to the actual ratio range in this case study
-  const { colorScale, legendGradient } = useMemo(() => {
-    const baselineTotal = baseline?.has_outputs ? (emissionTotals[baseline.id] ?? null) : null;
-    const fallbackScale = [
-      { ratio: 0,   color: '#6DF69C' },
-      { ratio: 0.5, color: '#8DD0A4' },
-      { ratio: 1.0, color: '#0B4159' },
-      { ratio: 1.5, color: '#9EB65B' },
-      { ratio: 2.0, color: '#FFE597' },
-      { ratio: 3.0, color: '#BDA457' },
+  // Dynamic emission/risk color scale — anchors the baseline value in the middle of the ramp.
+  const { colorScale, legendGradient, emissionRange, useRisk } = useMemo(() => {
+    const nonBaseline = scenarios.filter(s => String(s.is_baseline).toLowerCase() !== 'true' && s.has_outputs);
+    const baselineScenario = baseline?.has_outputs ? baseline : null;
+
+    const riskValues = nonBaseline.map(s => riskTotals[s.id]).filter(t => t != null && t > 0);
+    const emValues   = nonBaseline.map(s => emissionTotals[s.id]).filter(t => t != null);
+    const baselineRiskValue = baselineScenario ? riskTotals[baselineScenario.id] : null;
+    const baselineEmValue   = baselineScenario ? emissionTotals[baselineScenario.id] : null;
+
+    const hasRisk = riskValues.length > 0;
+    const values  = hasRisk ? riskValues : emValues;
+    const baselineValue = hasRisk ? baselineRiskValue : baselineEmValue;
+
+    if (values.length === 0 || baselineValue == null) {
+      return { colorScale: [], legendGradient: 'linear-gradient(to right, #6DF69C, #8DD0A4, #0B4159, #9EB65B, #FFE597, #BDA457)', emissionRange: null, useRisk: hasRisk };
+    }
+
+    const allValues = [baselineValue, ...values];
+    const minTotal = Math.min(...allValues);
+    const maxTotal = Math.max(...allValues);
+    const baselinePosition = maxTotal === minTotal ? 0.5 : Math.max(0, Math.min(1, (baselineValue - minTotal) / (maxTotal - minTotal)));
+
+    const stops = [
+      { ratio: 0.0, color: '#6DF69C' },
+      { ratio: Math.max(0, baselinePosition * 0.5), color: '#8DD0A4' },
+      { ratio: baselinePosition, color: BASELINE_STOP_COLOR },
+      { ratio: Math.min(1, baselinePosition + (1 - baselinePosition) * 0.5), color: '#9EB65B' },
+      { ratio: 0.85, color: '#FFE597' },
+      { ratio: 1.0, color: '#BDA457' },
     ];
-    const fallbackGradient = 'linear-gradient(to right, #6DF69C, #8DD0A4, #0B4159, #9EB65B, #FFE597, #BDA457)';
-    if (!baselineTotal) return { colorScale: fallbackScale, legendGradient: fallbackGradient };
 
-    const ratios = scenarios
-      .filter(s => String(s.is_baseline).toLowerCase() !== 'true' && s.has_outputs)
-      .map(s => emissionTotals[s.id])
-      .filter(t => t != null)
-      .map(t => t / baselineTotal);
-    if (ratios.length === 0) return { colorScale: fallbackScale, legendGradient: fallbackGradient };
+    const gradStops = [
+      `#6DF69C 0%`,
+      `#8DD0A4 ${Math.round(Math.max(0, baselinePosition * 0.5) * 100)}%`,
+      `${BASELINE_STOP_COLOR} ${Math.round(baselinePosition * 100)}%`,
+      `#9EB65B ${Math.round(Math.min(1, baselinePosition + (1 - baselinePosition) * 0.5) * 100)}%`,
+      `#FFE597 85%`,
+      `#BDA457 100%`,
+    ];
 
-    const minRatio = Math.min(...ratios, 1.0);
-    const maxRatio = Math.max(...ratios, 1.0);
-
-    const stops = [];
-    if (minRatio < 1.0) {
-      stops.push({ ratio: minRatio, color: '#6DF69C' }); // wpGreen-700 — best
-      stops.push({ ratio: minRatio + (1.0 - minRatio) * 0.5, color: '#8DD0A4' }); // wpGreen
-    }
-    stops.push({ ratio: 1.0, color: '#0B4159' }); // wpBlue — baseline
-    if (maxRatio > 1.0) {
-      const w = maxRatio - 1.0;
-      stops.push({ ratio: 1.0 + w * 0.33, color: '#9EB65B' }); // wpCypress
-      stops.push({ ratio: 1.0 + w * 0.66, color: '#FFE597' }); // wpBrown-500
-      stops.push({ ratio: maxRatio,        color: '#BDA457' }); // wpBrown-900
-    }
-
-    const totalRange = maxRatio - minRatio || 1;
-    const gradStops  = stops.map(s => {
-      const pct = Math.round(((s.ratio - minRatio) / totalRange) * 100);
-      return `${s.color} ${pct}%`;
-    });
     return {
       colorScale:     stops,
       legendGradient: `linear-gradient(to right, ${gradStops.join(', ')})`,
+      emissionRange:  { min: minTotal, max: maxTotal, baselineValue, baselinePosition },
+      useRisk:        hasRisk,
     };
-  }, [scenarios, emissionTotals, baseline]);
+  }, [scenarios, emissionTotals, riskTotals]);
 
   const title       = metadata?.title || metadata?.name || '—';
   const description = metadata?.description;
@@ -504,29 +550,29 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
             onClick={() => onEdit(csId)}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-600 border border-gray-300 rounded-lg bg-wpWhite-100 hover:bg-gray-100 transition-colors"
           >
-            <Edit size={13} /> Edit
+            <Edit size={13} /> Metadata
           </button>
         )}
         {onDelete && (
           <button
             onClick={() => onDelete({ id: csId, name: title })}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-red-500 border border-red-200 rounded-lg bg-wpWhite-100 hover:bg-red-50 transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-red-500 rounded-lg hover:bg-red-600 transition-colors"
           >
             <Trash2 size={13} /> Delete
           </button>
         )}
         {csSlug && (
           <button
-            onClick={() => { onGoToScenarios?.(csId); navigate(`/scenarios/${csSlug}`); }}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold text-wpBlue border border-wpBlue-300 rounded-lg bg-wpWhite-100 hover:bg-wpBlue-100 transition-colors"
+            onClick={() => { onGoToScenarios?.(csId); navigate(paths.scenarios({ folder_name: csSlug })); }}
+            className="flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-wpGreen text-wpBlue hover:bg-wpGreen-600 transition-colors flex-shrink-0 my-1 mx-1 rounded-lg"
           >
             <ChartColumn size={13} /> Scenarios
           </button>
         )}
         {onGoToAnalytics && (
           <button
-            onClick={() => onGoToAnalytics(csId)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold text-wpBlue border border-wpBrown rounded-lg bg-wpWhite-100 hover:bg-wpBrown-100 transition-colors"
+            onClick={() => { onGoToAnalytics(csId); if (csSlug) navigate(paths.analytics({ folder_name: csSlug })); }}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold text-white bg-wpBlue rounded-lg hover:bg-wpBlue-600 transition-colors"
           >
             <TrendingUp size={13} /> Results
           </button>
@@ -613,12 +659,12 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
               Click <span className="font-semibold">+</span> to add a scenario · Click <span className="font-semibold">▶</span> to run an unexecuted scenario
             </p>
           </div>
-          {/* Emission color legend — continuous diverging scale */}
+          {/* Risk / emission color legend */}
           <div className="flex items-center gap-2 text-xs text-gray-500 flex-shrink-0 pt-0.5">
-            <span className="text-[10px] text-gray-400">better</span>
+            <span className="text-[10px] text-gray-400">lower</span>
             <div className="w-44 h-2.5 rounded" style={{ background: legendGradient }} />
-            <span className="text-[10px] text-gray-400">worse</span>
-            <span className="text-[10px] text-gray-300 ml-1">vs baseline</span>
+            <span className="text-[10px] text-gray-400">higher</span>
+            <span className="text-[10px] text-gray-300 ml-1">{useRisk ? 'total risk' : 'total emissions'}</span>
           </div>
         </div>
 
@@ -628,11 +674,13 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
             <ScenarioFlowDiagram
               scenarios={scenarios}
               emissionTotals={emissionTotals}
+              riskTotals={riskTotals}
               colorScale={colorScale}
+              emissionRange={emissionRange}
               onCreateScenario={(prefill) => { setPendingSSPData(prefill); setSspDialogOpen(true); }}
               onRunScenario={handleFlowRun}
               runningScenarios={runningScenarios}
-              onNavigateScenario={csSlug ? (sc) => navigate(`/scenarios/${csSlug}/${encodeURIComponent(sc.name)}/human-emissions/population`) : undefined}
+              onNavigateScenario={csSlug ? (sc) => navigate(paths.scenario({ folder_name: csSlug }, sc.name, 'human-emissions', 'population')) : undefined}
             />
           ) : (
             <p className="text-sm text-gray-400 italic py-6 text-center">Loading scenarios…</p>

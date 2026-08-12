@@ -85,6 +85,42 @@ input[type="range"].accent-thumb::-moz-range-thumb {
   border: none;
 }
 
+/* Split slider — transparent track so the custom segmented bar shows through */
+input[type="range"].split-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: col-resize;
+}
+input[type="range"].split-slider::-webkit-slider-runnable-track {
+  height: 100%;
+  background: transparent;
+}
+input[type="range"].split-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 0;
+  height: 0;
+  margin-top: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  pointer-events: none;
+}
+input[type="range"].split-slider::-moz-range-track {
+  height: 100%;
+  background: transparent;
+}
+input[type="range"].split-slider::-moz-range-thumb {
+  width: 0;
+  height: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  pointer-events: none;
+}
+
 /* ── Print styles ───────────────────────────────────────────────────────────
    When the user triggers Print (or the print button), hide the app chrome so
    only the main content area is visible on the printed page.

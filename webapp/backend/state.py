@@ -25,7 +25,18 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 # Second Flask app that serves the React build on port 3000 and mirrors the
 # API.  Routes are registered onto both ``app`` and ``frontend_app`` by the
 # ``register_routes`` helpers in each split module.
-frontend_app = Flask(__name__, static_folder='/app/frontend/build', static_url_path='')
+#
+# static_url_path is deliberately NOT '' (the Flask default for a root
+# static_url_path). With static_url_path='', Flask auto-registers its own
+# built-in ``/<path:filename>`` static route, which has the exact same rule
+# pattern as (and gets matched before) the custom SPA catch-all registered in
+# case_study.serve_static_files. That built-in route 404s outright when a path
+# doesn't exist on disk instead of ever falling through to the SPA catch-all,
+# breaking every direct/deep-linked URL other than '/'. Using a dedicated,
+# unused prefix here keeps Flask's built-in static route out of the way; real
+# asset requests (e.g. /assets/index-xxxx.js) are still served correctly by
+# the catch-all, which independently resolves files under static_folder.
+frontend_app = Flask(__name__, static_folder='/app/frontend/build', static_url_path='/__flask_static__')
 CORS(frontend_app)
 
 

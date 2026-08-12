@@ -5,10 +5,13 @@ and scenario-vs-baseline narrative generation.
 import csv
 import os
 import re
+import threading
+import time
 
 from flask import jsonify, request
 
 from fs_utils import (
+    _locate_scenario,
     _read_csv_table,
     _resolve_data_path,
     check_scenario_readiness,
@@ -17,7 +20,62 @@ from fs_utils import (
 from glowpa import _detect_wwtp_mode
 from hydrology import _compute_hydrology_metrics, _detect_hydrology_module
 from livestock import _compute_livestock_mean_heads, _detect_livestock_module
+from qmra import _qmra_available
 from state import case_studies
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Short-lived in-memory cache for get_analytics
+#
+# With many scenarios (15+), each call to get_analytics does O(N) filesystem
+# operations (readiness checks, livestock detection, output-dir listings).
+# Multiple components mount simultaneously and fire the same request; the cache
+# absorbs these within the same TTL window so work is only done once.
+# Key: (case_study_id, scenario_metadata_mtime) — auto-invalidates when
+# scenarios are added/removed.  A short wall-clock TTL covers output-dir
+# changes (after model runs).
+# ──────────────────────────────────────────────────────────────────────────────
+_analytics_cache_lock = threading.Lock()
+_analytics_cache: dict = {}   # key -> (monotonic_ts, data_dict)
+_ANALYTICS_CACHE_TTL = 3.0    # seconds
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Per-scenario enrichment helper (shared by get_analytics and get_scenario_info)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _enrich_scenario(scenario, cs_path, case_study_id):
+    """Add readiness, has_outputs, has_livestock, has_hydrology, has_qmra_output
+    fields to *scenario* in-place.  Returns the mutated dict."""
+    scenario['case_study_id'] = case_study_id
+    scenario.pop('data', None)
+    folder = scenario.get('folder', 'baseline')
+    pathogen = scenario.get('pathogen', '')
+    readiness = check_scenario_readiness(cs_path, folder, pathogen)
+    yaml_filename = f"{folder}_config.yaml"
+    yaml_path = os.path.join(cs_path, 'config', yaml_filename)
+    readiness['yaml_exists'] = os.path.exists(yaml_path)
+    readiness['yaml_filename'] = yaml_filename
+    scenario['readiness'] = readiness
+    output_dir = os.path.join(cs_path, 'output', folder)
+    scenario['has_outputs'] = (
+        os.path.isdir(output_dir) and
+        any(f.endswith(('.csv', '.tif'))
+            for f in os.listdir(output_dir)
+            if not f.endswith('.log'))
+    )
+    ls = _detect_livestock_module(cs_path, folder)
+    scenario['has_livestock'] = ls is not None and bool(ls.get('animals'))
+    conc_dir = os.path.join(cs_path, 'output', folder, 'hydrology', 'conc')
+    scenario['has_hydrology'] = (
+        os.path.isdir(conc_dir) and
+        any(re.search(r'm\d{1,2}\.tif$', f, re.IGNORECASE)
+            for f in os.listdir(conc_dir)
+            if f.endswith('.tif'))
+    )
+    scenario['has_qmra_output'] = os.path.exists(
+        os.path.join(cs_path, 'output', folder, 'qmra', 'monthly', 'annual_risk.tif')
+    )
+    return scenario
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -238,40 +296,35 @@ def get_analytics(case_study_id):
         if not cs:
             return jsonify({'error': 'Case study not found'}), 404
         cs_path = cs['folder_path']
+        meta_path = os.path.join(cs_path, 'config', 'scenario_metadata.csv')
+
+        # ── Cache lookup ──────────────────────────────────────────────────────
+        try:
+            mtime = os.path.getmtime(meta_path) if os.path.exists(meta_path) else 0.0
+        except OSError:
+            mtime = 0.0
+        cache_key = (case_study_id, mtime)
+        with _analytics_cache_lock:
+            entry = _analytics_cache.get(cache_key)
+        if entry and (time.monotonic() - entry[0]) < _ANALYTICS_CACHE_TTL:
+            return jsonify(entry[1]), 200
+
+        # ── Compute ───────────────────────────────────────────────────────────
         scenarios_list = load_scenarios_from_metadata_csv(cs_path)
-        result = []
-        for scenario in scenarios_list:
-            scenario['case_study_id'] = case_study_id
-            scenario.pop('data', None)
-            folder = scenario.get('folder', 'baseline')
-            pathogen = scenario.get('pathogen', '')
-            readiness = check_scenario_readiness(cs_path, folder, pathogen)
-            yaml_filename = f"{folder}_config.yaml"
-            yaml_path = os.path.join(cs_path, 'config', yaml_filename)
-            readiness['yaml_exists'] = os.path.exists(yaml_path)
-            readiness['yaml_filename'] = yaml_filename
-            scenario['readiness'] = readiness
-            output_dir = os.path.join(cs_path, 'output', folder)
-            scenario['has_outputs'] = (
-                os.path.isdir(output_dir) and
-                any(f.endswith(('.csv', '.tif'))
-                    for f in os.listdir(output_dir)
-                    if not f.endswith('.log'))
-            )
-            ls = _detect_livestock_module(cs_path, folder)
-            scenario['has_livestock'] = ls is not None and bool(ls.get('animals'))
-            conc_dir = os.path.join(cs_path, 'output', folder, 'hydrology', 'conc')
-            scenario['has_hydrology'] = (
-                os.path.isdir(conc_dir) and
-                any(re.search(r'm\d{1,2}\.tif$', f, re.IGNORECASE)
-                    for f in os.listdir(conc_dir)
-                    if f.endswith('.tif'))
-            )
-            scenario['has_qmra_output'] = os.path.exists(
-                os.path.join(cs_path, 'output', folder, 'qmra', 'monthly', 'annual_risk.tif')
-            )
-            result.append(scenario)
-        return jsonify({'scenarios': result, 'case_study': cs}), 200
+        result = [_enrich_scenario(s, cs_path, case_study_id) for s in scenarios_list]
+        cs_out = dict(cs)
+        cs_out['qmra_available'] = _qmra_available(cs_path)
+        payload = {'scenarios': result, 'case_study': cs_out}
+
+        # ── Cache store ───────────────────────────────────────────────────────
+        with _analytics_cache_lock:
+            # Evict any stale entries for this case study before storing.
+            stale = [k for k in list(_analytics_cache) if k[0] == case_study_id and k != cache_key]
+            for k in stale:
+                del _analytics_cache[k]
+            _analytics_cache[cache_key] = (time.monotonic(), payload)
+
+        return jsonify(payload), 200
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
 
@@ -412,11 +465,36 @@ def get_narrative(case_study_id):
         return jsonify({'error': str(exc)}), 500
 
 
+def get_scenario_info(scenario_id):
+    """Return analytics info for a single scenario — fast alternative to loading
+    all scenarios.  Used by ScenarioDetailView after a model run completes."""
+    try:
+        cs, folder = _locate_scenario(scenario_id)
+        cs_path = cs['folder_path']
+        scenarios_list = load_scenarios_from_metadata_csv(cs_path)
+        scenario = next((s for s in scenarios_list if s.get('id') == scenario_id), None)
+        if scenario is None:
+            return jsonify({'error': 'Scenario not found'}), 404
+        _enrich_scenario(scenario, cs_path, cs['id'])
+        # Invalidate the case-study analytics cache so the next full-list fetch
+        # reflects the updated has_outputs / has_livestock values.
+        with _analytics_cache_lock:
+            stale = [k for k in list(_analytics_cache) if k[0] == cs['id']]
+            for k in stale:
+                del _analytics_cache[k]
+        return jsonify(scenario), 200
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
 def register_routes(app, frontend_app):
     routes = [
         ('/api/case-studies/<case_study_id>/analytics',         ['GET'], get_analytics),
         ('/api/case-studies/<case_study_id>/driver-comparison', ['GET'], get_driver_comparison),
         ('/api/case-studies/<case_study_id>/narrative',         ['GET'], get_narrative),
+        ('/api/scenarios/<scenario_id>/info',                   ['GET'], get_scenario_info),
     ]
     for rule, methods, view in routes:
         app.add_url_rule(rule, endpoint=f'main_{view.__name__}', view_func=view, methods=methods)

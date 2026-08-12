@@ -247,6 +247,29 @@ def _livestock_dir_for_scenario(scenario_id):
     return cs, folder, ls_dir
 
 
+def find_geodata_shapefile(cs_path, folder):
+    """Return the path to the scenario's geodata .shp file, or None if not found.
+
+    Case studies use different layouts depending on when/how they were
+    imported, so all known locations are checked in order:
+      1. input/<folder>/geodata/            (per-scenario geodata)
+      2. input/baseline/geodata/             (legacy layout)
+      3. input/geodata/                      (shared top-level geodata)
+    """
+    candidate_dirs = [
+        os.path.join(cs_path, 'input', folder, 'geodata'),
+        os.path.join(cs_path, 'input', 'baseline', 'geodata'),
+        os.path.join(cs_path, 'input', 'geodata'),
+    ]
+    for geodata_dir in candidate_dirs:
+        if not os.path.isdir(geodata_dir):
+            continue
+        shp_files = [f for f in os.listdir(geodata_dir) if f.lower().endswith('.shp')]
+        if shp_files:
+            return os.path.join(geodata_dir, shp_files[0])
+    return None
+
+
 # ─── TIFF header parser (no PIL/rasterio) ────────────────────────────────────
 
 def _tif_pixel_dimensions(path):

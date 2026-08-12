@@ -2,7 +2,7 @@ import React from 'react';
 import { Grid3x3, X, ChartColumn, Plus } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import useScenarioStore from '../store/scenarioStore';
-const toSlug = (name) => encodeURIComponent(name ?? '');
+import { paths, QMRA_SEGMENT } from '../routes';
 const DEFAULT_CATEGORY = 'human-emissions';
 const DEFAULT_SUBCATEGORY = 'population';
 
@@ -11,13 +11,17 @@ const ScenarioTabBar = ({ onCreateScenario, caseStudySlug = '', onBeforeTabChang
   const navigate = useNavigate();
   const location = useLocation();
 
+  // Build a minimal `cs` shape for `paths.*` — we only need `folder_name`.
+  const csShape = caseStudySlug ? { folder_name: decodeURIComponent(caseStudySlug) } : null;
+
   const handleTabClick = (tabId) => {
     const doNav = () => {
       setActiveTab(tabId);
       if (tabId === 'main') {
-        navigate(caseStudySlug ? `/scenarios/${caseStudySlug}` : '/scenarios');
+        navigate(paths.scenarios(csShape));
       } else if (tabId === 'qmra-config') {
-        navigate(caseStudySlug ? `/scenarios/${caseStudySlug}/qmra` : '/scenarios/qmra');
+        // QMRA-config is only reachable when a case study is selected.
+        navigate(csShape ? paths.qmra(csShape) : `/scenarios/${QMRA_SEGMENT}`);
       } else {
         const tab = tabs.find((t) => t.id === tabId);
         if (tab) {
@@ -26,7 +30,7 @@ const ScenarioTabBar = ({ onCreateScenario, caseStudySlug = '', onBeforeTabChang
           const urlParts = location.pathname.split('/').filter(Boolean);
           const currentCategory    = urlParts[3] ?? DEFAULT_CATEGORY;
           const currentSubcategory = urlParts[4] ?? DEFAULT_SUBCATEGORY;
-          navigate(`/scenarios/${caseStudySlug ? `${caseStudySlug}/` : ''}${toSlug(tab.name)}/${currentCategory}/${currentSubcategory}`);
+          navigate(paths.scenario(csShape, tab.name, currentCategory, currentSubcategory));
         }
       }
     };

@@ -25,6 +25,28 @@ from fs_utils import (
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Reserved scenario names
+# ──────────────────────────────────────────────────────────────────────────────
+# Names that MUST NOT be used for scenarios because their URI encodings match
+# dedicated route segments under `/scenarios/:csSlug/*` in the frontend.
+# Keep in sync with `RESERVED_SCENARIO_NAMES` in
+# `webapp/frontend/src/routes.js`.
+RESERVED_SCENARIO_NAMES = {'_qmra', 'qmra', 'main'}
+
+
+def _reserved_name_error(name):
+    """Return an error message if ``name`` is reserved, else None."""
+    if name is None:
+        return None
+    lc = str(name).strip().lower()
+    if not lc:
+        return None
+    if lc in RESERVED_SCENARIO_NAMES:
+        return f"'{name}' is a reserved scenario name; please choose another"
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Scenario folder helper
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -101,6 +123,10 @@ def create_scenario():
         notes               = data.get('notes', data.get('description', ''))
         projection_method   = data.get('projectionMethod', '')
 
+        reserved_err = _reserved_name_error(scenario_name)
+        if reserved_err:
+            return jsonify({"error": reserved_err}), 400
+
         case_study_path = case_study['folder_path']
 
         raw_folder = generate_scenario_folder_name(case_study['name'], ssp, pathogen, year)
@@ -173,6 +199,12 @@ def update_scenario(scenario_id):
     try:
         data = request.get_json()
 
+        # Reject reserved names before touching disk.
+        if 'name' in (data or {}):
+            reserved_err = _reserved_name_error(data.get('name'))
+            if reserved_err:
+                return jsonify({"error": reserved_err}), 400
+
         target_case_study = None
         for case_study in state.case_studies:
             cs_path = case_study.get('folder_path')
@@ -200,6 +232,7 @@ def update_scenario(scenario_id):
         with open(meta_path, 'r', newline='', encoding='utf-8') as f:
             rows = list(csv.DictReader(f))
 
+        new_pathogen = None
         for row in rows:
             if row['scenario_id'] == scenario_id:
                 row['name']        = data.get('name',       row['name'])
@@ -212,7 +245,20 @@ def update_scenario(scenario_id):
                 row['year']        = str(data.get('year',    row.get('year', '')))
                 row['updated_at']  = datetime.now().isoformat()
                 updated_row = dict(row)
+                # Track if pathogen was set on a baseline so we can propagate it.
+                is_baseline = row.get('is_baseline', 'False').lower() in ('true', '1', 'yes')
+                if is_baseline and row['pathogen']:
+                    new_pathogen = row['pathogen']
                 break
+
+        # Propagate pathogen to non-baseline scenarios that have none set.
+        if new_pathogen:
+            now = datetime.now().isoformat()
+            for row in rows:
+                is_bl = row.get('is_baseline', 'False').lower() in ('true', '1', 'yes')
+                if not is_bl and not row.get('pathogen', '').strip():
+                    row['pathogen']   = new_pathogen
+                    row['updated_at'] = now
 
         write_scenario_metadata_csv(meta_path, rows)
 
@@ -397,6 +443,10 @@ def clone_scenario(scenario_id):
         src_name = target_row.get('name', 'Scenario')
         clone_name = data.get('name') or f"{src_name} (clone)"
 
+        reserved_err = _reserved_name_error(clone_name)
+        if reserved_err:
+            return jsonify({"error": reserved_err}), 400
+
         cs_path = target_case_study['folder_path']
         src_folder = target_row.get('folder', '')
         src_input = os.path.join(cs_path, 'input', src_folder)
@@ -554,6 +604,33 @@ def update_treatment(scenario_id):
         return jsonify({'error': str(e)}), 500
 
 
+def get_baseline_treatment(scenario_id):
+    """Return the case study's baseline treatment.csv rows (WWTP facilities).
+
+    Lets a non-baseline scenario offer "copy WWTP locations from baseline"
+    even when the scenario's own treatment data was projected forward as
+    area-based fractions instead (future WWTP locations are unknown, so
+    projections only carry fraction data — the baseline's point locations
+    are never propagated automatically).
+    """
+    from fs_utils import _locate_scenario
+    try:
+        cs, _folder = _locate_scenario(scenario_id)
+        csv_path = _resolve_data_path(cs['folder_path'], 'baseline', 'treatment.csv')
+        if not os.path.exists(csv_path):
+            return jsonify({'data': [], 'fieldnames': [], 'is_point_mode': False}), 200
+        with open(csv_path, 'r', newline='', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            fieldnames = list(reader.fieldnames or [])
+            data = [dict(row) for row in reader]
+        is_point_mode = 'lon' in fieldnames and 'lat' in fieldnames and len(data) > 0
+        return jsonify({'data': data, 'fieldnames': fieldnames, 'is_point_mode': is_point_mode}), 200
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 def get_geodata(scenario_id):
     """Return GeoJSON for the scenario's geodata shapefile.
     Adds an 'iso' property (1-based index) to each feature so it can be
@@ -562,8 +639,12 @@ def get_geodata(scenario_id):
     from fs_utils import _locate_scenario
     try:
         cs, folder = _locate_scenario(scenario_id)
-        for candidate_folder in [folder, 'baseline']:
-            geodata_dir = os.path.join(cs['folder_path'], 'input', candidate_folder, 'geodata')
+        candidate_dirs = [
+            os.path.join(cs['folder_path'], 'input', folder, 'geodata'),
+            os.path.join(cs['folder_path'], 'input', 'baseline', 'geodata'),
+            os.path.join(cs['folder_path'], 'input', 'geodata'),
+        ]
+        for geodata_dir in candidate_dirs:
             if os.path.isdir(geodata_dir):
                 shp_files = [f for f in os.listdir(geodata_dir) if f.lower().endswith('.shp')]
                 if shp_files:
@@ -684,6 +765,7 @@ def register_routes(app, frontend_app):
         ('/api/scenarios/<scenario_id>/summary',                        ['GET'],    get_scenario_summary),
         ('/api/scenarios/<scenario_id>/treatment',                      ['GET'],    get_treatment),
         ('/api/scenarios/<scenario_id>/treatment',                      ['PUT'],    update_treatment),
+        ('/api/scenarios/<scenario_id>/baseline-treatment',             ['GET'],    get_baseline_treatment),
         ('/api/scenarios/<scenario_id>/geodata',                        ['GET'],    get_geodata),
         ('/api/scenarios/<scenario_id>/treatment-fractions',            ['PUT'],    update_treatment_fractions),
         ('/api/scenarios/<scenario_id>/input-raster/<path:filename>',   ['GET'],    input_raster),

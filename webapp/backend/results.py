@@ -4,7 +4,7 @@ import os
 
 from flask import jsonify, request
 
-from fs_utils import _locate_scenario
+from fs_utils import _locate_scenario, find_geodata_shapefile
 
 
 def _png_from_rgba(rgba):
@@ -115,13 +115,9 @@ def raster_area_stats(scenario_id, filename):
         if not os.path.exists(tif_path):
             return jsonify({'error': 'File not found'}), 404
 
-        geo_dir = os.path.join(cs['folder_path'], 'input', 'baseline', 'geodata')
-        if not os.path.isdir(geo_dir):
+        shp_path = find_geodata_shapefile(cs['folder_path'], folder)
+        if not shp_path:
             return jsonify({'error': 'No geodata folder'}), 404
-        shp_files = [f for f in os.listdir(geo_dir) if f.endswith('.shp')]
-        if not shp_files:
-            return jsonify({'error': 'No shapefile found'}), 404
-        shp_path = os.path.join(geo_dir, shp_files[0])
 
         result = {}
         with rasterio.open(tif_path) as src:
@@ -173,8 +169,12 @@ def output_raster(scenario_id, filename):
         if not os.path.exists(tif_path):
             return jsonify({'error': 'File not found'}), 404
         from flask import send_file
-        return send_file(tif_path, mimetype='image/tiff', as_attachment=False,
+        resp = send_file(tif_path, mimetype='image/tiff', as_attachment=False,
                          download_name=filename)
+        resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        resp.headers['Pragma'] = 'no-cache'
+        resp.headers['Expires'] = '0'
+        return resp
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 404
     except Exception as exc:
@@ -439,8 +439,12 @@ def raster_diff_tif():
             data_bytes = memfile.read()
 
         from flask import send_file
-        return send_file(io.BytesIO(data_bytes), mimetype='image/tiff', as_attachment=False,
+        resp = send_file(io.BytesIO(data_bytes), mimetype='image/tiff', as_attachment=False,
                          download_name='emissions_diff.tif')
+        resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        resp.headers['Pragma'] = 'no-cache'
+        resp.headers['Expires'] = '0'
+        return resp
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 404
     except Exception as exc:

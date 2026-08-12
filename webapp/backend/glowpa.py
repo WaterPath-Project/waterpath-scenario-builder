@@ -36,12 +36,36 @@ from state import (
 # YAML generation
 # ──────────────────────────────────────────────────────────────────────────────
 
+
+
 def generate_yaml_content(folder, pathogen, flat=False, cs_path=None, wwtp_mode='POINT'):
     """Return a YAML config string for glowpa_init()."""
     p = (pathogen or 'unknown').lower().strip()
     slug = folder
     ls = _detect_livestock_module(cs_path, folder) if cs_path else None
     hy = _detect_hydrology_module(cs_path, folder) if cs_path else None
+
+    # If the scenario has livestock but no temperature raster, fall back to
+    # the baseline's temperature file (it is static across SSP scenarios).
+    if ls and not ls['temperature_tif'] and cs_path and folder != 'baseline':
+        baseline_ls = _detect_livestock_module(cs_path, 'baseline')
+        if baseline_ls and baseline_ls['temperature_tif']:
+            ls = dict(ls, temperature_tif=baseline_ls['temperature_tif'])
+
+    # For non-baseline scenarios, fall back to baseline heads TIFs for animals
+    # that only have isodata (e.g. camels — no SSP-projected heads raster).
+    if ls and cs_path and folder != 'baseline':
+        baseline_animals_dir = os.path.join(
+            cs_path, 'input', 'baseline', 'livestock_emissions', 'animals'
+        )
+        patched = {}
+        for animal, info in ls['animals'].items():
+            if not info['has_heads']:
+                fb = os.path.join(baseline_animals_dir, f'{animal}_heads.tif')
+                if os.path.exists(fb):
+                    info = dict(info, has_heads=True, _heads_fallback=fb)
+            patched[animal] = info
+        ls = dict(ls, animals=patched)
 
     if flat:
         out_dir  = 'output'
@@ -104,10 +128,16 @@ def generate_yaml_content(folder, pathogen, flat=False, cs_path=None, wwtp_mode=
             ls_subtree += "    animals:\n"
             for animal, info in ls['animals'].items():
                 if info['has_isodata'] and info['has_heads']:
+                    if '_heads_fallback' in info:
+                        heads_sub = os.path.relpath(
+                            info['_heads_fallback'], ls['dir']
+                        ).replace(os.sep, '/')
+                    else:
+                        heads_sub = f'animals/{animal}_heads.tif'
                     ls_subtree += (
                         f"      {animal}:\n"
                         f"        isodata: {ls_path(f'animals/isodata_{animal}.RDS')}\n"
-                        f"        heads: {ls_path(f'animals/{animal}_heads.tif')}\n"
+                        f"        heads: {ls_path(heads_sub)}\n"
                     )
         if ls_subtree:
             livestock_input_yaml += f"  livestock:\n{ls_subtree}"

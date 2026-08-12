@@ -8,6 +8,7 @@ import {
   DialogDescription,
 } from './Dialog';
 import useConfigStore from '../store/configStore';
+import { validateScenarioName } from '../routes';
 
 const SSPScenarioDialog = ({ isOpen, onClose, onSubmit, defaultPathogen = '', prefillData = null }) => {
   const { pathogenOptions } = useConfigStore();
@@ -125,11 +126,12 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit, defaultPathogen = '', pr
 
   const validateForm = () => {
     const newErrors = {};
-    
-    if (!formData.scenarioName.trim()) {
-      newErrors.scenarioName = 'Scenario name is required';
+
+    const nameErr = validateScenarioName(formData.scenarioName);
+    if (nameErr) {
+      newErrors.scenarioName = nameErr;
     }
-    
+
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };

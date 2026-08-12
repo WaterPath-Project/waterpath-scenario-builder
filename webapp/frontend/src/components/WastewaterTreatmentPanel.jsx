@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { ComposableMap, Geographies, Geography, Marker } from 'react-simple-maps';
-import { Plus, Save, RotateCcw, Trash2, TableProperties, ChevronUp, ChevronDown, AlertTriangle } from 'lucide-react';
+import { Plus, Save, RotateCcw, Trash2, TableProperties, ChevronUp, ChevronDown, AlertTriangle, Copy } from 'lucide-react';
 import axios from 'axios';
 import { adjustSlider } from './SanitationPanel';
 import DataGridView from './DataGridView';
@@ -261,6 +261,11 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [showRawData, setShowRawData] = useState(false);
+  // Baseline WWTP facilities (point-mode), available so non-baseline scenarios
+  // (whose treatment data was projected forward as area fractions, since future
+  // WWTP locations are unknown) can offer to copy the baseline's locations.
+  const [baselineWwtp, setBaselineWwtp] = useState([]);
+  const [baselineIsPointMode, setBaselineIsPointMode] = useState(false);
 
   const savedWwtpRef = useRef(initialWwtp);
   const savedFractionsRef = useRef(initialFractions);
@@ -285,6 +290,20 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scenario.id]);
 
+  // Fetch the case study's baseline WWTP locations (skip for the baseline scenario itself)
+  useEffect(() => {
+    if (scenario.is_baseline) return;
+    axios.get(`/api/scenarios/${scenario.id}/baseline-treatment`)
+      .then(r => {
+        setBaselineWwtp(r.data.data ?? []);
+        setBaselineIsPointMode(!!r.data.is_point_mode);
+      })
+      .catch(() => {
+        setBaselineWwtp([]);
+        setBaselineIsPointMode(false);
+      });
+  }, [scenario.id, scenario.is_baseline]);
+
   const markDirty = useCallback((newWwtp, newFractions, newMode) => {
     const dirty =
       newMode !== savedModeRef.current ||
@@ -293,6 +312,26 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
     setIsDirty(dirty);
     onDirtyChange?.(dirty);
   }, [onDirtyChange]);
+
+  // Copy baseline's WWTP facility locations into this scenario and switch to
+  // 'facilities' mode. Existing treatment-fraction data is discarded on Save
+  // (the normal 'facilities' save path zeroes the Fraction* columns).
+  const handleCopyFromBaseline = () => {
+    if (!baselineWwtp.length) return;
+    const confirmed = window.confirm(
+      'Copy WWTP locations from the baseline scenario? This will switch this scenario to point-source (WWTP) mode and discard its treatment fraction data once saved.'
+    );
+    if (!confirmed) return;
+    const copied = baselineWwtp.map(r => ({
+      lon: r.lon ?? '',
+      lat: r.lat ?? '',
+      capacity: r.capacity ?? '',
+      treatment_type: r.treatment_type || 'Primary',
+    }));
+    setMode('facilities');
+    setWwtp(copied);
+    markDirty(copied, fractions, 'facilities');
+  };
 
   // Area labels for the AreaSelector pill bar
   const areaLabels = useMemo(() =>
@@ -561,6 +600,15 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
             </button>
           ))}
         </div>
+        {baselineIsPointMode && (
+          <button
+            onClick={handleCopyFromBaseline}
+            title="Copy the baseline scenario's WWTP facility locations into this scenario and switch to point-source mode"
+            className="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-wpBlue rounded-lg transition-colors"
+          >
+            <Copy size={13} /> Copy WWTP locations from baseline
+          </button>
+        )}
       </div>
 
       {/* Treatment Efficiency Fractions */}

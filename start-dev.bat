@@ -30,15 +30,15 @@ REM Open browser automatically after a short delay
 echo.
 echo Opening browser in 10 seconds...
 timeout /t 10 /nobreak > nul
-start http://localhost:3000
+start http://127.0.0.1:3000
 
 echo.
 echo ======================================
 echo   Development server is running!
 echo ======================================
-echo Frontend: http://localhost:3000
-echo Backend:  http://localhost:5000
-echo GloWPa:   http://localhost:8080
+echo Frontend: http://127.0.0.1:3000
+echo Backend:  http://127.0.0.1:5000
+echo GloWPa:   http://127.0.0.1:8080
 echo.
 echo To view logs: docker compose -f docker-compose.development.yml logs -f
 echo To stop:      docker compose -f docker-compose.development.yml down

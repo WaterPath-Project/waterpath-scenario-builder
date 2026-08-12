@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { BrowserRouter as Router, Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, useNavigate, useLocation, useParams, useSearchParams, Navigate } from 'react-router-dom';
 import axios from 'axios';
 import Terminal from './components/Terminal';
 import ScenarioCard from './components/ScenarioCard';
@@ -45,14 +45,12 @@ import ScenarioMetadataDialog from './components/ScenarioMetadataDialog';
 import ResultsView from './components/ResultsView';
 import CaseStudyPage from './components/CaseStudyPage';
 import ScenarioSummaryView from './components/ScenarioSummaryView';
+import NotFound from './components/NotFound';
+import { csSlug as toCsSlug, scenSlug as toScenSlug, paths, QMRA_SEGMENT, parseScenariosParam } from './routes';
 import './index.css';
 
 // Bootstrap global config (pathogens, etc.) as early as possible.
 useConfigStore.getState().fetchConfig();
-
-// ─── URL slug helpers ───────────────────────────────────────────────────────
-const toCsSlug    = (cs)   => encodeURIComponent(cs?.folder_name || (cs?.name ?? ''));
-const toScenSlug  = (name) => encodeURIComponent(name ?? '');
 
 // Status Indicator Component
 const StatusIndicator = ({ status }) => {
@@ -103,6 +101,55 @@ const DashboardCard = ({ title, children, className = "" }) => (
   </div>
 );
 
+// ── ResultsView URL adapter ─────────────────────────────────────────────────
+// Reads csSlug from the path and `scenarios`, `emissionType`, `area` from the
+// query string, resolves them against loaded case studies + analytics scenarios,
+// then hands them to <ResultsView /> via its existing initial* props. This lets
+// deep links like /analytics/west_athens_77b7d0e7?scenarios=SSP3%202050,SSP3%202100
+// render the correct case study + comparison scenarios without relying on
+// in-memory state. ResultsView itself writes the current selection back into
+// the URL (see its effect keyed on selectedScIds/emissionType/selectedAreas),
+// so this wrapper only needs to handle the initial / deep-link direction.
+function AnalyticsRouteWrapper({ caseStudies, fallbackCaseStudyId, fallbackScenarioId, availableScenarios, onCaseStudyChange }) {
+  const { csSlug } = useParams();
+  const [searchParams] = useSearchParams();
+
+  const matchedCs = React.useMemo(() => {
+    if (!csSlug || !caseStudies?.length) return null;
+    return caseStudies.find((cs) => toCsSlug(cs) === csSlug) || null;
+  }, [csSlug, caseStudies]);
+
+  const initialCaseStudyId = matchedCs?.id || fallbackCaseStudyId || '';
+
+  // Resolve `scenarios` query param (comma-separated scenario names) to their
+  // ids — supports up to 2 (primary + comparison).
+  const initialScenarioIds = React.useMemo(() => {
+    const names = parseScenariosParam(searchParams.get('scenarios'));
+    if (names.length && availableScenarios?.length) {
+      const ids = names
+        .map((n) => availableScenarios.find((s) => s.name === n)?.id)
+        .filter(Boolean)
+        .slice(0, 2);
+      if (ids.length) return ids;
+    }
+    return fallbackScenarioId ? [fallbackScenarioId] : [];
+  }, [searchParams, availableScenarios, fallbackScenarioId]);
+
+  const initialEmissionType = searchParams.get('emissionType') === 'land' ? 'land' : 'water';
+  const initialArea = searchParams.get('area') || '';
+
+  return (
+    <ResultsView
+      caseStudies={caseStudies}
+      initialCaseStudyId={initialCaseStudyId}
+      initialScenarioIds={initialScenarioIds}
+      initialEmissionType={initialEmissionType}
+      initialArea={initialArea}
+      onCaseStudyChange={onCaseStudyChange}
+    />
+  );
+}
+
 // Dashboard Component
 function Dashboard() {
   const navigate = useNavigate();
@@ -148,6 +195,9 @@ function Dashboard() {
   const [isSSPDialogOpen, setIsSSPDialogOpen] = useState(false);
   const [pendingSSPData, setPendingSSPData] = useState(null);
 
+  // ZIP upload feedback: null | 'uploading' | { ok: bool, message: string }
+  const [uploadStatus, setUploadStatus] = useState(null);
+
   // Baseline-missing-pathogen prompt
   const [baselineWithoutPathogen, setBaselineWithoutPathogen] = useState(null);
 
@@ -186,7 +236,11 @@ function Dashboard() {
   // Effect 1: sync case-study selection from URL (no dependency on scenarios/tempScenarios)
   useEffect(() => {
     const parts = location.pathname.split('/').filter(Boolean);
-    if (parts[0] !== 'scenarios') return;
+    const section = parts[0];
+    // Only these sections carry a case-study slug at parts[1]
+    const csAwareSections = ['scenarios', 'analytics', 'summary', 'case-studies'];
+    if (!csAwareSections.includes(section)) return;
+
     const csSlug = parts[1];
     const scenSlug = parts[2]; // present when inside a specific scenario
 
@@ -204,7 +258,7 @@ function Dashboard() {
         // Propagate to model and analytics screens
         setAnalyticsCaseStudy(matchedCs);
         setResultsState(prev => ({ ...prev, caseStudyId: matchedCs.id }));
-      } else if (matchedCs && !scenSlug) {
+      } else if (matchedCs && section === 'scenarios' && !scenSlug) {
         // Same case study, but user navigated back to the root page – re-fetch
         // to pick up any server-side changes (e.g. newly created scenarios).
         fetchScenarios(matchedCs.id);
@@ -215,9 +269,9 @@ function Dashboard() {
         setAnalyticsCaseStudy(null);
         clearTempScenarios();
       }
-      // Auto-navigate when there is exactly one case study
-      if (caseStudies.length === 1) {
-        navigate(`/scenarios/${toCsSlug(caseStudies[0])}`);
+      // Auto-navigate when there is exactly one case study (scenarios section only)
+      if (section === 'scenarios' && caseStudies.length === 1) {
+        navigate(paths.scenarios(caseStudies[0]));
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -230,7 +284,7 @@ function Dashboard() {
     const scenSlug = parts[2];
     if (!scenSlug) { if (activeTab !== 'main') setActiveTab('main'); return; }
     // Handle QMRA tab special URL segment
-    if (scenSlug === 'qmra') {
+    if (scenSlug === QMRA_SEGMENT) {
       if (activeTab !== 'qmra-config') setActiveTab('qmra-config');
       return;
     }
@@ -270,14 +324,15 @@ function Dashboard() {
   const handleNavigation = (sectionId) => {
     safeNavigate(() => {
       setActiveSection(sectionId);
+      const cs = selectedCaseStudy || analyticsCaseStudy;
       if (sectionId === 'scenarios') {
-        const cs = selectedCaseStudy || analyticsCaseStudy;
-        navigate(cs ? `/scenarios/${toCsSlug(cs)}` : '/scenarios');
+        navigate(cs ? paths.scenarios(cs) : '/scenarios');
       } else if (sectionId === 'case-studies') {
-        const cs = selectedCaseStudy || analyticsCaseStudy;
-        navigate(cs ? `/case-studies/${toCsSlug(cs)}` : '/case-studies');
+        navigate(cs ? paths.caseStudy(cs) : paths.caseStudies());
       } else if (sectionId === 'summary') {
-        navigate('/summary');
+        navigate(cs ? paths.summary(cs) : paths.caseStudies());
+      } else if (sectionId === 'analytics') {
+        navigate(cs ? paths.analytics(cs) : paths.caseStudies());
       } else {
         navigate(`/${sectionId}`);
       }
@@ -438,17 +493,23 @@ function Dashboard() {
   const uploadCaseStudy = async (file) => {
     const formData = new FormData();
     formData.append('file', file);
-    
+    setUploadStatus('uploading');
     try {
       const response = await axios.post('/api/case-studies/upload', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
+        headers: { 'Content-Type': 'multipart/form-data' },
       });
       await fetchCaseStudies();
+      const count = response.data.scenarios_created ?? 0;
+      const name  = response.data.case_study?.name ?? file.name;
+      setUploadStatus({
+        ok: true,
+        message: `Imported "${name}" — ${count} scenario${count !== 1 ? 's' : ''} found`,
+      });
       return response.data;
     } catch (error) {
       console.error('Error uploading case study:', error);
+      const msg = error.response?.data?.error || error.message || 'Unknown error';
+      setUploadStatus({ ok: false, message: `Import failed: ${msg}` });
       throw error;
     }
   };
@@ -895,15 +956,22 @@ function Dashboard() {
             <div className="w-1/4 flex-shrink-0 border-r border-gray-200 overflow-y-auto bg-white flex flex-col">
               {/* Toolbar */}
               <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-100 flex-shrink-0">
-                <label className="cursor-pointer bg-wpBlue hover:bg-wpBlue-300 text-white px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-xs font-medium transition-colors">
-                  <Upload size={14} />
-                  Upload .zip
+                <label className={`cursor-pointer text-white px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-xs font-medium transition-colors ${
+                  uploadStatus === 'uploading'
+                    ? 'bg-wpBlue/60 pointer-events-none'
+                    : 'bg-wpBlue hover:bg-wpBlue-300'
+                }`}>
+                  {uploadStatus === 'uploading'
+                    ? <RefreshCw size={14} className="animate-spin" />
+                    : <Upload size={14} />}
+                  {uploadStatus === 'uploading' ? 'Importing…' : 'Upload .zip'}
                   <input
                     type="file"
                     accept=".zip"
                     className="hidden"
                     onChange={(e) => {
                       const file = e.target.files[0];
+                      e.target.value = '';
                       if (file) uploadCaseStudy(file).catch(console.error);
                     }}
                   />
@@ -915,6 +983,24 @@ function Dashboard() {
                   <RefreshCw size={14} /> Refresh
                 </button>
               </div>
+              {/* Upload status banner */}
+              {uploadStatus && typeof uploadStatus === 'object' && (
+                <div className={`flex items-center gap-2 px-4 py-2 text-xs flex-shrink-0 ${
+                  uploadStatus.ok
+                    ? 'bg-green-50 text-green-700 border-b border-green-100'
+                    : 'bg-red-50 text-red-700 border-b border-red-100'
+                }`}>
+                  {uploadStatus.ok
+                    ? <CheckCircle size={12} className="flex-shrink-0" />
+                    : <AlertCircle size={12} className="flex-shrink-0" />}
+                  <span className="flex-1">{uploadStatus.message}</span>
+                  <button
+                    onClick={() => setUploadStatus(null)}
+                    className="flex-shrink-0 opacity-60 hover:opacity-100 leading-none"
+                    aria-label="Dismiss"
+                  >✕</button>
+                </div>
+              )}
 
               {/* List */}
               <div className="flex-1 overflow-y-auto divide-y divide-gray-100">
@@ -928,7 +1014,7 @@ function Dashboard() {
                   return (
                     <div
                       key={caseStudy.id}
-                      onClick={() => navigate(`/case-studies/${toCsSlug(caseStudy)}`)}
+                      onClick={() => navigate(paths.caseStudy(caseStudy))}
                       className={`group flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors ${
                         isSelected
                           ? 'bg-wpBlue/5 border-l-2 border-wpBlue'
@@ -959,6 +1045,7 @@ function Dashboard() {
                   key={detailCsId}
                   csId={detailCsId}
                   csSlug={csSlug}
+                  initialScenarios={analyticsCaseStudy?.id === detailCsId ? analyticsScenarios : null}
                   onGoToScenarios={(id) => {
                     const cs = caseStudies.find(c => c.id === id);
                     if (cs) {
@@ -972,8 +1059,10 @@ function Dashboard() {
                       setSelectedCaseStudy(cs);
                       setAnalyticsCaseStudy(cs);
                       setResultsState(prev => ({ ...prev, caseStudyId: id }));
+                      navigate(paths.analytics(cs));
+                    } else {
+                      navigate(paths.caseStudies());
                     }
-                    navigate('/analytics');
                   }}
                   onEdit={(id) => viewDatapackage(id)}
                   onDelete={(cs) => handleDeleteCaseStudy(cs)}
@@ -1023,6 +1112,7 @@ function Dashboard() {
                   caseStudySlug={caseStudySlug}
                   initialCategory={urlCategory ?? undefined}
                   initialSubcategory={urlSubcategory ?? undefined}
+                  analyticsInfo={analyticsScenarios.find(s => s.id === activeTab) ?? null}
                   onViewResults={(sc) => {
                     setResultsState({ caseStudyId: selectedCaseStudy?.id, scenarioId: sc.id });
                     handleNavigation('analytics');
@@ -1098,10 +1188,11 @@ function Dashboard() {
       case 'analytics': {
         const baselineId = analyticsScenarios.find(s => s.is_baseline && s.has_outputs)?.id || null;
         return (
-          <ResultsView
+          <AnalyticsRouteWrapper
             caseStudies={caseStudies}
-            initialCaseStudyId={resultsState.caseStudyId || analyticsCaseStudy?.id || selectedCaseStudy?.id}
-            initialScenarioId={resultsState.scenarioId || baselineId}
+            fallbackCaseStudyId={resultsState.caseStudyId || analyticsCaseStudy?.id || selectedCaseStudy?.id}
+            fallbackScenarioId={resultsState.scenarioId || baselineId}
+            availableScenarios={analyticsScenarios}
             onCaseStudyChange={(cs) => {
               setAnalyticsCaseStudy(cs);
               setSelectedCaseStudy(cs);
@@ -1188,7 +1279,7 @@ function Dashboard() {
                 value={selectedCaseStudy?.id ?? ''}
                 onChange={(e) => {
                   if (e.target.value === '') {
-                    navigate('/case-studies');
+                    navigate(paths.caseStudies());
                     return;
                   }
                   const cs = caseStudies.find(c => c.id === e.target.value);
@@ -1196,7 +1287,10 @@ function Dashboard() {
                   setSelectedCaseStudy(cs);
                   setAnalyticsCaseStudy(cs);
                   setResultsState(prev => ({ ...prev, caseStudyId: cs.id }));
-                  if (activeSection === 'scenarios') navigate(`/scenarios/${toCsSlug(cs)}`);
+                  if (activeSection === 'scenarios') navigate(paths.scenarios(cs));
+                  else if (activeSection === 'analytics') navigate(paths.analytics(cs));
+                  else if (activeSection === 'summary')   navigate(paths.summary(cs));
+                  else if (activeSection === 'case-studies') navigate(paths.caseStudy(cs));
                   else fetchScenarios(cs.id);
                 }}
                 className={`px-2 py-1 border text-xs bg-wpGray-100 text-wpBlue font-semibold rounded-lg focus:ring-2 focus:ring-wpBlue focus:border-transparent ${
@@ -1367,20 +1461,35 @@ function App() {
   return (
     <Router>
       <Routes>
+        {/* Redirects */}
         <Route path="/" element={<Navigate to="/case-studies" replace />} />
         <Route path="/service-status" element={<Navigate to="/settings" replace />} />
+        {/* Section-less URLs bounce to the case-study picker */}
+        <Route path="/analytics" element={<Navigate to="/case-studies" replace />} />
+        <Route path="/summary"   element={<Navigate to="/case-studies" replace />} />
+
+        {/* Settings */}
         <Route path="/settings" element={<Dashboard />} />
+
+        {/* Case studies */}
         <Route path="/case-studies" element={<Dashboard />} />
-        <Route path="/case-studies/:csId" element={<Dashboard />} />
+        <Route path="/case-studies/:csSlug" element={<Dashboard />} />
+
+        {/* Scenarios */}
         <Route path="/scenarios" element={<Dashboard />} />
         <Route path="/scenarios/:csSlug" element={<Dashboard />} />
         <Route path="/scenarios/:csSlug/:scenarioSlug" element={<Dashboard />} />
         <Route path="/scenarios/:csSlug/:scenarioSlug/:category" element={<Dashboard />} />
         <Route path="/scenarios/:csSlug/:scenarioSlug/:category/:subcategory" element={<Dashboard />} />
-        <Route path="/model" element={<Dashboard />} />
-        <Route path="/analytics" element={<Dashboard />} />
-        <Route path="/summary" element={<Dashboard />} />
-        <Route path="/settings" element={<Dashboard />} />
+
+        {/* Analytics (deep-linkable) */}
+        <Route path="/analytics/:csSlug" element={<Dashboard />} />
+
+        {/* Summary (deep-linkable) */}
+        <Route path="/summary/:csSlug" element={<Dashboard />} />
+
+        {/* 404 */}
+        <Route path="*" element={<NotFound />} />
       </Routes>
     </Router>
   );

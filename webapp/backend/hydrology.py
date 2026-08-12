@@ -8,7 +8,7 @@ import re
 
 from flask import jsonify, request, send_file
 
-from fs_utils import _locate_scenario
+from fs_utils import _locate_scenario, find_geodata_shapefile
 
 
 def _detect_hydrology_module(cs_path, folder):
@@ -735,6 +735,9 @@ def hydrology_area_stats(scenario_id):
 
     Returns:
       { iso: { mean: float, max: float, count: int } }
+    When month='avg', each entry also includes:
+      by_month: { '1': mean, ..., '12': mean }  (per-month mean, whichever months exist)
+      peak_month: int | null                    (1-based month with the highest mean)
     Each ISO key is a 1-based integer string matching the geodata endpoint.
     """
     try:
@@ -767,13 +770,9 @@ def hydrology_area_stats(scenario_id):
         return jsonify({'error': 'No hydrology output directory found'}), 404
 
     # Locate the shapefile used for zonal statistics (same as raster_area_stats)
-    geo_dir = os.path.join(cs_path, 'input', 'baseline', 'geodata')
-    if not os.path.isdir(geo_dir):
+    shp_path = find_geodata_shapefile(cs_path, folder)
+    if not shp_path:
         return jsonify({'error': 'No geodata folder'}), 404
-    shp_files = [f for f in os.listdir(geo_dir) if f.endswith('.shp')]
-    if not shp_files:
-        return jsonify({'error': 'No shapefile found'}), 404
-    shp_path = os.path.join(geo_dir, shp_files[0])
 
     try:
         import numpy as np
@@ -821,7 +820,7 @@ def hydrology_area_stats(scenario_id):
                 return jsonify({'error': 'month must be avg or an integer 1–12'}), 400
             tif_files = [
                 f for f in os.listdir(tif_dir)
-                if f.endswith('.tif') and re.search(rf'm{month_int}\.tif$', f)
+                if f.endswith('.tif') and re.search(rf'm0?{month_int}\.tif$', f)
             ]
             if not tif_files:
                 return jsonify({'error': f'No TIF found for month {month_int}'}), 404
@@ -837,24 +836,34 @@ def hydrology_area_stats(scenario_id):
             if not all_files:
                 return jsonify({'error': 'No monthly TIFs found'}), 404
 
-            # Accumulate sum/max/count per ISO across all months
-            accum = {}  # iso -> {sum_mean, max_val, n_months}
+            # Accumulate sum/max/count per ISO across all months, and keep each
+            # month's mean so callers can identify the peak (highest-mean) month.
+            accum = {}  # iso -> {sum_mean, max_val, n_months, by_month}
             for fname in all_files:
+                m = re.search(r'm(\d{1,2})\.tif$', fname)
+                month_int = int(m.group(1)) if m else None
                 stats = _zonal_stats_from_tif(os.path.join(tif_dir, fname))
                 for iso, s in stats.items():
                     if iso not in accum:
-                        accum[iso] = {'sum_mean': 0.0, 'max_val': -1e308, 'n_months': 0}
+                        accum[iso] = {'sum_mean': 0.0, 'max_val': -1e308, 'n_months': 0, 'by_month': {}}
                     accum[iso]['sum_mean']  += s['mean']
                     accum[iso]['max_val']    = max(accum[iso]['max_val'], s['max'])
                     accum[iso]['n_months']  += 1
+                    if month_int is not None:
+                        accum[iso]['by_month'][str(month_int)] = s['mean']
 
             result = {}
             for iso, a in accum.items():
                 if a['n_months'] > 0:
+                    peak_month = None
+                    if a['by_month']:
+                        peak_month = int(max(a['by_month'], key=a['by_month'].get))
                     result[iso] = {
-                        'mean':  a['sum_mean'] / a['n_months'],
-                        'max':   a['max_val'],
-                        'count': a['n_months'],
+                        'mean':       a['sum_mean'] / a['n_months'],
+                        'max':        a['max_val'],
+                        'count':      a['n_months'],
+                        'by_month':   a['by_month'],
+                        'peak_month': peak_month,
                     }
             return jsonify(result), 200
 

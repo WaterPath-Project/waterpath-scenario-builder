@@ -23,6 +23,81 @@ from state import _GLOWPA_ANIMALS, _LIVESTOCK_EDITABLE_CSVS
 # Detection
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _tif_has_valid_data(tif_path):
+    """Return True if `tif_path` has at least one non-nodata pixel.
+
+    Used to detect corrupt/placeholder rasters (e.g. an all-nodata
+    temperature.tif) that would otherwise pass file-existence checks but
+    crash GloWPa deep inside its R engine. Permissive on read errors — let
+    GloWPa itself surface any real problem with the file.
+    """
+    try:
+        import numpy as np
+        import rasterio
+        with rasterio.open(tif_path) as src:
+            data = src.read(1)
+            nodata = src.nodata
+        if nodata is None:
+            return True
+        if isinstance(nodata, float) and np.isnan(nodata):
+            return bool(np.any(~np.isnan(data)))
+        return bool(np.any(data != nodata))
+    except Exception:
+        return True
+
+
+# A reasonable global fallback mean annual air temperature (°C), used only
+# when a scenario's temperature.tif is corrupt/all-nodata (see
+# `_ensure_valid_temperature_tif`). GloWPa hard-requires this raster (via
+# `validate_required_field`) so it cannot simply be omitted — but the
+# alternative to a fallback value is a hard crash in
+# `manure_storage_survival_frac`, which blocks the whole model run.
+_FALLBACK_TEMPERATURE_C = 20.0
+
+_VALID_TEMPERATURE_CACHE = {}
+
+
+def _ensure_valid_temperature_tif(tif_path):
+    """If `tif_path` has zero valid (non-nodata) pixels, write a sibling copy
+    filled with `_FALLBACK_TEMPERATURE_C` and return its path; otherwise
+    return `tif_path` unchanged."""
+    if tif_path in _VALID_TEMPERATURE_CACHE:
+        return _VALID_TEMPERATURE_CACHE[tif_path]
+    out_path = tif_path
+    try:
+        if not _tif_has_valid_data(tif_path):
+            import rasterio
+            patched_path = os.path.join(
+                os.path.dirname(tif_path),
+                '.' + os.path.basename(tif_path).replace('.tif', '.filled.tif'),
+            )
+            regenerate = (
+                not os.path.exists(patched_path)
+                or os.path.getmtime(tif_path) > os.path.getmtime(patched_path)
+            )
+            if regenerate:
+                with rasterio.open(tif_path) as src:
+                    profile = dict(src.profile, dtype='float64', nodata=None)
+                    shape = (src.height, src.width)
+                print(
+                    f"WARNING: temperature raster {tif_path} has no valid "
+                    "(non-nodata) pixel values; filling it with a fallback "
+                    f"constant of {_FALLBACK_TEMPERATURE_C}\u00b0C to prevent a "
+                    "silent model crash. Livestock manure-survival results "
+                    "for this scenario will use this approximation instead "
+                    "of real temperature data."
+                )
+                import numpy as np
+                filled = np.full(shape, _FALLBACK_TEMPERATURE_C, dtype='float64')
+                with rasterio.open(patched_path, 'w', **profile) as dst:
+                    dst.write(filled, 1)
+            out_path = patched_path
+    except Exception:
+        out_path = tif_path
+    _VALID_TEMPERATURE_CACHE[tif_path] = out_path
+    return out_path
+
+
 def _detect_livestock_module(cs_path, folder):
     """Return livestock input metadata for a scenario, or None if absent.
 
@@ -60,7 +135,12 @@ def _detect_livestock_module(cs_path, folder):
                     break
 
     # Validate that the temperature raster is not a placeholder too small to cover
-    # the analysis domain.
+    # the analysis domain, and repair it if it's corrupt/empty (all nodata) —
+    # either of these makes GloWPa's `manure_storage_survival_frac` crash with
+    # "'names' attribute [1] must be the same length as the vector [0]"
+    # instead of failing gracefully. GloWPa hard-requires a temperature raster
+    # to be declared for the livestock module, so an all-nodata file can't
+    # simply be dropped — see `_ensure_valid_temperature_tif`.
     if temperature_tif:
         ref_raster = os.path.join(livestock_dir, 'animal_isoraster.tif')
         temp_dims = _tif_pixel_dimensions(temperature_tif)
@@ -74,6 +154,8 @@ def _detect_livestock_module(cs_path, folder):
                     "ignoring it to prevent a silent model crash."
                 )
                 temperature_tif = None
+        if temperature_tif:
+            temperature_tif = _ensure_valid_temperature_tif(temperature_tif)
 
     return {
         'dir':                    livestock_dir,
@@ -127,13 +209,92 @@ def _compute_livestock_mean_heads(ls_dir):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Prevalence format normalisation helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+_PREV_FIELDS = ('prev_young', 'prev_adult')
+
+# Real-world names for the IPCC/Vermeulen-2017 macro-regions used by the
+# `iso` column in livestock_emissions/animals/isodata_<animal>.csv files.
+# Verified against the source data (vermeulen_2017/ippc_region_animal.csv,
+# waterpath-data-service) which lists exactly these 7 regions, in this row
+# order, for every animal.
+IPCC_REGION_NAMES = {
+    1: 'Africa',
+    2: 'Asia',
+    3: 'Europe',
+    4: 'Latin America',
+    5: 'NENA (Near East / North Africa)',
+    6: 'North America',
+    7: 'Oceania',
+}
+
+
+def _ipcc_region_label(iso, fallback_index):
+    iso_str = str(iso or '').strip()
+    try:
+        name = IPCC_REGION_NAMES.get(int(float(iso_str)))
+    except (TypeError, ValueError):
+        name = None
+    if name:
+        return f"{name} (IPCC region {iso_str})"
+    return f"IPCC Region {iso_str or (fallback_index + 1)}"
+
+
+def _is_prev_fraction_format(all_area_rows):
+    """Return True if prev_young/prev_adult are stored as fractions (0-1).
+
+    Detection rule: every non-blank numeric value for those fields must be ≤ 1.
+    If any value exceeds 1 they are already in percentage (0-100) format.
+    """
+    for rows in all_area_rows:
+        for row in rows:
+            for field in _PREV_FIELDS:
+                raw = str(row.get(field) or '').strip()
+                if not raw:
+                    continue
+                try:
+                    if float(raw) > 1:
+                        return False
+                except ValueError:
+                    pass
+    return True
+
+
+def _is_prev_fraction_format_file(csv_path):
+    """Same detection, but read directly from a single CSV file."""
+    try:
+        with open(csv_path, 'r', newline='', encoding='utf-8') as f:
+            for row in csv.DictReader(f):
+                for field in _PREV_FIELDS:
+                    raw = str(row.get(field) or '').strip()
+                    if not raw:
+                        continue
+                    try:
+                        if float(raw) > 1:
+                            return False
+                    except ValueError:
+                        pass
+    except Exception:
+        return False
+    return True
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Endpoint handlers
 # ──────────────────────────────────────────────────────────────────────────────
 
 def get_livestock_population(scenario_id):
-    """Return a table view over livestock animals/isodata_<animal>.csv files."""
+    """Return a table view over livestock animals/isodata_<animal>.csv files.
+
+    Note: the 'iso' column in these per-animal files is an IPCC/Vermeulen-2017
+    macro-region code, NOT the district/GID identifier used in the case
+    study's human isodata.csv (those are unrelated numbering spaces that just
+    happen to overlap for low values). Rows are therefore labelled generically
+    as "IPCC Region <n>" rather than resolved against case-study geography.
+    """
     try:
-        _, _, ls_dir = _livestock_dir_for_scenario(scenario_id)
+        cs, folder, ls_dir = _livestock_dir_for_scenario(scenario_id)
         animals_dir = os.path.join(ls_dir, 'animals')
         if not os.path.isdir(animals_dir):
             return jsonify({'data': [], 'fieldnames': []}), 200
@@ -162,14 +323,28 @@ def get_livestock_population(scenario_id):
 
             if not area_labels and area_rows:
                 area_labels = [
-                    (
-                        str(r.get('subarea') or '').strip()
-                        or str(r.get('iso') or '').strip()
-                        or str(r.get('gid') or '').strip()
-                        or f'Area {i + 1}'
-                    )
+                    _ipcc_region_label(r.get('iso'), i)
                     for i, r in enumerate(area_rows)
                 ]
+
+        # Normalise prevalence fields to percentage (0-100) for display.
+        # Some case studies store them as fractions (0-1, GloWPa native format);
+        # others already use percentages.  Detect once across all animals.
+        all_area_rows = [row['areaRows'] for row in data]
+        if _is_prev_fraction_format(all_area_rows):
+            for row in data:
+                for ar in row.get('areaRows', []):
+                    for field in _PREV_FIELDS:
+                        raw = str(ar.get(field) or '').strip()
+                        if raw:
+                            try:
+                                ar[field] = str(round(float(raw) * 100, 10))
+                            except ValueError:
+                                pass
+                # Update the top-level summary value too (first area row)
+                if row.get('areaRows'):
+                    for field in _PREV_FIELDS:
+                        row[field] = row['areaRows'][0].get(field, row.get(field, ''))
 
         preferred = ['iso', 'gid']
         ordered = [c for c in preferred if c in fieldnames] + [c for c in fieldnames if c not in preferred]
@@ -227,11 +402,23 @@ def update_livestock_population(scenario_id):
                         if k in fieldnames:
                             row[k] = '' if v is None else str(v)
 
+            # If this file stores prevalence as fractions (0-1), convert the
+            # incoming percentage values (0-100) back to fractions before saving.
+            prev_is_fraction = _is_prev_fraction_format_file(csv_path)
+
             with open(csv_path, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 for r in rows_existing:
-                    writer.writerow({k: r.get(k, '') for k in fieldnames})
+                    out = {k: r.get(k, '') for k in fieldnames}
+                    if prev_is_fraction:
+                        for field in _PREV_FIELDS:
+                            if field in out and out[field] != '':
+                                try:
+                                    out[field] = str(round(float(out[field]) / 100, 10))
+                                except ValueError:
+                                    pass
+                    writer.writerow(out)
             updated_files += 1
 
         return jsonify({'message': 'Livestock population updated', 'updated_files': updated_files}), 200
@@ -314,6 +501,30 @@ def get_livestock_available_animals(scenario_id):
         return jsonify({'error': str(e)}), 500
 
 
+# In-process cache for get_livestock_heads_by_area keyed by (scenario_id, max_mtime)
+_HEADS_BY_AREA_CACHE = {}
+
+
+def _heads_by_area_cache_key(animals_dir):
+    """Return max mtime across all *_heads.tif files, or None if dir is missing."""
+    try:
+        mtimes = [
+            os.path.getmtime(os.path.join(animals_dir, f))
+            for f in os.listdir(animals_dir)
+            if f.lower().endswith('_heads.tif')
+        ]
+        return max(mtimes) if mtimes else None
+    except Exception:
+        return None
+
+
+def _invalidate_heads_by_area_cache(scenario_id):
+    """Drop all cache entries for a scenario (called after headcount edits)."""
+    keys_to_drop = [k for k in _HEADS_BY_AREA_CACHE if k[0] == scenario_id]
+    for k in keys_to_drop:
+        del _HEADS_BY_AREA_CACHE[k]
+
+
 def get_livestock_heads_by_area(scenario_id):
     """Return per-area animal head totals derived from animals/*_heads.tif rasters."""
     import numpy as np
@@ -329,9 +540,17 @@ def get_livestock_heads_by_area(scenario_id):
         if not os.path.isdir(animals_dir):
             return jsonify({'areas': [], 'animals': [], 'by_area': {}, 'totals_by_animal': {}}), 200
 
+        cache_key = (scenario_id, _heads_by_area_cache_key(animals_dir))
+        if cache_key[1] is not None and cache_key in _HEADS_BY_AREA_CACHE:
+            return jsonify(_HEADS_BY_AREA_CACHE[cache_key]), 200
+
         shp_path = None
-        for candidate_folder in [folder, 'baseline']:
-            geodata_dir = os.path.join(cs['folder_path'], 'input', candidate_folder, 'geodata')
+        candidate_dirs = [
+            os.path.join(cs['folder_path'], 'input', folder, 'geodata'),
+            os.path.join(cs['folder_path'], 'input', 'baseline', 'geodata'),
+            os.path.join(cs['folder_path'], 'input', 'geodata'),
+        ]
+        for geodata_dir in candidate_dirs:
             if not os.path.isdir(geodata_dir):
                 continue
             shp_files = [f for f in os.listdir(geodata_dir) if f.lower().endswith('.shp')]
@@ -414,12 +633,15 @@ def get_livestock_heads_by_area(scenario_id):
                     by_area[iso_key][animal] = total
                     totals_by_animal[animal] += total
 
-        return jsonify({
+        result = {
             'areas': areas,
             'animals': animals,
             'by_area': by_area,
             'totals_by_animal': totals_by_animal,
-        }), 200
+        }
+        if cache_key[1] is not None:
+            _HEADS_BY_AREA_CACHE[cache_key] = result
+        return jsonify(result), 200
     except ValueError as e:
         return jsonify({'error': str(e)}), 404
     except ImportError as e:
@@ -474,6 +696,7 @@ def set_livestock_headcount(scenario_id):
 
             results[animal] = {'old_total': round(old_total), 'new_total': round(new_total), 'scale': round(scale, 6)}
 
+        _invalidate_heads_by_area_cache(scenario_id)
         return jsonify({'results': results}), 200
     except ValueError as e:
         return jsonify({'error': str(e)}), 404

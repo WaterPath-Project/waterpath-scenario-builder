@@ -29,14 +29,14 @@ REM Wait for the webapp to be ready (check if port 3000 is responding)
 echo Waiting for webapp to be ready...
 :wait_loop
 timeout /t 3 /nobreak >nul
-powershell -Command "try { Invoke-WebRequest -Uri http://localhost:3000 -UseBasicParsing -TimeoutSec 2 | Out-Null; exit 0 } catch { exit 1 }" >nul 2>&1
+powershell -Command "try { Invoke-WebRequest -Uri http://127.0.0.1:3000 -UseBasicParsing -TimeoutSec 2 | Out-Null; exit 0 } catch { exit 1 }" >nul 2>&1
 if errorlevel 1 (
     echo Still waiting for webapp...
     goto wait_loop
 )
 
 echo Webapp is ready! Opening browser...
-start http://localhost:3000
+start http://127.0.0.1:3000
 
 echo.
 echo Browser opened. Bringing containers to foreground...

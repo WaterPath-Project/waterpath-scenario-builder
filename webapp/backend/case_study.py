@@ -16,7 +16,7 @@ from datetime import datetime
 from flask import jsonify, request, send_from_directory
 
 import state
-from fs_utils import create_baseline_metadata_entry
+from fs_utils import create_baseline_metadata_entry, write_scenario_metadata_csv
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -73,8 +73,62 @@ def create_case_study_folders(case_study_id, case_study_name):
     return case_study_path, folder_name
 
 
+def _parse_ssp_year(folder_name):
+    """Extract SSP and year from a folder name like 'SSP1_2030' or 'ssp3_2050'.
+    Returns (ssp_str, year_str) or ('', '') if not parseable."""
+    ssp = ''
+    year = ''
+    for part in folder_name.split('_'):
+        upper = part.upper()
+        if upper.startswith('SSP') and len(upper) >= 4 and upper[3:].isdigit():
+            ssp = upper
+        elif part.isdigit() and len(part) == 4:
+            year = part
+    return ssp, year
+
+
+def _copy_folder_to_dest(src_dir, dst_dir, zip_path, files_collected, prefix):
+    """Walk src_dir and copy files to dst_dir, applying RASTER_RENAME_MAP.
+    Appends prefix/rel_path strings to files_collected.
+
+    Uses ``shutil.copy`` (data only, no ``copystat``) and caches which
+    destination directories already exist, since ``dst_dir`` is typically a
+    slow bind-mounted volume (e.g. Docker Desktop on Windows) where every
+    extra syscall — timestamp/permission copies, redundant ``makedirs``
+    stats — adds noticeable per-file latency across hundreds/thousands of
+    files.
+    """
+    made_dirs = set()
+    for root, _dirs, flist in os.walk(src_dir):
+        for f in flist:
+            src_file = os.path.join(root, f)
+            if os.path.abspath(src_file) == os.path.abspath(zip_path):
+                continue
+            rel = os.path.relpath(src_file, src_dir)
+            parts = rel.split(os.sep)
+            parts[-1] = state.RASTER_RENAME_MAP.get(parts[-1].lower(), parts[-1])
+            rel = os.path.join(*parts)
+            dest_file = os.path.join(dst_dir, rel)
+            dest_dir = os.path.dirname(dest_file)
+            if dest_dir not in made_dirs:
+                os.makedirs(dest_dir, exist_ok=True)
+                made_dirs.add(dest_dir)
+            shutil.copy(src_file, dest_file)
+            files_collected.append(os.path.join(prefix, rel))
+
+
 def _do_zip_upload(file):
-    """Shared implementation for processing a ZIP-file case-study upload."""
+    """Shared implementation for processing a ZIP-file case-study upload.
+
+    Handles three ZIP layouts:
+    1. Full export  – has an ``input/`` subdirectory (mirrors the on-disk case
+       study structure).  ``config/``, ``input/``, and ``output/`` are copied
+       verbatim.
+    2. Share format – has a ``baseline/`` directory at the root, plus optional
+       non-baseline scenario directories and/or a ``config/`` directory.
+    3. Flat         – no ``baseline/`` or ``input/`` dir; entire root is treated
+       as baseline data.
+    """
     with tempfile.TemporaryDirectory() as temp_dir:
         zip_path = os.path.join(temp_dir, file.filename)
         file.save(zip_path)
@@ -82,47 +136,94 @@ def _do_zip_upload(file):
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(temp_dir)
 
-        baseline_src = os.path.join(temp_dir, 'baseline')
-        if not os.path.isdir(baseline_src):
-            baseline_src = temp_dir
+        # Unwrap single top-level folder (common when zipping a directory).
+        top_level = [e for e in os.listdir(temp_dir) if e != os.path.basename(zip_path)]
+        if len(top_level) == 1 and os.path.isdir(os.path.join(temp_dir, top_level[0])):
+            extract_root = os.path.join(temp_dir, top_level[0])
+        else:
+            extract_root = temp_dir
 
+        case_study_id   = str(uuid.uuid4())
+        case_study_name = os.path.splitext(file.filename)[0]
+        case_study_path, folder_name = create_case_study_folders(case_study_id, case_study_name)
+
+        files_copied  = []
+        cat_check_dir = os.path.join(case_study_path, 'input', 'baseline')
+
+        has_input_dir   = os.path.isdir(os.path.join(extract_root, 'input'))
+        has_baseline_dir = os.path.isdir(os.path.join(extract_root, 'baseline'))
+
+        if has_input_dir:
+            # ── Layout 1: full case-study export ──────────────────────────
+            for subdir in ('input', 'config', 'output'):
+                src_dir = os.path.join(extract_root, subdir)
+                if os.path.isdir(src_dir):
+                    dst_dir = os.path.join(case_study_path, subdir)
+                    # copy_function=shutil.copy skips copystat (timestamps/perms) —
+                    # each extra syscall adds up across hundreds of files on a
+                    # slow bind-mounted destination.
+                    shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True, copy_function=shutil.copy)
+                    for root_w, _, flist in os.walk(dst_dir):
+                        for f in flist:
+                            files_copied.append(
+                                os.path.join(os.path.relpath(root_w, case_study_path), f)
+                            )
+        else:
+            # ── Layout 2 / 3: share format or flat baseline ───────────────
+            src_baseline = (
+                os.path.join(extract_root, 'baseline') if has_baseline_dir else extract_root
+            )
+            baseline_dst = os.path.join(case_study_path, 'input', 'baseline')
+            _copy_folder_to_dest(src_baseline, baseline_dst, zip_path, files_copied, 'baseline')
+
+            if has_baseline_dir:
+                # Copy any additional scenario dirs (siblings of baseline/).
+                skip = {'baseline', 'config', 'output'}
+                for entry in sorted(os.listdir(extract_root)):
+                    entry_path = os.path.join(extract_root, entry)
+                    if (
+                        not os.path.isdir(entry_path)
+                        or entry.lower() in skip
+                        or entry.startswith('.')
+                        or entry.startswith('__')
+                    ):
+                        continue
+                    scen_dst = os.path.join(case_study_path, 'input', entry)
+                    os.makedirs(scen_dst, exist_ok=True)
+                    _copy_folder_to_dest(entry_path, scen_dst, zip_path, files_copied, entry)
+
+            # Copy config/ if present.
+            config_src = os.path.join(extract_root, 'config')
+            if os.path.isdir(config_src):
+                shutil.copytree(config_src, os.path.join(case_study_path, 'config'),
+                                dirs_exist_ok=True, copy_function=shutil.copy)
+
+        # ── Flatten input/scenarios/<dir>/ → input/<dir>/ if present ────────
+        # Some ZIPs pack non-baseline scenarios under input/scenarios/ rather
+        # than directly under input/.  Move each subfolder up one level so the
+        # rest of the backend can find them at input/<folder>/.
+        flattened_scenario_dirs = []
+        scenarios_subdir = os.path.join(case_study_path, 'input', 'scenarios')
+        if os.path.isdir(scenarios_subdir):
+            for scen_dir in sorted(os.listdir(scenarios_subdir)):
+                scen_src = os.path.join(scenarios_subdir, scen_dir)
+                if not os.path.isdir(scen_src):
+                    continue
+                scen_dst = os.path.join(case_study_path, 'input', scen_dir)
+                shutil.move(scen_src, scen_dst)
+                flattened_scenario_dirs.append(scen_dir)
+            shutil.rmtree(scenarios_subdir)
+            print(f"[DEBUG] Flattened {len(flattened_scenario_dirs)} scenario dir(s) from input/scenarios/")
+
+        # ── Detect enabled categories from baseline folder ─────────────────
         enabled_categories = [
             cat_id
-            for cat_id, folder_name in state.CATEGORY_FOLDER_MAP.items()
-            if os.path.isdir(os.path.join(baseline_src, folder_name))
+            for cat_id, cat_folder in state.CATEGORY_FOLDER_MAP.items()
+            if os.path.isdir(os.path.join(cat_check_dir, cat_folder))
         ]
         print(f"[DEBUG] Detected enabled categories: {enabled_categories}")
 
-        case_study_id = str(uuid.uuid4())
-        case_study_name = os.path.splitext(file.filename)[0]
-
-        case_study_path, folder_name = create_case_study_folders(case_study_id, case_study_name)
-        baseline_path = os.path.join(case_study_path, 'input', 'baseline')
-
-        files_copied = []
-        has_isodata = False
-
-        for root, dirs, files_in_dir in os.walk(baseline_src):
-            for f in files_in_dir:
-                src_file = os.path.join(root, f)
-
-                if os.path.abspath(src_file) == os.path.abspath(zip_path):
-                    continue
-
-                rel_path = os.path.relpath(src_file, baseline_src)
-
-                rel_parts = rel_path.split(os.sep)
-                rel_parts[-1] = state.RASTER_RENAME_MAP.get(rel_parts[-1].lower(), rel_parts[-1])
-                rel_path = os.path.join(*rel_parts)
-
-                dest_file = os.path.join(baseline_path, rel_path)
-                os.makedirs(os.path.dirname(dest_file), exist_ok=True)
-                shutil.copy2(src_file, dest_file)
-                files_copied.append(rel_path)
-
-                if rel_parts[-1].lower() == 'isodata.csv':
-                    has_isodata = True
-
+        # ── Create datapackage.json ────────────────────────────────────────
         csv_files = [p for p in files_copied if p.lower().endswith('.csv')]
         datapackage_path = create_datapackage_json(
             case_study_path,
@@ -130,30 +231,84 @@ def _do_zip_upload(file):
             f"Imported from {file.filename}",
             created_by="Upload User",
             csv_files=[os.path.basename(p) for p in csv_files],
-            enabled_categories=enabled_categories if enabled_categories else None,
+            enabled_categories=enabled_categories or None,
         )
 
+        # ── Build / import scenario metadata ───────────────────────────────
+        meta_csv_path  = os.path.join(case_study_path, 'config', 'scenario_metadata.csv')
+        scenario_count = 0
+
+        if os.path.exists(meta_csv_path):
+            # Re-stamp scenario IDs so they're unique to this installation.
+            with open(meta_csv_path, 'r', newline='', encoding='utf-8') as f:
+                rows = list(csv.DictReader(f))
+            now = datetime.now().isoformat()
+            for row in rows:
+                row['scenario_id'] = str(uuid.uuid4())
+                row['created_at']  = now
+                row['updated_at']  = now
+            write_scenario_metadata_csv(meta_csv_path, rows)
+            scenario_count = len(rows)
+            print(f"[DEBUG] Imported {scenario_count} scenario(s) from scenario_metadata.csv")
+        elif flattened_scenario_dirs:
+            # Auto-generate metadata from the flattened scenario directories.
+            now = datetime.now().isoformat()
+            rows = []
+            # Baseline entry (always present when input/scenarios/ exists)
+            rows.append({
+                'scenario_id': str(uuid.uuid4()),
+                'name':        'Baseline',
+                'folder':      'baseline',
+                'ssp':         '',
+                'pathogen':    '',
+                'year':        '',
+                'is_baseline': 'True',
+                'notes':       f'Baseline imported from {file.filename}',
+                'created_at':  now,
+                'updated_at':  now,
+            })
+            for scen_dir in flattened_scenario_dirs:
+                ssp, year = _parse_ssp_year(scen_dir)
+                name = f"{ssp} {year}".strip() if (ssp or year) else scen_dir
+                rows.append({
+                    'scenario_id': str(uuid.uuid4()),
+                    'name':        name,
+                    'folder':      scen_dir,
+                    'ssp':         ssp,
+                    'pathogen':    '',  # user must configure
+                    'year':        year,
+                    'is_baseline': 'False',
+                    'notes':       f'Imported from {file.filename}',
+                    'created_at':  now,
+                    'updated_at':  now,
+                })
+            write_scenario_metadata_csv(meta_csv_path, rows)
+            scenario_count = len(rows)
+            print(f"[DEBUG] Auto-generated {scenario_count} scenario entries from flattened dirs")
+        else:
+            has_isodata = any(os.path.basename(p).lower() == 'isodata.csv' for p in files_copied)
+            if has_isodata:
+                create_baseline_metadata_entry(case_study_path)
+                scenario_count = 1
+            else:
+                print(f"[WARN] No isodata.csv found in {file.filename}; baseline entry not created.")
+
         case_study = {
-            "id": case_study_id,
-            "name": case_study_name,
-            "description": f"Imported from {file.filename} — {len(files_copied)} files",
-            "created_at": datetime.now().isoformat(),
-            "scenario_count": 1 if has_isodata else 0,
-            "files": files_copied,
-            "folder_name": folder_name,
-            "folder_path": case_study_path,
+            "id":               case_study_id,
+            "name":             case_study_name,
+            "description":      f"Imported from {file.filename} — {len(files_copied)} files",
+            "created_at":       datetime.now().isoformat(),
+            "scenario_count":   scenario_count,
+            "files":            files_copied,
+            "folder_name":      folder_name,
+            "folder_path":      case_study_path,
             "datapackage_path": datapackage_path,
-            "enabled_categories": enabled_categories if enabled_categories else None,
-            "scenarios": [],
+            "enabled_categories": enabled_categories or None,
+            "scenarios":        [],
         }
         state.case_studies.append(case_study)
 
-        if has_isodata:
-            create_baseline_metadata_entry(case_study_path)
-        else:
-            print(f"[WARN] No isodata.csv found in {file.filename}; baseline entry not created.")
-
-        print(f"[DEBUG] Imported case study '{case_study_name}' — {len(files_copied)} files copied to baseline/")
+        print(f"[DEBUG] Imported '{case_study_name}' — {len(files_copied)} files, {scenario_count} scenario(s)")
         return case_study
 
 
@@ -466,17 +621,27 @@ def reload_case_studies():
 
 
 def serve_static_files(path):
-    """Catch-all SPA route — MUST be registered last on frontend_app."""
-    print(f"[DEBUG] Catch-all route hit with path: '{path}'")
-    print(f"[DEBUG] Static folder: '{state.frontend_app.static_folder}'")
-    full_path = os.path.join(state.frontend_app.static_folder, path)
-    print(f"[DEBUG] Checking if file exists: '{full_path}'")
-    if os.path.exists(full_path):
-        print(f"[DEBUG] File exists, serving: '{path}'")
+    """Catch-all SPA route — MUST be registered last on frontend_app.
+
+    Serves an on-disk static asset if the path resolves to a real file inside
+    ``static_folder``; otherwise returns ``index.html`` so React Router can
+    handle client-side routing. Requests that reach here under ``/api/`` are
+    unregistered API endpoints — return a JSON 404 rather than the HTML shell
+    so client fetch() calls fail loudly instead of parsing an HTML body.
+    """
+    # Reject unknown API routes early with JSON so callers don't accidentally
+    # parse the index.html shell as an API response.
+    if path.startswith('api/'):
+        return jsonify({"error": f"Unknown API endpoint: /{path}"}), 404
+
+    # Constrain resolution to the static folder to avoid any path-traversal
+    # via ``..`` segments; ``os.path.normpath`` collapses ``..`` and we then
+    # verify the resulting absolute path still lives under static_folder.
+    static_root = os.path.abspath(state.frontend_app.static_folder)
+    candidate = os.path.abspath(os.path.join(static_root, path))
+    if candidate.startswith(static_root + os.sep) and os.path.isfile(candidate):
         return send_from_directory(state.frontend_app.static_folder, path)
-    else:
-        print(f"[DEBUG] File doesn't exist, serving index.html for SPA routing")
-        return send_from_directory(state.frontend_app.static_folder, 'index.html')
+    return send_from_directory(state.frontend_app.static_folder, 'index.html')
 
 
 def register_routes(app, frontend_app):

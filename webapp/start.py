@@ -39,8 +39,8 @@ def main():
     backend_process = start_backend()
     
     print("✅ Application started successfully!")
-    print("🌐 Web Application: http://localhost:3000")
-    print("🚀 Flask Backend API: http://localhost:5000")
+    print("🌐 Web Application: http://127.0.0.1:3000")
+    print("🚀 Flask Backend API: http://127.0.0.1:5000")
     
     try:
         # Wait for the backend process

@@ -8,6 +8,7 @@ import {
   DialogDescription,
 } from './Dialog';
 import useConfigStore from '../store/configStore';
+import { validateScenarioName } from '../routes';
 
 const ScenarioMetadataDialog = ({ isOpen, onClose, scenario, onSave, requirePathogen = false, locked = false, onClone }) => {
   const { pathogenOptions } = useConfigStore();
@@ -54,15 +55,16 @@ const ScenarioMetadataDialog = ({ isOpen, onClose, scenario, onSave, requirePath
 
   const validateForm = () => {
     const newErrors = {};
-    
-    if (!formData.name || formData.name.trim() === '') {
-      newErrors.name = 'Scenario name is required';
+
+    const nameErr = validateScenarioName(formData.name);
+    if (nameErr) {
+      newErrors.name = nameErr;
     }
 
     if (requirePathogen && !formData.pathogen) {
       newErrors.pathogen = 'Pathogen is required to run the model';
     }
-    
+
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };

@@ -10,6 +10,7 @@ import PopulationPanel from './PopulationPanel';
 import SanitationLadderPanel from './SanitationLadderPanel';
 import WastewaterTreatmentPanel from './WastewaterTreatmentPanel';
 import LivestockEditorPanel from './LivestockEditorPanel';
+import { paths } from '../routes';
 // Import category icons
 import HumanEmissionsIcon from '../../assets/icons/human_emissions.svg';
 import LivestockEmissionsIcon from '../../assets/icons/livestock_emissions.svg';
@@ -38,7 +39,6 @@ const RUN_STATUS_CFG = {
 };
 
 // URL slug from scenario name
-const toSlug = (name) => encodeURIComponent(name ?? '');
 
 // Define categories and subcategories
 const CATEGORIES = [
@@ -85,7 +85,7 @@ const DRIVER_SUBCATEGORIES = [
   { id: 'production-systems',   label: 'Production Systems',    icon: ProductionSystemsIcon,  categoryId: 'livestock-emissions' },
 ];
 
-const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '', initialCategory, initialSubcategory, onViewResults, onCloneScenario }) => {
+const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '', initialCategory, initialSubcategory, onViewResults, onCloneScenario, analyticsInfo = null }) => {
   const { 
     scenarios, 
     tempScenarios, 
@@ -104,7 +104,8 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
   const navigate = useNavigate();
 
   // ── Run model state ────────────────────────────────────────────────────────
-  const [scenarioInfo, setScenarioInfo] = useState(null);
+  // Seed from analyticsInfo prop when provided so no initial fetch is needed.
+  const [scenarioInfo, setScenarioInfo] = useState(analyticsInfo);
   const [runId,     setRunId]     = useState(null);
   const [runMode,   setRunMode]   = useState(null);
   const [runStatus, setRunStatus] = useState('idle');
@@ -116,6 +117,12 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
   const [logLoading, setLogLoading] = useState(false);
   const [showLog,    setShowLog]    = useState(false);
   const needsRerun = needsRerunIds[scenarioId] ?? false;
+
+  // Sync scenarioInfo when the parent re-loads analytics data (e.g. after a
+  // different scenario's run completes and App.jsx refreshes analyticsScenarios).
+  useEffect(() => {
+    if (analyticsInfo) setScenarioInfo(analyticsInfo);
+  }, [analyticsInfo]);
 
   const pollRef     = useRef(null);
 
@@ -232,15 +239,15 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
     return () => window.removeEventListener('beforeunload', handler);
   }, [isDirty]);
 
-  // ── Fetch scenario readiness / has_outputs from analytics API ──────────────
+  // ── Fetch scenario readiness / has_outputs ─────────────────────────────────
+  // Skip when the parent already supplied analyticsInfo via prop.
   useEffect(() => {
     if (!selectedCaseStudy?.id || !scenarioId) return;
-    axios.get(`/api/case-studies/${selectedCaseStudy.id}/analytics`)
-      .then((res) => {
-        const found = res.data?.scenarios?.find((s) => s.id === scenarioId);
-        setScenarioInfo(found ?? null);
-      })
+    if (analyticsInfo) return; // already seeded from prop
+    axios.get(`/api/scenarios/${scenarioId}/info`)
+      .then((res) => setScenarioInfo(res.data))
       .catch(() => setScenarioInfo(null));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCaseStudy?.id, scenarioId]);
 
   // ── Poll run status ────────────────────────────────────────────────────────
@@ -259,13 +266,11 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
           if (data.status === 'success') {
             setNeedsRerun(scenarioId, false);
           }
-          // Refresh scenario info so has_outputs is up to date
+          // Refresh scenario info so has_outputs is up to date.
+          // Use the single-scenario endpoint to avoid processing all scenarios.
           if (selectedCaseStudy?.id) {
-            axios.get(`/api/case-studies/${selectedCaseStudy.id}/analytics`)
-              .then((r) => {
-                const found = r.data?.scenarios?.find((s) => s.id === scenarioId);
-                setScenarioInfo(found ?? null);
-              })
+            axios.get(`/api/scenarios/${scenarioId}/info`)
+              .then((r) => setScenarioInfo(r.data))
               .catch(() => {});
           }
         }
@@ -555,8 +560,10 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
                     setActiveCategory(subcategory.categoryId);
                     setActiveSubcategory(subcategory.id);
                     if (scenario?.name) {
-                      const prefix = caseStudySlug ? `/scenarios/${caseStudySlug}` : '/scenarios';
-                      navigate(`${prefix}/${toSlug(scenario.name)}/${subcategory.categoryId}/${subcategory.id}`);
+                      const csShape = caseStudySlug
+                        ? { folder_name: decodeURIComponent(caseStudySlug) }
+                        : null;
+                      navigate(paths.scenario(csShape, scenario.name, subcategory.categoryId, subcategory.id));
                     }
                   }}
                   className={`
