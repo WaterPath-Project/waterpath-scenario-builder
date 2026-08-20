@@ -147,6 +147,56 @@ def _normalize_treatment_type(raw):
     return None
 
 
+# manure_management.csv columns are `<SYSTEM>_<animal>` fractions that sum to 1
+# per animal.  System codes mirror MANURE_SYSTEM_LABELS in LivestockEditorPanel.jsx.
+# `O` (other systems) is deliberately in no group, so the three shares below need
+# not sum to 100%.
+_MANURE_DIRECT_SYSTEMS = {'PP', 'DS'}                                  # deposited / spread straight onto land
+_MANURE_STORAGE_SYSTEMS = {'SS', 'DL', 'LS', 'UAL', 'Pl1', 'Ph1', 'SSDL'}  # stored, allowing pathogen die-off
+_MANURE_TREATED_SYSTEMS = {'AD', 'BF'}                                 # digested / burned, pathogens destroyed
+
+
+def _compute_manure_management_metrics(ls_dir):
+    """Mean share of manure handled by each system group, averaged over every
+    (area, animal) pair that has a non-empty management mix.
+
+    Returns a dict of three fractions (0-1), each possibly None.
+    """
+    empty = {'direct': None, 'storage': None, 'treated': None}
+    rows, fields = _read_csv_rows(os.path.join(ls_dir, 'manure_management.csv'))
+    if not rows:
+        return empty
+
+    # column name -> (system, animal); e.g. 'SSDL_poultry' -> ('SSDL', 'poultry')
+    by_animal = {}
+    for field in fields:
+        if field in ('iso', 'gid') or '_' not in field:
+            continue
+        system, _, animal = field.rpartition('_')
+        if not system or not animal:
+            continue
+        by_animal.setdefault(animal, {})[system] = field
+    if not by_animal:
+        return empty
+
+    sums = {'direct': 0.0, 'storage': 0.0, 'treated': 0.0}
+    count = 0
+    for row in rows:
+        for systems in by_animal.values():
+            values = {sys_code: _num(row.get(col), 0.0) for sys_code, col in systems.items()}
+            total = sum(values.values())
+            if total <= 0:
+                continue  # animal absent / unspecified in this area
+            sums['direct'] += sum(v for s, v in values.items() if s in _MANURE_DIRECT_SYSTEMS) / total
+            sums['storage'] += sum(v for s, v in values.items() if s in _MANURE_STORAGE_SYSTEMS) / total
+            sums['treated'] += sum(v for s, v in values.items() if s in _MANURE_TREATED_SYSTEMS) / total
+            count += 1
+
+    if count == 0:
+        return empty
+    return {k: v / count for k, v in sums.items()}
+
+
 def _compute_driver_metrics_for_scenario(cs_path, folder):
     iso_path = _resolve_data_path(cs_path, folder, 'isodata.csv')
     iso_rows, _ = _read_csv_rows(iso_path)
@@ -245,6 +295,7 @@ def _compute_driver_metrics_for_scenario(cs_path, folder):
     ls = _detect_livestock_module(cs_path, folder)
     livestock_mean_growth = None
     production_progress_intensive = None
+    manure = {'direct': None, 'storage': None, 'treated': None}
     if ls:
         livestock_mean_growth = _compute_livestock_mean_heads(ls['dir'])
         ps_rows, ps_fields = _read_csv_rows(os.path.join(ls['dir'], 'production_systems.csv'))
@@ -256,6 +307,7 @@ def _compute_driver_metrics_for_scenario(cs_path, folder):
         vals = [v for v in vals if v is not None]
         if vals:
             production_progress_intensive = 100.0 * (sum(vals) / len(vals))
+        manure = _compute_manure_management_metrics(ls['dir'])
 
     hy = _detect_hydrology_module(cs_path, folder)
     hy_metrics = _compute_hydrology_metrics(hy)
@@ -279,6 +331,9 @@ def _compute_driver_metrics_for_scenario(cs_path, folder):
             'wastewater_share_tertiary_pct': share_tertiary,
             'wastewater_share_quaternary_pct': share_quaternary,
             'livestock_mean_population_growth': livestock_mean_growth,
+            'manure_direct_land_application_pct': (100.0 * manure['direct']) if manure['direct'] is not None else None,
+            'manure_storage_pct': (100.0 * manure['storage']) if manure['storage'] is not None else None,
+            'manure_treated_pct': (100.0 * manure['treated']) if manure['treated'] is not None else None,
             'production_mean_progress_intensive_pct': production_progress_intensive,
             **hy_metrics,
         },
@@ -329,6 +384,37 @@ def get_analytics(case_study_id):
         return jsonify({'error': str(exc)}), 500
 
 
+# Every driver metric surfaced in the comparison table, in display order.
+# Shared by the /driver-comparison endpoint, the /summary table and the
+# narrative report generator so all three describe the same set of metrics.
+DRIVER_METRIC_DEFS = [
+    {'key': 'population_total', 'driver': 'Population', 'label': 'Total population', 'delta_mode': 'relative_pct', 'value_format': 'integer', 'color_direction': 'neutral'},
+    {'key': 'population_urban_mean_pct', 'driver': 'Population', 'label': 'Mean urban fraction', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'neutral'},
+    {'key': 'population_under5_mean_pct', 'driver': 'Population', 'label': 'Mean under-5 fraction', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'neutral'},
+    {'key': 'population_hdi_mean', 'driver': 'Population', 'label': 'Mean HDI', 'delta_mode': 'absolute', 'value_format': 'hdi', 'color_direction': 'positive_good'},
+    {'key': 'sanitation_improved_pct', 'driver': 'Sanitation', 'label': 'Improved %', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
+    {'key': 'sanitation_unimproved_pct', 'driver': 'Sanitation', 'label': 'Unimproved %', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'negative_good'},
+    {'key': 'sanitation_open_defecation_pct', 'driver': 'Sanitation', 'label': 'Open defecation %', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'negative_good'},
+    {'key': 'wastewater_sewage_treated_pct', 'driver': 'Wastewater treatment', 'label': 'Sewage treated %', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
+    {'key': 'wastewater_fecal_sludge_treated_pct', 'driver': 'Wastewater treatment', 'label': 'Fecal sludge treated %', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
+    {'key': 'wastewater_facility_count', 'driver': 'Wastewater treatment', 'label': 'Number of treatment facilities', 'delta_mode': 'relative_pct', 'value_format': 'integer', 'color_direction': 'positive_good'},
+    {'key': 'wastewater_total_capacity', 'driver': 'Wastewater treatment', 'label': 'Total treatment capacity', 'delta_mode': 'relative_pct', 'value_format': 'integer', 'color_direction': 'positive_good'},
+    {'key': 'wastewater_share_primary_pct', 'driver': 'Wastewater treatment', 'label': 'Share of Primary', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'negative_good'},
+    {'key': 'wastewater_share_secondary_pct', 'driver': 'Wastewater treatment', 'label': 'Share of Secondary', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
+    {'key': 'wastewater_share_tertiary_pct', 'driver': 'Wastewater treatment', 'label': 'Share of Tertiary', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
+    {'key': 'wastewater_share_quaternary_pct', 'driver': 'Wastewater treatment', 'label': 'Share of Quaternary', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
+    {'key': 'livestock_mean_population_growth', 'driver': 'Livestock population', 'label': 'Mean Population growth (all animals)', 'delta_mode': 'relative_pct', 'value_format': 'integer', 'color_direction': 'neutral'},
+    {'key': 'manure_direct_land_application_pct', 'driver': 'Manure management', 'label': 'Directly applied to land %', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'negative_good'},
+    {'key': 'manure_storage_pct', 'driver': 'Manure management', 'label': 'Stored before application %', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
+    {'key': 'manure_treated_pct', 'driver': 'Manure management', 'label': 'Digested or burned %', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
+    {'key': 'production_mean_progress_intensive_pct', 'driver': 'Production systems', 'label': 'Mean progress towards intensive', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'neutral'},
+    {'key': 'hydrology_mean_annual_discharge',   'driver': 'Hydrology', 'label': 'Mean river discharge (m³/s)',   'delta_mode': 'relative_pct', 'value_format': 'decimal', 'color_direction': 'positive_good'},
+    {'key': 'hydrology_mean_annual_runoff',      'driver': 'Hydrology', 'label': 'Mean surface runoff (mm/day)',  'delta_mode': 'relative_pct', 'value_format': 'decimal', 'color_direction': 'negative_good'},
+    {'key': 'hydrology_mean_river_temperature',  'driver': 'Hydrology', 'label': 'Mean river temperature (°C)',   'delta_mode': 'absolute',     'value_format': 'decimal', 'color_direction': 'positive_good'},
+    {'key': 'hydrology_mean_ssrd',               'driver': 'Hydrology', 'label': 'Mean solar radiation (W/m²)', 'delta_mode': 'relative_pct', 'value_format': 'decimal', 'color_direction': 'positive_good'},
+]
+
+
 def get_driver_comparison(case_study_id):
     """Return per-scenario driver metrics used by the Analytics driver-change dialog."""
     try:
@@ -375,37 +461,57 @@ def get_driver_comparison(case_study_id):
                     return 0
             baseline = sorted(scenarios_out, key=_year_key)[0]
 
-        metric_defs = [
-            {'key': 'population_total', 'driver': 'Population', 'label': 'Total population', 'delta_mode': 'relative_pct', 'value_format': 'integer', 'color_direction': 'neutral'},
-            {'key': 'population_urban_mean_pct', 'driver': 'Population', 'label': 'Mean urban fraction', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'neutral'},
-            {'key': 'population_under5_mean_pct', 'driver': 'Population', 'label': 'Mean under-5 fraction', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'neutral'},
-            {'key': 'population_hdi_mean', 'driver': 'Population', 'label': 'Mean HDI', 'delta_mode': 'absolute', 'value_format': 'hdi', 'color_direction': 'positive_good'},
-            {'key': 'sanitation_improved_pct', 'driver': 'Sanitation', 'label': 'Improved %', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
-            {'key': 'sanitation_unimproved_pct', 'driver': 'Sanitation', 'label': 'Unimproved %', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'negative_good'},
-            {'key': 'sanitation_open_defecation_pct', 'driver': 'Sanitation', 'label': 'Open defecation %', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'negative_good'},
-            {'key': 'wastewater_sewage_treated_pct', 'driver': 'Wastewater treatment', 'label': 'Sewage treated %', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
-            {'key': 'wastewater_fecal_sludge_treated_pct', 'driver': 'Wastewater treatment', 'label': 'Fecal sludge treated %', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
-            {'key': 'wastewater_facility_count', 'driver': 'Wastewater treatment', 'label': 'Number of treatment facilities', 'delta_mode': 'relative_pct', 'value_format': 'integer', 'color_direction': 'positive_good'},
-            {'key': 'wastewater_total_capacity', 'driver': 'Wastewater treatment', 'label': 'Total treatment capacity', 'delta_mode': 'relative_pct', 'value_format': 'integer', 'color_direction': 'positive_good'},
-            {'key': 'wastewater_share_primary_pct', 'driver': 'Wastewater treatment', 'label': 'Share of Primary', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'negative_good'},
-            {'key': 'wastewater_share_secondary_pct', 'driver': 'Wastewater treatment', 'label': 'Share of Secondary', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
-            {'key': 'wastewater_share_tertiary_pct', 'driver': 'Wastewater treatment', 'label': 'Share of Tertiary', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
-            {'key': 'wastewater_share_quaternary_pct', 'driver': 'Wastewater treatment', 'label': 'Share of Quaternary', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'positive_good'},
-            {'key': 'livestock_mean_population_growth', 'driver': 'Livestock population', 'label': 'Mean Population growth (all animals)', 'delta_mode': 'relative_pct', 'value_format': 'integer', 'color_direction': 'neutral'},
-            {'key': 'production_mean_progress_intensive_pct', 'driver': 'Production systems', 'label': 'Mean progress towards intensive', 'delta_mode': 'pp', 'value_format': 'percent', 'color_direction': 'neutral'},
-            {'key': 'hydrology_mean_annual_discharge',   'driver': 'Hydrology', 'label': 'Mean river discharge (m\u00b3/s)',   'delta_mode': 'relative_pct', 'value_format': 'decimal', 'color_direction': 'positive_good'},
-            {'key': 'hydrology_mean_annual_runoff',      'driver': 'Hydrology', 'label': 'Mean surface runoff (mm/day)',  'delta_mode': 'relative_pct', 'value_format': 'decimal', 'color_direction': 'negative_good'},
-            {'key': 'hydrology_mean_river_temperature',  'driver': 'Hydrology', 'label': 'Mean river temperature (\u00b0C)',   'delta_mode': 'absolute',     'value_format': 'decimal', 'color_direction': 'positive_good'},
-            {'key': 'hydrology_mean_ssrd',               'driver': 'Hydrology', 'label': 'Mean solar radiation (W/m\u00b2)', 'delta_mode': 'relative_pct', 'value_format': 'decimal', 'color_direction': 'positive_good'},
-        ]
-
         return jsonify({
             'baseline_scenario_id': baseline.get('id') if baseline else None,
-            'metrics': metric_defs,
+            'metrics': DRIVER_METRIC_DEFS,
             'scenarios': scenarios_out,
         }), 200
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
+
+
+def load_scenario_rows(cs_path):
+    """Return the scenario_metadata.csv rows keyed by scenario_id (empty if absent)."""
+    meta_path = os.path.join(cs_path, 'config', 'scenario_metadata.csv')
+    if not os.path.exists(meta_path):
+        return {}
+    rows_by_id = {}
+    with open(meta_path, 'r', newline='', encoding='utf-8') as f:
+        for row in csv.DictReader(f):
+            sid = row.get('scenario_id')
+            if sid:
+                rows_by_id[sid] = row
+    return rows_by_id
+
+
+def build_narrative_scenario(cs, row, quantile=0.5, include_qmra=True):
+    """Assemble the scenario dict consumed by narrative_generator.
+
+    Combines the driver metrics derived from the scenario's inputs with the
+    flattened QMRA results, if the scenario has been run. `qmra` is None when
+    there are no risk outputs, which the templates handle explicitly.
+    """
+    folder = row.get('folder', 'baseline')
+    derived = _compute_driver_metrics_for_scenario(cs['folder_path'], folder)
+    scenario = {
+        'id': row.get('scenario_id'),
+        'name': row.get('name', 'Unnamed'),
+        'folder': folder,
+        'year': row.get('year', ''),
+        'ssp': row.get('ssp', ''),
+        'pathogen': row.get('pathogen', ''),
+        'is_baseline': str(row.get('is_baseline', 'False')).lower() in ('true', '1', 'yes'),
+        'wwtp_mode': derived['wwtp_mode'],
+        'metrics': derived['metrics'],
+        'qmra': None,
+    }
+    if include_qmra:
+        try:
+            from qmra import compute_qmra_report_metrics
+            scenario['qmra'] = compute_qmra_report_metrics(cs, folder, quantile)
+        except Exception:
+            scenario['qmra'] = None
+    return scenario
 
 
 def get_narrative(case_study_id):
@@ -422,38 +528,16 @@ def get_narrative(case_study_id):
         if not cs:
             return jsonify({'error': 'Case study not found'}), 404
 
-        cs_path = cs['folder_path']
-        meta_path = os.path.join(cs_path, 'config', 'scenario_metadata.csv')
-        if not os.path.exists(meta_path):
+        rows_by_id = load_scenario_rows(cs['folder_path'])
+        if not rows_by_id:
             return jsonify({'error': 'No scenario metadata found'}), 404
-
-        rows_by_id = {}
-        with open(meta_path, 'r', newline='', encoding='utf-8') as f:
-            for row in csv.DictReader(f):
-                sid = row.get('scenario_id')
-                if sid:
-                    rows_by_id[sid] = row
 
         for sid in (baseline_id, scenario_id):
             if sid not in rows_by_id:
                 return jsonify({'error': f'Scenario {sid!r} not found in metadata'}), 404
 
-        def _build(sid):
-            row = rows_by_id[sid]
-            folder = row.get('folder', 'baseline')
-            derived = _compute_driver_metrics_for_scenario(cs_path, folder)
-            return {
-                'id': sid,
-                'name': row.get('name', 'Unnamed'),
-                'year': row.get('year', ''),
-                'ssp': row.get('ssp', ''),
-                'pathogen': row.get('pathogen', ''),
-                'wwtp_mode': derived['wwtp_mode'],
-                'metrics': derived['metrics'],
-            }
-
-        baseline_sc = _build(baseline_id)
-        scenario_sc = _build(scenario_id)
+        baseline_sc = build_narrative_scenario(cs, rows_by_id[baseline_id])
+        scenario_sc = build_narrative_scenario(cs, rows_by_id[scenario_id])
 
         narrative = generate_narrative(baseline_sc, scenario_sc)
         return jsonify({

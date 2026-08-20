@@ -28,11 +28,6 @@ import PigsIcon       from '../../assets/icons/pigs.svg';
 import PoultryIcon    from '../../assets/icons/poultry.svg';
 import SheepIcon      from '../../assets/icons/sheep.svg';
 import BuffaloesIcon      from '../../assets/icons/buffaloes.svg';
-import HumanPopulationIcon from '../../assets/icons/human_population.svg';
-import SanitationIcon from '../../assets/icons/sanitation.svg';
-import WastewaterTreatmentIcon from '../../assets/icons/wastewater_treatment.svg';
-import LivestockPopulationIcon from '../../assets/icons/livestock_population.svg';
-import ProductionSystemsIcon from '../../assets/icons/production_systems.svg';
 import useSettingsStore      from '../store/settingsStore';
 
 // Make proj4 available globally so georaster-layer-for-leaflet can reproject
@@ -553,69 +548,6 @@ function AreaDialog({ area, waterStats, landStats, onClose }) {
     </div>
   );
 }
-
-function computeDeltaPct(base, value) {
-  if (base === null || base === undefined || value === null || value === undefined) return null;
-  const b = Number(base);
-  const v = Number(value);
-  if (!Number.isFinite(b) || !Number.isFinite(v)) return null;
-  if (Math.abs(b) < 1e-9) return Math.abs(v) < 1e-9 ? 0 : null;
-  return ((v - b) / Math.abs(b)) * 100;
-}
-
-function formatMetricValue(value, valueFormat) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return '—';
-  const v = Number(value);
-  if (valueFormat === 'percent') return `${v.toFixed(1)}%`;
-  if (valueFormat === 'hdi') return v.toFixed(3);
-  if (valueFormat === 'integer') return Math.round(v).toLocaleString();
-  return v.toFixed(2);
-}
-
-function formatDeltaValue(delta, deltaMode) {
-  if (delta === null || delta === undefined || Number.isNaN(Number(delta))) return '—';
-  const v = Number(delta);
-  if (deltaMode === 'pp') return `${v >= 0 ? '+' : ''}${v.toFixed(1)} %`;
-  if (deltaMode === 'absolute') return `${v >= 0 ? '+' : ''}${v.toFixed(3)}`;
-  return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
-}
-
-function computeMetricDelta(base, value, deltaMode) {
-  if (base === null || base === undefined || value === null || value === undefined) return null;
-  const b = Number(base);
-  const v = Number(value);
-  if (!Number.isFinite(b) || !Number.isFinite(v)) return null;
-  if (deltaMode === 'pp' || deltaMode === 'absolute') return v - b;
-  return computeDeltaPct(b, v);
-}
-
-function isWastewaterMetric(metricKey) {
-  return metricKey.startsWith('wastewater_');
-}
-
-function isShareMetric(metricKey) {
-  return metricKey.startsWith('wastewater_share_');
-}
-
-function isPointOnlyMetric(metricKey) {
-  return metricKey === 'wastewater_facility_count' || metricKey === 'wastewater_total_capacity';
-}
-
-function isMetricApplicableForScenario(metricKey, scenario) {
-  if (!scenario || !isWastewaterMetric(metricKey)) return true;
-  const mode = scenario.wwtp_mode;
-  if (mode === 'point' && isShareMetric(metricKey)) return false;
-  if (mode === 'area' && isPointOnlyMetric(metricKey)) return false;
-  return true;
-}
-
-const DRIVER_META = {
-  Population: { icon: HumanPopulationIcon, label: 'Population' },
-  Sanitation: { icon: SanitationIcon, label: 'Sanitation' },
-  'Wastewater treatment': { icon: WastewaterTreatmentIcon, label: 'Wastewater treatment' },
-  'Livestock population': { icon: LivestockPopulationIcon, label: 'Livestock population' },
-  'Production systems': { icon: ProductionSystemsIcon, label: 'Production systems' },
-};
 
 // ─── GeoTiffLayer: renders a GeoTIFF via georaster-layer-for-leaflet ─────────────────────────────
 // Uses proj4 for CRS reprojection so TIFs in any projection (e.g. UTM) are

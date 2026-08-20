@@ -1,0 +1,418 @@
+/* ==========================================================================
+   report.css -- print styling for the narrative reports.
+
+   Loaded by report_render.py and inlined into the document, so it applies to
+   both the WeasyPrint PDF and the browser preview. Colours and type mirror the
+   web app: the wpBlue / wpGreen / wpGray palette from tailwind.config.js and
+   the Outfit + Inter pair, which report_render.py inlines as data URIs so the
+   PDF renderer never has to reach the font CDN.
+
+   Palette
+     wpBlue    #0B4159   900 #0D2834  800 #143543  300 #096890
+               200 #71AFCA  100 #CAD8E3  500 #B7D7EF
+     wpGreen   #8DD0A4   800 #62B27D
+     wpGray    100 #EEF2F5  200 #F6F9FB  300 #F1F4FA
+     wpBrown   #F2EFE6   900 #BDA457
+   ========================================================================== */
+
+@page {
+  size: A4 portrait;
+  margin: 22mm 18mm 20mm 18mm;
+
+  @top-center {
+    content: string(report-title);
+    font-family: 'Outfit', 'Inter', Helvetica, Arial, sans-serif;
+    font-size: 8pt;
+    color: #71AFCA;
+  }
+  @bottom-right {
+    content: counter(page);
+    font-family: 'Outfit', 'Inter', Helvetica, Arial, sans-serif;
+    font-size: 8pt;
+    color: #71AFCA;
+  }
+}
+
+/* The cover carries no running header or page number. */
+@page cover {
+  margin: 0;
+  @top-center { content: none; }
+  @bottom-right { content: none; }
+}
+
+/* The wide reference tables get their own landscape pages. */
+@page wide {
+  size: A4 landscape;
+  margin: 15mm;
+}
+
+html {
+  font-family: 'Inter', Helvetica, Arial, sans-serif;
+  font-size: 10.5pt;
+  line-height: 1.55;
+  color: #143543;
+}
+
+body { margin: 0; }
+
+p { margin: 0 0 0.7em 0; text-align: justify; }
+
+h1, h2, h3, h4 {
+  font-family: 'Outfit', 'Inter', Helvetica, Arial, sans-serif;
+  font-weight: 600;
+  color: #0B4159;
+  break-after: avoid;
+  margin: 0 0 0.4em 0;
+}
+
+h1 { font-size: 18pt; }
+h2 { font-size: 14pt; }
+h3 { font-size: 11.5pt; }
+h4 { font-size: 10.5pt; }
+
+ul, ol { margin: 0 0 0.7em 0; padding-left: 1.2em; }
+li { margin-bottom: 0.25em; }
+
+strong { color: #0B4159; }
+
+/* ── Cover ───────────────────────────────────────────────────────────────── */
+
+.cover {
+  page: cover;
+  break-after: page;
+  height: 297mm;
+  box-sizing: border-box;
+  padding: 45mm 22mm 22mm 22mm;
+  background: #0B4159;
+  color: #F6F9FB;
+}
+
+.cover-eyebrow {
+  font-family: 'Outfit', 'Inter', Helvetica, Arial, sans-serif;
+  font-size: 9pt;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #8DD0A4;
+  margin-bottom: 6mm;
+}
+
+.cover-title {
+  string-set: report-title content();
+  font-size: 30pt;
+  line-height: 1.15;
+  margin: 0 0 4mm 0;
+  color: #FFFFFF;
+}
+
+.cover-subtitle {
+  font-size: 13pt;
+  color: #B7D7EF;
+  margin: 0 0 14mm 0;
+}
+
+.cover-meta {
+  font-size: 9.5pt;
+  color: #F6F9FB;
+  border-top: 1px solid #096890;
+  padding-top: 5mm;
+}
+
+.cover-meta dt {
+  float: left;
+  clear: left;
+  width: 42mm;
+  font-family: 'Outfit', 'Inter', Helvetica, Arial, sans-serif;
+  color: #71AFCA;
+  text-transform: uppercase;
+  font-size: 8pt;
+  letter-spacing: 0.08em;
+  padding-top: 0.35em;
+}
+
+.cover-meta dd { margin: 0 0 2.5mm 42mm; }
+
+/* ── Sections ────────────────────────────────────────────────────────────── */
+
+.chapter { break-before: page; }
+
+.chapter-heading {
+  font-size: 16pt;
+  color: #0B4159;
+  border-bottom: 2px solid #8DD0A4;
+  padding-bottom: 2mm;
+  margin-bottom: 5mm;
+}
+
+.chapter-heading .chapter-kicker {
+  display: block;
+  font-size: 8pt;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #62B27D;
+}
+
+.section { margin-bottom: 6mm; break-inside: avoid-page; }
+
+.section > h3 {
+  border-left: 3px solid #CAD8E3;
+  padding-left: 3mm;
+}
+
+.section-risk > h3 { border-left-color: #BDA457; }
+.section-map > h3 { border-left-color: #8DD0A4; }
+
+.section-summary {
+  background: #F1F4FA;
+  border: 1px solid #CAD8E3;
+  border-radius: 8px;
+  padding: 4mm 5mm;
+}
+
+/* ── Figures ─────────────────────────────────────────────────────────────── */
+
+.figure {
+  break-inside: avoid;
+  margin: 4mm 0 6mm 0;
+  text-align: center;
+}
+
+.figure img {
+  max-width: 100%;
+  max-height: 110mm;
+  border: 1px solid #CAD8E3;
+  border-radius: 8px;
+}
+
+.figure figcaption {
+  font-size: 8.5pt;
+  color: #4A6472;
+  margin-top: 1.5mm;
+  text-align: left;
+}
+
+.figure figcaption .figure-number {
+  font-family: 'Outfit', 'Inter', Helvetica, Arial, sans-serif;
+  font-weight: 600;
+  color: #0B4159;
+}
+
+/* Colour ramp shown underneath a rendered model-output map. */
+.figure-legend {
+  margin: 2mm auto 0 auto;
+  max-width: 80%;
+  text-align: left;
+}
+
+.figure-legend .legend-bar {
+  height: 2.4mm;
+  border-radius: 4px;
+  border: 1px solid #CAD8E3;
+  /* The actual ramp is set inline from the map's own colour stops. */
+}
+
+/* Ticks are positioned by value, so a log scale lines its powers of ten up
+   with the colours they belong to. */
+.figure-legend .legend-ticks {
+  position: relative;
+  height: 4mm;
+  font-size: 7pt;
+  color: #4A6472;
+  margin-top: 0.8mm;
+}
+
+.figure-legend .legend-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.figure-legend .legend-unit {
+  font-size: 7.5pt;
+  color: #4A6472;
+  margin-top: 0.5mm;
+}
+
+/* ── Table of contents ───────────────────────────────────────────────────── */
+
+.toc-page { break-before: page; }
+
+ol.toc {
+  list-style: none;
+  margin: 4mm 0 0 0;
+  padding: 0;
+}
+
+.toc-entry {
+  margin: 0;
+  padding: 1.1mm 0;
+  border-bottom: 1px dotted #CAD8E3;
+}
+
+.toc-entry a {
+  color: #143543;
+  text-decoration: none;
+  display: block;
+}
+
+.toc-level-1 {
+  font-family: 'Outfit', 'Inter', Helvetica, Arial, sans-serif;
+  font-size: 10.5pt;
+  color: #0B4159;
+  margin-top: 2mm;
+}
+
+.toc-level-2 {
+  font-size: 9.5pt;
+  padding-left: 8mm;
+  border-bottom: none;
+  color: #4A6472;
+}
+
+/* WeasyPrint resolves the page number of the anchor; in the HTML preview the
+   generated content is simply empty. */
+.toc-entry a::after {
+  content: target-counter(attr(href), page);
+  float: right;
+  font-family: 'Outfit', 'Inter', Helvetica, Arial, sans-serif;
+  color: #71AFCA;
+}
+
+/* ── Reference tables (driver comparison + raw-data appendix) ─────────────── */
+
+.driver-table-page,
+.appendix-page { page: wide; break-before: page; }
+
+.appendix-page .appendix-scenario {
+  margin-top: 8mm;
+  padding-bottom: 1.5mm;
+  border-bottom: 2px solid #8DD0A4;
+  color: #0B4159;
+  break-before: page;
+  break-after: avoid;
+}
+
+.appendix-page .appendix-scenario:first-of-type { break-before: auto; }
+
+.appendix-page .appendix-driver {
+  margin-top: 6mm;
+  color: #096890;
+  break-after: avoid;
+}
+
+.appendix-page .appendix-note {
+  font-size: 8pt;
+  color: #4A6472;
+  margin: 1.5mm 0;
+}
+
+.appendix-page .appendix-source {
+  font-family: 'Outfit', 'Inter', Helvetica, Arial, sans-serif;
+  font-size: 8pt;
+  color: #62B27D;
+  margin: 2.5mm 0 1mm 0;
+  break-after: avoid;
+}
+
+table.driver-table,
+table.appendix-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 7.5pt;
+  table-layout: fixed;
+}
+
+table.appendix-table { font-size: 6.5pt; }
+
+table.driver-table th,
+table.driver-table td,
+table.appendix-table th,
+table.appendix-table td {
+  border: 1px solid #CAD8E3;
+  padding: 1.2mm 1.6mm;
+  vertical-align: top;
+  word-wrap: break-word;
+}
+
+table.driver-table thead th,
+table.appendix-table thead th {
+  font-family: 'Outfit', 'Inter', Helvetica, Arial, sans-serif;
+  background: #0B4159;
+  color: #FFFFFF;
+  font-weight: 600;
+  text-align: center;
+}
+
+table.driver-table thead th.col-metric,
+table.appendix-table thead th.col-metric {
+  text-align: left;
+  width: 42mm;
+}
+
+table.appendix-table thead th.col-metric { width: 30mm; }
+
+table.driver-table thead th .col-year,
+table.appendix-table thead th .col-year {
+  display: block;
+  font-weight: 400;
+  color: #B7D7EF;
+}
+
+table.driver-table tr.driver-row th {
+  font-family: 'Outfit', 'Inter', Helvetica, Arial, sans-serif;
+  background: #EEF2F5;
+  color: #0B4159;
+  text-align: left;
+  font-size: 8pt;
+  letter-spacing: 0.04em;
+}
+
+table.driver-table td.metric-label,
+table.appendix-table td.metric-label { text-align: left; color: #143543; }
+table.driver-table td.baseline-cell { background: #F6F9FB; font-weight: 600; text-align: right; }
+table.driver-table td.value-cell,
+table.appendix-table td.value-cell { text-align: right; }
+table.driver-table td.cell-na { color: #B7D7EF; text-align: center; }
+
+table.driver-table .cell-delta {
+  display: block;
+  font-size: 6.8pt;
+  color: #71AFCA;
+}
+
+table.driver-table .delta-good .cell-delta { color: #3F8C5F; }
+table.driver-table .delta-bad .cell-delta { color: #B0483C; }
+
+/* Prevent a driver group's header row from being orphaned at a page break. */
+table.driver-table tr,
+table.appendix-table tr { break-inside: avoid; }
+table.driver-table tr.driver-row { break-after: avoid; }
+
+.table-legend {
+  font-size: 8pt;
+  color: #4A6472;
+  margin-top: 3mm;
+}
+
+/* ── Markdown tables inside sections ─────────────────────────────────────── */
+
+.section table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 9pt;
+  margin: 2mm 0 4mm 0;
+  break-inside: avoid;
+}
+
+.section th, .section td {
+  border: 1px solid #CAD8E3;
+  padding: 1.2mm 2mm;
+  text-align: left;
+}
+
+.section thead th {
+  font-family: 'Outfit', 'Inter', Helvetica, Arial, sans-serif;
+  background: #EEF2F5;
+  color: #0B4159;
+  font-weight: 600;
+}

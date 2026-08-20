@@ -2,54 +2,14 @@ import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { useParams } from 'react-router-dom';
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
-import HumanPopulationIcon from '../../assets/icons/human_population.svg';
-import ConcentrationsIcon from '../../assets/icons/concentrations.svg';
-import SanitationIcon from '../../assets/icons/sanitation.svg';
-import WastewaterTreatmentIcon from '../../assets/icons/wastewater_treatment.svg';
-import LivestockPopulationIcon from '../../assets/icons/livestock_population.svg';
-import ProductionSystemsIcon from '../../assets/icons/production_systems.svg';
 import useCaseStudyBySlug from '../hooks/useCaseStudyBySlug';
-
-// ── Helpers (mirrors ResultsView.jsx) ────────────────────────────────────────
-
-function computeDeltaPct(base, value) {
-  if (base === null || base === undefined || value === null || value === undefined) return null;
-  const b = Number(base);
-  const v = Number(value);
-  if (!Number.isFinite(b) || !Number.isFinite(v)) return null;
-  if (Math.abs(b) < 1e-9) return Math.abs(v) < 1e-9 ? 0 : null;
-  return ((v - b) / Math.abs(b)) * 100;
-}
-
-function formatMetricValue(value, valueFormat) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return '—';
-  const v = Number(value);
-  if (valueFormat === 'percent') return `${v.toFixed(1)}%`;
-  if (valueFormat === 'hdi') return v.toFixed(3);
-  if (valueFormat === 'integer') return Math.round(v).toLocaleString();
-  return v.toFixed(2);
-}
-
-function formatDeltaValue(delta, deltaMode) {
-  if (delta === null || delta === undefined || Number.isNaN(Number(delta))) return '—';
-  const v = Number(delta);
-  if (deltaMode === 'pp') return `${v >= 0 ? '+' : ''}${v.toFixed(1)} %`;
-  if (deltaMode === 'absolute') return `${v >= 0 ? '+' : ''}${v.toFixed(3)}`;
-  return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
-}
-
-function computeMetricDelta(base, value, deltaMode) {
-  if (base === null || base === undefined || value === null || value === undefined) return null;
-  const b = Number(base);
-  const v = Number(value);
-  if (!Number.isFinite(b) || !Number.isFinite(v)) return null;
-  if (deltaMode === 'pp' || deltaMode === 'absolute') return v - b;
-  return computeDeltaPct(b, v);
-}
-
-function isWastewaterMetric(k) { return k.startsWith('wastewater_'); }
-function isShareMetric(k)      { return k.startsWith('wastewater_share_'); }
-function isPointOnlyMetric(k)  { return k === 'wastewater_facility_count' || k === 'wastewater_total_capacity'; }
+import {
+  formatMetricValue,
+  formatDeltaValue,
+  computeMetricDelta,
+  isMetricApplicableForScenario,
+  DRIVER_META,
+} from './driverMetricUtils';
 
 // ── Baseline comparison badge (mirrors CaseStudyPage's emission/risk color logic) ──
 
@@ -79,23 +39,6 @@ function getComparisonBadge(scenarioId, baselineId, emissionTotals, concentratio
   }
   return null;
 }
-
-function isMetricApplicableForScenario(metricKey, scenario) {
-  if (!scenario || !isWastewaterMetric(metricKey)) return true;
-  const mode = scenario.wwtp_mode;
-  if (mode === 'point' && isShareMetric(metricKey)) return false;
-  if (mode === 'area'  && isPointOnlyMetric(metricKey)) return false;
-  return true;
-}
-
-const DRIVER_META = {
-  Population:               { icon: HumanPopulationIcon,      label: 'Population' },
-  Hydrology:                { icon: ConcentrationsIcon,       label: 'Hydrology' },
-  Sanitation:               { icon: SanitationIcon,            label: 'Sanitation' },
-  'Wastewater treatment':   { icon: WastewaterTreatmentIcon,  label: 'Wastewater treatment' },
-  'Livestock population':   { icon: LivestockPopulationIcon,  label: 'Livestock population' },
-  'Production systems':     { icon: ProductionSystemsIcon,    label: 'Production systems' },
-};
 
 // ── ScenarioSummaryView ───────────────────────────────────────────────────────
 

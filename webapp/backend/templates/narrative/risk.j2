@@ -1,0 +1,77 @@
+{#
+  risk.j2
+  =======
+  Narrative text for the QMRA / Risk driver.
+
+  Context variables (from _build_risk_ctx):
+    has_risk           bool  False when the scenario has no QMRA output
+    has_baseline_risk  bool  False when the baseline was never run
+    quantile           float the quantile the figures were taken at
+    combined_val       str   annual population-weighted probability of infection
+    combined           metric dict comparing that figure with the baseline
+    has_band, band_low, band_high, band_is_wide   uncertainty range
+    dominant_label, dominant_val, route_rows, secondary_labels
+    cases_val, cases, population_val
+    has_seasonality, peak_month, peak_val, trough_month, trough_val, seasonal_pct
+    top_areas, area_count, worst_area, show_area_ranking
+
+  Risk figures are probabilities of at least one infection per person per year,
+  weighted by population, so they describe the exposure of a typical resident
+  rather than a typical map cell.
+#}
+{% if has_risk %}
+Across the study area, the modelled annual probability of infection for an average resident is {{ combined_val }}
+{% if quantile is not none %}
+(median estimate at the q{{ quantile }} quantile){% endif %}.
+{% if has_baseline_risk and combined.is_significant %}
+This is {{ combined.magnitude }} {{ "higher" if combined.increased else "lower" }} than the baseline value of {{ combined.base_val }}, a change of {{ combined.abs_delta | num }}%.
+{% elif has_baseline_risk %}
+This is essentially unchanged from the baseline value of {{ combined.base_val }}.
+{% else %}
+No baseline risk results are available, so this figure is reported in absolute terms only.
+{% endif %}
+
+{% if has_band %}
+Parameter uncertainty in the exposure and dose-response assumptions places the estimate between {{ band_low }} and {{ band_high }}
+(the 2.5th and 97.5th percentiles).
+{% if band_is_wide %}
+This range spans more than a factor of two, so the absolute risk level should be read as an order of magnitude rather than a precise value; comparisons between scenarios remain informative because the same assumptions apply throughout.
+{% endif %}
+{% endif %}
+
+{% if route_rows %}
+Exposure to {{ dominant_label }} dominates, contributing an annual infection probability of {{ dominant_val }}
+{% if secondary_labels %}
+ahead of {{ secondary_labels | listjoin }}{% endif %}.
+Ranked by population-weighted annual risk, the modelled exposure pathways are:
+
+{% for row in route_rows %}
+- **{{ row.label | capitalize }}**: {{ row.value }}
+{% endfor %}
+
+Interventions that interrupt the {{ dominant_label }} pathway therefore offer the largest single reduction in the overall burden.
+{% endif %}
+
+{% if cases_val != 'N/A' %}
+Applied to the {{ population_val }} people living in the study area, this corresponds to approximately {{ cases_val }} expected infections per year.
+{% if has_baseline_risk and cases.is_significant %}
+That is {{ cases.abs_delta | num }}% {{ "more" if cases.increased else "fewer" }} than the {{ cases.base_val }} infections expected under the baseline.
+{% endif %}
+{% endif %}
+
+{% if has_seasonality %}
+Risk is not evenly distributed through the year. It peaks in {{ peak_month }} at {{ peak_val }} and is lowest in {{ trough_month }} at {{ trough_val }},
+{{ seasonal_pct | num }}% below the peak. Seasonal surveillance and targeted interventions are best timed ahead of the {{ peak_month }} maximum.
+{% else %}
+Modelled risk varies little between months, so no single season stands out for targeted intervention.
+{% endif %}
+
+{% if show_area_ranking %}
+Risk is also unevenly distributed in space. Of the {{ area_count }} areas assessed, {{ worst_area }} carries the highest modelled risk.
+The most affected areas are:
+
+{% for area in top_areas %}
+- **{{ area.name }}**: annual infection probability {{ area.risk }}, about {{ area.cases }} expected infections per year
+{% endfor %}
+{% endif %}
+{% endif %}

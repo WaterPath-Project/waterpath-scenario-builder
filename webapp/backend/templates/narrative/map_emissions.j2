@@ -1,0 +1,37 @@
+{#
+  map_emissions.j2
+  ================
+  Verbal reading of the surface-water emissions map for one scenario.
+
+  Context variables (from _build_map_emissions_ctx):
+    available           False when the scenario produced no emission output
+    e                   report_outputs.compute_emissions_stats() result
+    has_change, change_pct, increased, magnitude   comparison with the baseline
+#}
+{% if available %}
+The map below shows where pathogens enter surface water in this scenario. Total modelled emissions reach {{ e.total | sci }} {{ e.unit }}{% if has_change %}, {{ magnitude }} {{ "higher" if increased else "lower" }} than the baseline by {{ change_pct | num }}%{% endif %}.
+
+{% if e.dominant_source %}
+The largest pathway is {{ e.dominant_source.label }}, responsible for {{ e.dominant_source.pct | num }}% of the load. Across the three compartments the model attributes {{ e.human_pct | num }}% to human excreta that reaches water directly, {{ e.wwtp_pct | num }}% to the effluent discharged by wastewater treatment plants, and {{ e.land_pct | num }}% to runoff from land.
+{% endif %}
+
+{% if e.sanitation %}
+Within the human contribution, {{ e.dominant_sanitation.label }} is the single largest source, at {{ e.dominant_sanitation.pct | num }}% of everything released by human excreta. The leading facility types are:
+
+{% for row in e.sanitation %}
+- **{{ row.label | capitalize }}**: {{ row.pct | num }}% of the human load ({{ row.value | sci }})
+{% endfor %}
+{% endif %}
+
+{% if e.livestock %}
+The land compartment is dominated by livestock manure, with {{ e.dominant_livestock.label }} accounting for {{ e.dominant_livestock.pct | num }}% of the livestock load. The largest contributors are {{ e.livestock | map(attribute='label') | list | listjoin }}.
+{% endif %}
+
+{% if e.top_areas %}
+Emissions are spatially concentrated. The {{ e.top_areas | length }} highest-emitting areas together release {{ e.top_areas_pct | num }}% of the study-area total, spread over {{ e.area_count }} reporting areas in all:
+
+{% for row in e.top_areas %}
+- **{{ row.name }}**: {{ row.pct | num }}% of total emissions ({{ row.value | sci }})
+{% endfor %}
+{% endif %}
+{% endif %}

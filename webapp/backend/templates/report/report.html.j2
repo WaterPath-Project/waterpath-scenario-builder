@@ -1,0 +1,155 @@
+{#-
+  report.html.j2 -- the single document behind both the /preview HTML and the
+  WeasyPrint PDF.
+
+  Section text has already been converted from Markdown and sanitised by
+  report.py, so it is emitted with |safe; everything else is autoescaped.
+-#}
+{%- macro render_figure(figure) -%}
+<figure class="figure">
+  <img src="{{ figure.src }}" alt="">
+  {% if figure.legend %}
+  <div class="figure-legend">
+    {# The gradient is built server-side from the app's own colour stops. #}
+    <div class="legend-bar" style="background: {{ figure.legend.gradient }}"></div>
+    <div class="legend-ticks">
+      {% for tick in figure.legend.ticks %}
+      <span class="legend-tick" style="left: {{ (tick.pos * 100) | round(2) }}%">{{ tick.mantissa }}{% if tick.exponent is not none %}&times;10<sup>{{ tick.exponent }}</sup>{% endif %}</span>
+      {% endfor %}
+    </div>
+    <div class="legend-unit">{{ figure.legend.unit }}{% if figure.legend.log_scale %}, logarithmic colour scale{% endif %}</div>
+  </div>
+  {% endif %}
+  <figcaption><span class="figure-number">Figure {{ figure.number }}.</span> {{ figure.caption }}</figcaption>
+</figure>
+{%- endmacro -%}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ report.title }}</title>
+  {# Both stylesheets are our own static assets, never user input, so they are
+     emitted raw; autoescaping would turn the quotes into entities that CSS
+     does not decode. #}
+  <style>{{ fonts | safe }}</style>
+  <style>{{ css | safe }}</style>
+</head>
+<body>
+
+<section class="cover">
+  <div class="cover-eyebrow">WaterPath scenario report</div>
+  <h1 class="cover-title">{{ report.title }}</h1>
+  {% if report.subtitle %}
+  <p class="cover-subtitle">{{ report.subtitle }}</p>
+  {% endif %}
+
+  <dl class="cover-meta">
+    <dt>Case study</dt>
+    <dd>{{ case_study.name }}</dd>
+    <dt>Baseline</dt>
+    <dd>{{ (report.scenarios | selectattr('id', 'equalto', report.baseline_scenario_id) | first | default({})).name | default('Baseline') }}</dd>
+    <dt>Scenarios</dt>
+    <dd>
+      {% for scenario in report.scenarios %}
+      {{ scenario.name }}{% if scenario.year %} ({{ scenario.year }}){% endif %}{% if not loop.last %},{% endif %}
+      {% endfor %}
+    </dd>
+    <dt>Risk quantile</dt>
+    <dd>{{ report.quantile }}</dd>
+    <dt>Generated</dt>
+    <dd>{{ generated_on }}</dd>
+  </dl>
+</section>
+
+{% if toc %}
+<nav class="toc-page">
+  <h2 class="chapter-heading">
+    <span class="chapter-kicker">Contents</span>
+    Table of contents
+  </h2>
+  <ol class="toc">
+    {% for entry in toc %}
+    <li class="toc-entry toc-level-{{ entry.level }}">
+      <a href="#{{ entry.anchor }}"><span class="toc-label">{{ entry.title }}</span></a>
+    </li>
+    {% endfor %}
+  </ol>
+</nav>
+{% endif %}
+
+{% for section in front_sections %}
+<section id="{{ section.anchor }}" class="section section-{{ section.kind }}">
+  {% if section.title %}<h2>{{ section.title }}</h2>{% endif %}
+  {{ section.html | safe }}
+  {% for figure in section.figures %}{{ render_figure(figure) }}{% endfor %}
+</section>
+{% endfor %}
+
+{% if table and table.groups %}
+<section id="driver-table-page" class="driver-table-page">
+  <h2 class="chapter-heading">
+    <span class="chapter-kicker">Reference</span>
+    Driver summary table
+  </h2>
+
+  {% for section in table_sections %}
+  {{ section.html | safe }}
+  {% endfor %}
+
+  <table class="driver-table">
+    <thead>
+      <tr>
+        <th class="col-metric">Metric</th>
+        {% for column in table.columns %}
+        <th>{{ column.name }}{% if column.year %}<span class="col-year">{{ column.year }}</span>{% endif %}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for group in table.groups %}
+      <tr class="driver-row">
+        <th colspan="{{ table.columns | length + 1 }}">{{ group.driver }}</th>
+      </tr>
+      {% for row in group.rows %}
+      <tr>
+        <td class="metric-label">{{ row.label }}</td>
+        <td class="baseline-cell">{{ row.baseline }}</td>
+        {% for cell in row.cells %}
+        <td class="value-cell {{ cell.cls }}">
+          {{ cell.value }}
+          {% if cell.delta %}<span class="cell-delta">{{ cell.delta }}</span>{% endif %}
+        </td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p class="table-legend">
+    Each scenario column shows the absolute value with the change against the
+    baseline underneath. Percentage-point changes are marked “pp”; “n/a” marks a
+    metric that does not apply to that scenario's wastewater configuration.
+  </p>
+</section>
+{% endif %}
+
+{% for chapter in chapters %}
+<section id="{{ chapter.anchor }}" class="chapter">
+  <h2 class="chapter-heading">
+    <span class="chapter-kicker">Scenario</span>
+    {{ chapter.name }}{% if chapter.year %} ({{ chapter.year }}{% if chapter.ssp %}, {{ chapter.ssp }}{% endif %}){% elif chapter.ssp %} ({{ chapter.ssp }}){% endif %}
+  </h2>
+
+  {% for section in chapter.sections %}
+  <div id="{{ section.anchor }}" class="section section-{{ section.kind }}">
+    {% if section.title %}<h3>{{ section.title }}</h3>{% endif %}
+    {{ section.html | safe }}
+    {% for figure in section.figures %}{{ render_figure(figure) }}{% endfor %}
+  </div>
+  {% endfor %}
+</section>
+{% endfor %}
+
+</body>
+</html>

@@ -1,0 +1,28 @@
+{#
+  map_risk.j2
+  ===========
+  Verbal reading of the annual probability-of-infection map for one scenario.
+
+  Context variables (from _build_map_risk_ctx):
+    available       False when the scenario has no QMRA output
+    r               the flattened QMRA metrics (analytics.build_narrative_scenario)
+    top_areas, top_area_names, area_count, spread, route_label, quantile
+#}
+{% if available %}
+The map below shows the modelled annual probability of infection{% if quantile %}, evaluated at the {{ quantile }} quantile of the exposure distribution{% endif %}. Every modelled exposure route is combined, so a single cell represents the total risk a person living there carries over a year.
+
+{% if route_label %}
+Exposure through {{ route_label }} contributes most to that combined risk.
+{% endif %}
+{% if r.risk_peak_month %}
+Risk is highest in {{ r.risk_peak_month }} and lowest in {{ r.risk_trough_month }}, following the seasonal pattern of the concentrations.
+{% endif %}
+
+{% if top_areas %}
+Risk is unevenly spread across the {{ area_count }} reporting areas{% if spread %}: the most affected area carries a probability of infection {{ spread | num }} times higher than the lowest-ranked area listed here{% endif %}. The most affected areas are:
+
+{% for row in top_areas %}
+- **{{ row.name }}**: annual probability of infection {{ row.risk | sci }}{% if row.cases %}, around {{ row.cases | sci }} expected infections per year{% endif %}{{ "" }}
+{% endfor %}
+{% endif %}
+{% endif %}

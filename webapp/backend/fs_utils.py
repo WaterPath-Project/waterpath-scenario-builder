@@ -270,6 +270,42 @@ def find_geodata_shapefile(cs_path, folder):
     return None
 
 
+# Attribute names checked, in order, when deriving a human-readable area label.
+# GADM shapefiles carry NAME_0 (country) .. NAME_4 (finest sub-division); some
+# case studies instead ship a `subarea` column in isodata.csv.
+_AREA_LABEL_FIELDS = ('subarea', 'NAME_4', 'NAME_3', 'NAME_2', 'NAME_1', 'NAME_0')
+
+
+def area_label(props, fallback=None):
+    """Return a display label for one area, from a shapefile properties dict or
+    an isodata.csv row.  Falls back to *fallback* (then None) when no known
+    name field carries a value.
+    """
+    if props:
+        for field in _AREA_LABEL_FIELDS:
+            value = props.get(field)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+    return fallback
+
+
+def country_label(props, fallback=None):
+    """Return the country name for one area (NAME_0 / COUNTRY), or *fallback*."""
+    if props:
+        for field in ('NAME_0', 'COUNTRY', 'country'):
+            value = props.get(field)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+    return fallback
+
+
+
 # ─── TIFF header parser (no PIL/rasterio) ────────────────────────────────────
 
 def _tif_pixel_dimensions(path):

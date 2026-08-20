@@ -1,0 +1,12 @@
+{#
+  production_systems.j2
+  =====================
+  Narrative text for the Production systems driver.
+
+  Context variables (from _build_production_systems_ctx):
+    production_systems – progress towards intensive production (pp change)
+#}
+{% if production_systems.is_significant %}
+Livestock production systems shift {{ "towards" if production_systems.increased else "away from" }} intensive management by {{ production_systems.abs_delta | num }} percentage points,
+{{ "concentrating manure in managed storage that can reduce direct land contamination when handled correctly" if production_systems.increased else "increasing the share of grazing animals whose manure is deposited directly on pastures and fields" }}.
+{% endif %}

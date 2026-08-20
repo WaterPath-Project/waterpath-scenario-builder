@@ -1,0 +1,17 @@
+{#
+  appendix_intro.j2
+  =================
+  Lead-in for the raw model-input appendix. This is downloaded separately from
+  the report itself; the tables are read straight off disk by
+  report_render.build_appendix_scenarios() / render_appendix_html().
+
+  Context variables:
+    drivers, scenario_count
+#}
+This appendix reproduces the model input data behind the report: the same tables the scenario editor shows underneath each driver, for the baseline and for each of the {{ scenario_count }} scenario{{ "s" if scenario_count != 1 }} compared here. These are the values the model was run with, at full precision and without rounding, so that any scenario can be reconstructed or re-run from this document alone.
+
+{% if drivers %}
+The data is grouped per scenario and then per driver: {{ drivers | listjoin }}. Each table names the file it was read from. Files with more columns than fit on a page are split across several tables.
+{% endif %}
+
+Inputs that are gridded rasters rather than tables, such as the population distribution, river discharge, runoff, water temperature and solar radiation, cannot be listed here; they travel with the case study itself. The tables are read from each scenario's current input files, so they reflect their state at the moment this appendix is downloaded, which may be later than when the report itself was generated.

@@ -54,6 +54,7 @@ export const TOP_LEVEL_SEGMENTS = [
   'scenarios',
   'analytics',
   'summary',
+  'narratives',
   'settings',
   'service-status',
 ];
@@ -74,6 +75,7 @@ export const paths = {
     return parts.join('/');
   },
   summary: (cs) => (cs ? `/summary/${csSlug(cs)}` : '/summary'),
+  narratives: (cs) => (cs ? `/narratives/${csSlug(cs)}` : '/narratives'),
   analytics: (cs, opts = {}) => {
     if (!cs) return '/analytics';
     const base = `/analytics/${csSlug(cs)}`;

@@ -4,21 +4,34 @@
   One-paragraph summary of the scenario comparison.
 
   Context variables (from _build_summary_ctx):
-    header           str   e.g. "SSP3 — 2050"
-    has_changes      bool  True when at least one driver produced text
-    driver_list_str  str   e.g. "Population, Sanitation and Hydrology"
-    outlook          str   'positive' | 'negative' | 'mixed'
+    header               str   e.g. "SSP3, 2050"
+    has_changes          bool  True when at least one driver produced text
+    driver_list_str      str   e.g. "Population, Sanitation and Hydrology"
+    outlook              str   'positive' | 'negative' | 'mixed'
+    has_modelled_risk    bool  True when both scenarios have QMRA results
+    risk_is_significant  bool
+    risk_increased       bool
+    risk_abs_delta       float relative % change in annual infection risk
+    risk_confirms_drivers  bool|None  whether the QMRA agreed with the reading
+                                      taken from the input drivers alone
 #}
 {{ header }}:
 {% if not has_changes %}
 No significant changes were detected in the modelled input drivers compared to the baseline scenario.
 {% else %}
 Key differences from baseline affect {{ driver_list_str }}.
-{% if outlook == 'positive' %}
-On balance, the changes suggest a reduction in waterborne pathogen risk compared to the baseline scenario.
-{% elif outlook == 'negative' %}
-On balance, the changes suggest an increase in waterborne pathogen risk compared to the baseline scenario.
-{% else %}
-The changes present mixed implications for waterborne pathogen risk, with risk-increasing and risk-reducing factors in roughly equal measure.
 {% endif %}
+{% if has_modelled_risk and risk_is_significant %}
+The quantitative microbial risk assessment confirms this as a net {{ risk_abs_delta | num }}% {{ "increase" if risk_increased else "decrease" }} in the annual probability of infection for an average resident.
+{% if risk_confirms_drivers is sameas false %}
+This runs counter to what the input drivers alone would suggest, indicating that the drivers do not simply add up: the effect of the dominant driver outweighs the rest.
+{% endif %}
+{% elif has_modelled_risk %}
+The quantitative microbial risk assessment shows no material change in the annual probability of infection relative to the baseline.
+{% elif outlook == 'positive' %}
+On balance, the changes suggest a reduction in waterborne pathogen risk compared to the baseline scenario. No quantitative risk results are available to confirm this.
+{% elif outlook == 'negative' %}
+On balance, the changes suggest an increase in waterborne pathogen risk compared to the baseline scenario. No quantitative risk results are available to confirm this.
+{% elif has_changes %}
+The changes present mixed implications for waterborne pathogen risk, with risk-increasing and risk-reducing factors in roughly equal measure.
 {% endif %}

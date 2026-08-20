@@ -1,0 +1,28 @@
+{#
+  map_concentration.j2
+  ====================
+  Verbal reading of the in-stream concentration map for one scenario.
+
+  Context variables (from _build_map_concentration_ctx):
+    available           False when the scenario produced no hydrology output
+    c                   report_outputs.compute_concentration_stats() result
+    has_change, change_pct, increased, magnitude   comparison with the baseline
+    strong_seasonality  peak month at least twice the trough month
+#}
+{% if available %}
+The map below shows the mean annual pathogen concentration modelled for every river cell in the study area. Emissions are routed downstream, so the pattern reflects both where pathogens are released and how much water is available to dilute and carry them.
+
+Averaged over the year and over all {{ c.cell_count }} river cells the concentration is {{ c.mean | sci }} {{ c.unit }}{% if has_change %}, {{ magnitude }} {{ "higher" if increased else "lower" }} than the baseline by {{ change_pct | num }}%{% endif %}. Half of the network stays below {{ c.median | sci }}, while the most contaminated cell reaches {{ c.max | sci }}.
+
+{% if c.peak_month %}
+Concentrations vary through the year: they peak in {{ c.peak_month }} at {{ c.peak_value | sci }} and fall to their lowest in {{ c.trough_month }} at {{ c.trough_value | sci }}{% if strong_seasonality %}, a {{ c.seasonal_ratio | num }}-fold swing driven by the seasonal pattern of discharge, temperature and sunlight{% endif %}.
+{% endif %}
+
+{% if c.top_areas %}
+The reporting areas whose rivers carry the highest mean concentrations are:
+
+{% for row in c.top_areas %}
+- **{{ row.name }}**: {{ row.value | sci }} {{ c.unit }}
+{% endfor %}
+{% endif %}
+{% endif %}

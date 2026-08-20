@@ -36,7 +36,7 @@ from datetime import datetime
 from flask import jsonify, request, send_file
 
 import state
-from fs_utils import _locate_scenario, find_geodata_shapefile
+from fs_utils import _locate_scenario, area_label, find_geodata_shapefile
 from state import DOCKER_SOCK, model_runs
 
 
@@ -81,6 +81,13 @@ DEFAULT_BP_PARAMS = {
 }
 
 QMRA_CONTAINER = 'qmra-container'
+
+# Calendar-month suffixes used in the per-month QMRA output filenames
+# (e.g. cryptosporidium_jan.tif), in chronological order.
+MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun',
+          'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
+               'July', 'August', 'September', 'October', 'November', 'December']
 
 # ── Default per-pathway QMRA configuration ───────────────────────────────────
 # volume.type: 'poisson' (lambda, glass) or 'triangular' (min, mode, max)  — mL per event
@@ -1038,54 +1045,21 @@ def _band_stats(arr, nodata):
     }
 
 
-def qmra_stats(scenario_id):
-    """Return per-route risk stats for a given combined output TIF.
+def compute_qmra_summary(cs, folder, output_type='monthly',
+                         file_name='annual_risk.tif', target_q=0.5,
+                         include_monthly=True):
+    """Compute the per-route QMRA risk statistics for one scenario.
 
-    Query params:
-      output_type  'monthly' (default) or 'daily'
-      file         filename in combined/<output_type>/ (default: annual_risk.tif)
-      quantile     which quantile ('0.025', '0.5', '0.975', ...) is used for the
-                   population-weighted figures and the map band index (default '0.5')
+    Pure function (no Flask request access) so it can be reused outside the
+    HTTP layer -- see `compute_qmra_report_metrics` and the report builder.
+    Returns the dict served by `qmra_stats`; raises ImportError when numpy /
+    rasterio are unavailable.
 
-    Response shape:
-        {
-          combined: { risk: {'q0.025': {mean, count, nonzero_count}, ...}, cases: {...} },
-          routes:   { drinking: { risk: {...} }, ... },
-          monthly:  { combined: [jan_mean, ..., dec_mean], ... }
-                     (unweighted per-cell mean, one value per calendar month;
-                     only populated when file == 'annual_risk.tif')
-          monthly_pop_weighted: { combined: [jan, ..., dec], ... }
-                     (population-weighted equivalent of `monthly`, same
-                     availability condition)
-          bands: { route: band_index }  -- band index of `route` at `quantile`
-        }
-    `combined.cases` (expected annual infections = combined risk at `quantile`
-    × population, summed per-cell) is recomputed live from annual_risk.tif at
-    the requested quantile -- it is NOT read from the fixed, always-q0.5
-    expected_cases.tif -- so it updates whenever `quantile` changes, and is
-    only populated when file == 'annual_risk.tif' and output_type == 'monthly'.
+    Set `include_monthly=False` to skip the twelve per-month rasters when only
+    the annual figures are needed.
     """
-    output_type = request.args.get('output_type', 'monthly')
-    file_name   = request.args.get('file', 'annual_risk.tif')
-    if output_type not in ('monthly', 'daily'):
-        return jsonify({'error': 'Invalid output_type'}), 400
-    if '..' in file_name or '/' in file_name or '\\' in file_name:
-        return jsonify({'error': 'Invalid file parameter'}), 400
-    try:
-        target_q = float(request.args.get('quantile', '0.5'))
-    except ValueError:
-        return jsonify({'error': 'Invalid quantile'}), 400
-
-    try:
-        cs, folder = _locate_scenario(scenario_id)
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 404
-
-    try:
-        import numpy as np
-        import rasterio as rio
-    except ImportError as exc:
-        return jsonify({'error': f'Missing dependency: {exc}'}), 500
+    import numpy as np
+    import rasterio as rio
 
     base = _qmra_base(cs['folder_path'], folder)
 
@@ -1172,12 +1146,10 @@ def qmra_stats(scenario_id):
     # arrays with more entries than months, silently shifting every later
     # month's value -- this was the source of the "month trends don't agree
     # with annual" bug).
-    MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun',
-              'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
     monthly_by_route      = {}
     monthly_pop_weighted  = {}
     conc_dir = os.path.join(base, 'combined', 'monthly')
-    if file_name == 'annual_risk.tif' and os.path.isdir(conc_dir):
+    if include_monthly and file_name == 'annual_risk.tif' and os.path.isdir(conc_dir):
         all_files = os.listdir(conc_dir)
         month_files = [
             next((os.path.join(conc_dir, f) for f in all_files
@@ -1222,7 +1194,7 @@ def qmra_stats(scenario_id):
             except Exception:
                 pass
 
-    return jsonify({
+    return {
         'combined': {'risk': combined_risk, 'cases': combined_cases},
         'routes':   {r: {'risk': v} for r, v in routes_risk.items()},
         'monthly':  monthly_by_route,
@@ -1232,7 +1204,147 @@ def qmra_stats(scenario_id):
             'population': pop_total,
         },
         'bands': band_index,
-    }), 200
+    }
+
+
+def compute_qmra_report_metrics(cs, folder, quantile=0.5, top_areas=5):
+    """Flatten a scenario's QMRA output into report-ready metrics.
+
+    Returns None when the scenario has no QMRA output (or the raster stack
+    cannot be read).  All risk figures are annual, population-weighted
+    probabilities of infection; `risk_expected_cases` is the expected number
+    of annual infections (risk x population, summed per cell).
+    """
+    if not _qmra_has_output(cs['folder_path'], folder):
+        return None
+
+    try:
+        summary = compute_qmra_summary(cs, folder, 'monthly', 'annual_risk.tif', quantile)
+    except Exception:
+        return None
+
+    pop_risk = (summary.get('population_weighted') or {}).get('risk') or {}
+    combined = pop_risk.get('combined')
+    if combined is None:
+        return None
+
+    metrics = {
+        'risk_annual_combined': combined,
+        'risk_population': (summary.get('population_weighted') or {}).get('population'),
+        'risk_quantile': quantile,
+    }
+
+    # Uncertainty band. The headline figure is population-weighted, so the
+    # bounds must be too -- comparing it against unweighted per-cell means
+    # would put the headline outside its own confidence interval. That means
+    # re-reading the raster stack at each bound quantile.
+    for label, bound_q in (('low', 0.025), ('high', 0.975)):
+        value = None
+        if abs(bound_q - quantile) <= 0.001:
+            value = combined
+        else:
+            try:
+                bound = compute_qmra_summary(cs, folder, 'monthly', 'annual_risk.tif', bound_q,
+                                             include_monthly=False)
+                value = ((bound.get('population_weighted') or {}).get('risk') or {}).get('combined')
+            except Exception:
+                value = None
+        metrics[f'risk_annual_combined_{label}'] = value
+
+    # Per-pathway population-weighted risk + the dominant pathway.
+    routes = {r: v for r, v in pop_risk.items() if r != 'combined' and v is not None}
+    for route, value in routes.items():
+        metrics[f'risk_annual_{route}'] = value
+    metrics['risk_routes'] = routes
+    metrics['risk_dominant_route'] = max(routes, key=routes.get) if routes else None
+
+    cases = (summary.get('combined') or {}).get('cases') or {}
+    metrics['risk_expected_cases'] = cases.get('sum')
+
+    # Seasonality from the population-weighted monthly series.
+    monthly = (summary.get('monthly_pop_weighted') or {}).get('combined') or []
+    valid_months = [(i, v) for i, v in enumerate(monthly) if v is not None]
+    if valid_months:
+        peak_i, peak_v = max(valid_months, key=lambda t: t[1])
+        trough_i, trough_v = min(valid_months, key=lambda t: t[1])
+        metrics['risk_monthly'] = monthly
+        metrics['risk_peak_month'] = MONTH_NAMES[peak_i]
+        metrics['risk_peak_value'] = peak_v
+        metrics['risk_trough_month'] = MONTH_NAMES[trough_i]
+        metrics['risk_trough_value'] = trough_v
+    else:
+        metrics['risk_monthly'] = []
+        metrics['risk_peak_month'] = None
+        metrics['risk_peak_value'] = None
+        metrics['risk_trough_month'] = None
+        metrics['risk_trough_value'] = None
+
+    # Most affected areas.
+    try:
+        areas = compute_qmra_area_stats(cs, folder, 'monthly', 'annual_risk.tif',
+                                        quantile, with_labels=True)
+    except Exception:
+        areas = {}
+    ranked = sorted(
+        ({'iso': iso, 'name': v.get('name') or f'Area {iso}',
+          'risk': v.get('risk'), 'cases': v.get('cases')}
+         for iso, v in areas.items() if v.get('risk') is not None),
+        key=lambda a: a['risk'], reverse=True,
+    )
+    metrics['risk_top_areas'] = ranked[:top_areas]
+    metrics['risk_area_count'] = len(ranked)
+
+    return metrics
+
+
+def qmra_stats(scenario_id):
+    """Return per-route risk stats for a given combined output TIF.
+    Query params:
+      output_type  'monthly' (default) or 'daily'
+      file         filename in combined/<output_type>/ (default: annual_risk.tif)
+      quantile     which quantile ('0.025', '0.5', '0.975', ...) is used for the
+                   population-weighted figures and the map band index (default '0.5')
+
+    Response shape:
+        {
+          combined: { risk: {'q0.025': {mean, count, nonzero_count}, ...}, cases: {...} },
+          routes:   { drinking: { risk: {...} }, ... },
+          monthly:  { combined: [jan_mean, ..., dec_mean], ... }
+                     (unweighted per-cell mean, one value per calendar month;
+                     only populated when file == 'annual_risk.tif')
+          monthly_pop_weighted: { combined: [jan, ..., dec], ... }
+                     (population-weighted equivalent of `monthly`, same
+                     availability condition)
+          bands: { route: band_index }  -- band index of `route` at `quantile`
+        }
+    `combined.cases` (expected annual infections = combined risk at `quantile`
+    × population, summed per-cell) is recomputed live from annual_risk.tif at
+    the requested quantile -- it is NOT read from the fixed, always-q0.5
+    expected_cases.tif -- so it updates whenever `quantile` changes, and is
+    only populated when file == 'annual_risk.tif' and output_type == 'monthly'.
+    """
+    output_type = request.args.get('output_type', 'monthly')
+    file_name   = request.args.get('file', 'annual_risk.tif')
+    if output_type not in ('monthly', 'daily'):
+        return jsonify({'error': 'Invalid output_type'}), 400
+    if '..' in file_name or '/' in file_name or '\\' in file_name:
+        return jsonify({'error': 'Invalid file parameter'}), 400
+    try:
+        target_q = float(request.args.get('quantile', '0.5'))
+    except ValueError:
+        return jsonify({'error': 'Invalid quantile'}), 400
+
+    try:
+        cs, folder = _locate_scenario(scenario_id)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 404
+
+    try:
+        payload = compute_qmra_summary(cs, folder, output_type, file_name, target_q)
+    except ImportError as exc:
+        return jsonify({'error': f'Missing dependency: {exc}'}), 500
+
+    return jsonify(payload), 200
 
 
 def qmra_raster(scenario_id, route_key, output_type, filename):
@@ -1612,6 +1724,148 @@ def qmra_diff_tif():
         return jsonify({'error': str(exc)}), 500
 
 
+def compute_qmra_area_stats(cs, folder, output_type='monthly',
+                            file_name='annual_risk.tif', target_q=0.5,
+                            with_labels=False):
+    """Per-polygon QMRA risk for one scenario.
+
+    Pure function (no Flask request access) so it can be reused by the report
+    builder.  Returns `{iso: {risk, count, routes, cases[, name]}}`.
+    Raises ImportError (missing deps) or FileNotFoundError (missing raster /
+    geodata).  When *with_labels* is true each entry also carries a human
+    readable `name` taken from the shapefile attributes.
+    """
+    import numpy as np
+    import rasterio
+    from rasterio.mask import mask as rio_mask
+    from rasterio.warp import transform_geom
+    from rasterio.crs import CRS
+    from rasterio.features import geometry_mask
+    import fiona
+
+    tif_path = os.path.join(_qmra_base(cs['folder_path'], folder),
+                            'combined', output_type, file_name)
+    if not os.path.exists(tif_path):
+        raise FileNotFoundError(f'File not found: {file_name}')
+
+    shp_path = find_geodata_shapefile(cs['folder_path'], folder)
+    if not shp_path:
+        raise FileNotFoundError('No geodata folder')
+
+    result = {}
+    with rasterio.open(tif_path) as src:
+        raster_crs = src.crs or CRS.from_epsg(4326)
+        descs      = src.descriptions or []
+        nodata     = src.nodata
+        wgs84      = 'EPSG:4326'
+
+        # Pick the combined band, plus one band per available pathway
+        # route, all at `target_q` (last-matching scenario variant wins
+        # -- see _select_band_index).
+        combined_idx = _select_band_index(descs, 'combined', target_q) or 1
+        route_keys = []
+        seen = set()
+        for desc in descs:
+            r, _q = _parse_band(desc)
+            if r and r != 'combined' and r not in seen:
+                seen.add(r)
+                route_keys.append(r)
+        band_keys    = ['combined'] + route_keys
+        band_indexes = [combined_idx]
+        for r in route_keys:
+            band_indexes.append(_select_band_index(descs, r, target_q) or combined_idx)
+
+        # Full-grid combined band + resampled population, used to derive
+        # per-area *expected infections* (risk_cell × population_cell,
+        # summed within each polygon) that track the selected quantile --
+        # unlike the fixed expected_cases.tif (always baked at q0.5).
+        pop_grid = None
+        combined_band_full = None
+        if file_name == 'annual_risk.tif' and output_type == 'monthly':
+            pop_grid = _pop_grid_for(cs['folder_path'], folder, tif_path)
+            if pop_grid is not None:
+                combined_band_full = src.read(combined_idx).astype('float64')
+                if nodata is not None:
+                    try:
+                        ndv = float(nodata)
+                        if not np.isnan(ndv):
+                            combined_band_full[combined_band_full == ndv] = np.nan
+                    except (TypeError, ValueError):
+                        pass
+                combined_band_full[(combined_band_full < 0) | (combined_band_full > 1.0)] = np.nan
+                if combined_band_full.shape != pop_grid.shape:
+                    combined_band_full = None
+
+        with fiona.open(shp_path) as shp:
+            shp_crs_str = shp.crs_wkt or wgs84
+            for idx, feat in enumerate(shp):
+                iso  = str(idx + 1)
+                geom = feat['geometry']
+                try:
+                    geom_r = transform_geom(shp_crs_str, raster_crs.to_wkt(), geom)
+                except Exception:
+                    geom_r = geom
+                try:
+                    out, _ = rio_mask(src, [geom_r], crop=True, all_touched=True,
+                                      filled=True, nodata=np.nan, indexes=band_indexes)
+                    combined_val   = None
+                    combined_count = 0
+                    routes_out     = {}
+                    for pos, key in enumerate(band_keys):
+                        vals = out[pos].astype(float)
+                        if nodata is not None:
+                            try:
+                                vals[vals == float(nodata)] = np.nan
+                            except Exception:
+                                pass
+                        vals[vals < 0]   = np.nan
+                        vals[vals > 1.0] = np.nan
+                        valid = vals[~np.isnan(vals)]
+                        # Average over populated (nonzero) cells so this matches
+                        # the headline "area-average" figure; background zero
+                        # cells inside the polygon would otherwise dilute it.
+                        positive = valid[valid > 0]
+                        if len(positive):
+                            mean_val = float(np.mean(positive))
+                            if key == 'combined':
+                                combined_val   = mean_val
+                                combined_count = int(len(positive))
+                            else:
+                                routes_out[key] = mean_val
+                    if combined_val is not None:
+                        cases_val = None
+                        if combined_band_full is not None and pop_grid is not None:
+                            try:
+                                feat_mask = geometry_mask(
+                                    [geom_r], out_shape=combined_band_full.shape,
+                                    transform=src.transform, invert=True,
+                                )
+                                valid_c = (
+                                    feat_mask
+                                    & np.isfinite(combined_band_full) & (combined_band_full > 0)
+                                    & np.isfinite(pop_grid)
+                                )
+                                if np.any(valid_c):
+                                    cases_val = float(np.sum(
+                                        combined_band_full[valid_c] * pop_grid[valid_c]
+                                    ))
+                            except Exception:
+                                cases_val = None
+                        entry = {
+                            'risk':   combined_val,
+                            'count':  combined_count,
+                            'routes': routes_out,
+                            'cases':  cases_val,
+                        }
+                        if with_labels:
+                            entry['name'] = area_label(feat.get('properties') or {}) or f'Area {iso}'
+                        result[iso] = entry
+                except Exception:
+                    pass
+
+    return result
+
+
 def qmra_area_stats(scenario_id):
     """Return per-ISO risk from a QMRA combined output TIF, at a given quantile.
 
@@ -1641,140 +1895,17 @@ def qmra_area_stats(scenario_id):
         return jsonify({'error': 'Invalid quantile'}), 400
 
     try:
-        import numpy as np
-        import rasterio
-        from rasterio.mask import mask as rio_mask
-        from rasterio.warp import transform_geom
-        from rasterio.crs import CRS
-        from rasterio.features import geometry_mask
-        import fiona
-    except ImportError:
-        return jsonify({'error': 'rasterio/numpy/fiona not available'}), 500
-
-    try:
         cs, folder = _locate_scenario(scenario_id)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 404
 
-    tif_path = os.path.join(_qmra_base(cs['folder_path'], folder),
-                            'combined', output_type, file_name)
-    if not os.path.exists(tif_path):
-        return jsonify({'error': f'File not found: {file_name}'}), 404
-
-    shp_path = find_geodata_shapefile(cs['folder_path'], folder)
-    if not shp_path:
-        return jsonify({'error': 'No geodata folder'}), 404
-
     try:
-        result = {}
-        with rasterio.open(tif_path) as src:
-            raster_crs = src.crs or CRS.from_epsg(4326)
-            descs      = src.descriptions or []
-            nodata     = src.nodata
-            wgs84      = 'EPSG:4326'
-
-            # Pick the combined band, plus one band per available pathway
-            # route, all at `target_q` (last-matching scenario variant wins
-            # -- see _select_band_index).
-            combined_idx = _select_band_index(descs, 'combined', target_q) or 1
-            route_keys = []
-            seen = set()
-            for desc in descs:
-                r, _q = _parse_band(desc)
-                if r and r != 'combined' and r not in seen:
-                    seen.add(r)
-                    route_keys.append(r)
-            band_keys    = ['combined'] + route_keys
-            band_indexes = [combined_idx]
-            for r in route_keys:
-                band_indexes.append(_select_band_index(descs, r, target_q) or combined_idx)
-
-            # Full-grid combined band + resampled population, used to derive
-            # per-area *expected infections* (risk_cell × population_cell,
-            # summed within each polygon) that track the selected quantile --
-            # unlike the fixed expected_cases.tif (always baked at q0.5).
-            pop_grid = None
-            combined_band_full = None
-            if file_name == 'annual_risk.tif' and output_type == 'monthly':
-                pop_grid = _pop_grid_for(cs['folder_path'], folder, tif_path)
-                if pop_grid is not None:
-                    combined_band_full = src.read(combined_idx).astype('float64')
-                    if nodata is not None:
-                        try:
-                            ndv = float(nodata)
-                            if not np.isnan(ndv):
-                                combined_band_full[combined_band_full == ndv] = np.nan
-                        except (TypeError, ValueError):
-                            pass
-                    combined_band_full[(combined_band_full < 0) | (combined_band_full > 1.0)] = np.nan
-                    if combined_band_full.shape != pop_grid.shape:
-                        combined_band_full = None
-
-            with fiona.open(shp_path) as shp:
-                shp_crs_str = shp.crs_wkt or wgs84
-                for idx, feat in enumerate(shp):
-                    iso  = str(idx + 1)
-                    geom = feat['geometry']
-                    try:
-                        geom_r = transform_geom(shp_crs_str, raster_crs.to_wkt(), geom)
-                    except Exception:
-                        geom_r = geom
-                    try:
-                        out, _ = rio_mask(src, [geom_r], crop=True, all_touched=True,
-                                          filled=True, nodata=np.nan, indexes=band_indexes)
-                        combined_val   = None
-                        combined_count = 0
-                        routes_out     = {}
-                        for pos, key in enumerate(band_keys):
-                            vals = out[pos].astype(float)
-                            if nodata is not None:
-                                try:
-                                    vals[vals == float(nodata)] = np.nan
-                                except Exception:
-                                    pass
-                            vals[vals < 0]   = np.nan
-                            vals[vals > 1.0] = np.nan
-                            valid = vals[~np.isnan(vals)]
-                            # Average over populated (nonzero) cells so this matches
-                            # the headline "area-average" figure; background zero
-                            # cells inside the polygon would otherwise dilute it.
-                            positive = valid[valid > 0]
-                            if len(positive):
-                                mean_val = float(np.mean(positive))
-                                if key == 'combined':
-                                    combined_val   = mean_val
-                                    combined_count = int(len(positive))
-                                else:
-                                    routes_out[key] = mean_val
-                        if combined_val is not None:
-                            cases_val = None
-                            if combined_band_full is not None and pop_grid is not None:
-                                try:
-                                    feat_mask = geometry_mask(
-                                        [geom_r], out_shape=combined_band_full.shape,
-                                        transform=src.transform, invert=True,
-                                    )
-                                    valid_c = (
-                                        feat_mask
-                                        & np.isfinite(combined_band_full) & (combined_band_full > 0)
-                                        & np.isfinite(pop_grid)
-                                    )
-                                    if np.any(valid_c):
-                                        cases_val = float(np.sum(
-                                            combined_band_full[valid_c] * pop_grid[valid_c]
-                                        ))
-                                except Exception:
-                                    cases_val = None
-                            result[iso] = {
-                                'risk':   combined_val,
-                                'count':  combined_count,
-                                'routes': routes_out,
-                                'cases':  cases_val,
-                            }
-                    except Exception:
-                        pass
-
+        result = compute_qmra_area_stats(cs, folder, output_type, file_name, target_q)
         return jsonify(result), 200
+    except ImportError:
+        return jsonify({'error': 'rasterio/numpy/fiona not available'}), 500
+    except FileNotFoundError as exc:
+        return jsonify({'error': str(exc)}), 404
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 404
     except Exception as exc:

@@ -18,12 +18,16 @@
 #}
 {% if pop.is_significant %}
 The total population {{ "grows" if pop.increased else "shrinks" }} {{ pop.magnitude }} by {{ pop.abs_delta | num }}%,
-reaching {{ pop.scen_val }} people —
+reaching {{ pop.scen_val }} people,
 {{ "increasing pressure on water and sanitation systems" if pop.increased else "reducing aggregate demand on sanitation and water infrastructure" }}.
 {% endif %}
 {% if urbanisation.is_significant %}
 The urban population share {{ "rises" if urbanisation.increased else "falls" }} by {{ urbanisation.abs_delta | num }} percentage points to {{ urbanisation.scen_val }},
 {{ "which typically improves access to centralised sanitation and wastewater treatment" if urbanisation.increased else "reflecting growth in rural areas where access to improved sanitation is generally lower" }}.
+{% endif %}
+{% if under5.is_significant %}
+The share of children under five {{ "rises" if under5.increased else "falls" }} by {{ under5.abs_delta | num }} percentage points to {{ under5.scen_val }},
+{{ "enlarging the group most susceptible to severe outcomes from enteric infection" if under5.increased else "reducing the size of the group most susceptible to severe outcomes from enteric infection" }}.
 {% endif %}
 {% if hdi.is_significant %}
 The Human Development Index {{ "improves" if hdi.increased else "declines" }} to {{ hdi.scen_val }},

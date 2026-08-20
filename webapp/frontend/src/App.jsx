@@ -45,6 +45,7 @@ import ScenarioMetadataDialog from './components/ScenarioMetadataDialog';
 import ResultsView from './components/ResultsView';
 import CaseStudyPage from './components/CaseStudyPage';
 import ScenarioSummaryView from './components/ScenarioSummaryView';
+import NarrativeReportView from './components/narratives/NarrativeReportView';
 import NotFound from './components/NotFound';
 import { csSlug as toCsSlug, scenSlug as toScenSlug, paths, QMRA_SEGMENT, parseScenariosParam } from './routes';
 import './index.css';
@@ -238,7 +239,7 @@ function Dashboard() {
     const parts = location.pathname.split('/').filter(Boolean);
     const section = parts[0];
     // Only these sections carry a case-study slug at parts[1]
-    const csAwareSections = ['scenarios', 'analytics', 'summary', 'case-studies'];
+    const csAwareSections = ['scenarios', 'analytics', 'summary', 'narratives', 'case-studies'];
     if (!csAwareSections.includes(section)) return;
 
     const csSlug = parts[1];
@@ -331,6 +332,8 @@ function Dashboard() {
         navigate(cs ? paths.caseStudy(cs) : paths.caseStudies());
       } else if (sectionId === 'summary') {
         navigate(cs ? paths.summary(cs) : paths.caseStudies());
+      } else if (sectionId === 'narratives') {
+        navigate(cs ? paths.narratives(cs) : paths.caseStudies());
       } else if (sectionId === 'analytics') {
         navigate(cs ? paths.analytics(cs) : paths.caseStudies());
       } else {
@@ -688,6 +691,12 @@ function Dashboard() {
       label: 'Summary',
       icon: Table2,
       description: 'Summary of scenario changes'
+    },
+    {
+      id: 'narratives',
+      label: 'Narratives',
+      icon: FileText,
+      description: 'Build and export scenario reports'
     },
     { 
       id: 'settings', 
@@ -1185,6 +1194,14 @@ function Dashboard() {
         );
       }
 
+      case 'narratives': {
+        return (
+          <NarrativeReportView
+            caseStudyId={selectedCaseStudy?.id || null}
+          />
+        );
+      }
+
       case 'analytics': {
         const baselineId = analyticsScenarios.find(s => s.is_baseline && s.has_outputs)?.id || null;
         return (
@@ -1290,6 +1307,7 @@ function Dashboard() {
                   if (activeSection === 'scenarios') navigate(paths.scenarios(cs));
                   else if (activeSection === 'analytics') navigate(paths.analytics(cs));
                   else if (activeSection === 'summary')   navigate(paths.summary(cs));
+                  else if (activeSection === 'narratives') navigate(paths.narratives(cs));
                   else if (activeSection === 'case-studies') navigate(paths.caseStudy(cs));
                   else fetchScenarios(cs.id);
                 }}
@@ -1307,7 +1325,7 @@ function Dashboard() {
               <ChevronRight size={14} className="text-gray-300 flex-shrink-0" />
             </div>
             {navigationItems
-              .filter(i => ['scenarios', 'analytics'].includes(i.id) || (i.id === 'summary' && !!selectedCaseStudy))
+              .filter(i => ['scenarios', 'analytics'].includes(i.id) || (['summary', 'narratives'].includes(i.id) && !!selectedCaseStudy))
               .map((item) => {
                 const IconComponent = item.icon;
                 const isActive = activeSection === item.id;
@@ -1467,6 +1485,7 @@ function App() {
         {/* Section-less URLs bounce to the case-study picker */}
         <Route path="/analytics" element={<Navigate to="/case-studies" replace />} />
         <Route path="/summary"   element={<Navigate to="/case-studies" replace />} />
+        <Route path="/narratives" element={<Navigate to="/case-studies" replace />} />
 
         {/* Settings */}
         <Route path="/settings" element={<Dashboard />} />
@@ -1487,6 +1506,9 @@ function App() {
 
         {/* Summary (deep-linkable) */}
         <Route path="/summary/:csSlug" element={<Dashboard />} />
+
+        {/* Narratives (deep-linkable) */}
+        <Route path="/narratives/:csSlug" element={<Dashboard />} />
 
         {/* 404 */}
         <Route path="*" element={<NotFound />} />

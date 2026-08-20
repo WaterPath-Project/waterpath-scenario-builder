@@ -10,6 +10,8 @@ The original monolithic app.py has been split into focused modules:
   - scenario.py    : scenario CRUD + treatment/geodata/isodata
   - case_study.py  : case-study CRUD, ZIP upload, datapackage, SPA catch-all
   - analytics.py   : analytics/driver/narrative endpoints
+  - report.py      : narrative report persistence + PDF endpoints
+  - report_render.py : report HTML/CSS rendering (no routes)
   - results.py     : output rasters, raster-diff, output CSV/PNG
   - session.py     : metrics summary + activity feed
 
@@ -30,13 +32,14 @@ import glowpa
 import hydrology
 import livestock
 import qmra
+import report
 import results
 import scenario
 import session
 
 # Register all API routes on both Flask apps.  case_study is registered LAST
 # because it adds the catch-all SPA route on the frontend app.
-for mod in (scenario, livestock, hydrology, glowpa, analytics, results, session, qmra):
+for mod in (scenario, livestock, hydrology, glowpa, analytics, results, session, qmra, report):
     mod.register_routes(state.app, state.frontend_app)
 
 case_study.register_routes(state.app, state.frontend_app)

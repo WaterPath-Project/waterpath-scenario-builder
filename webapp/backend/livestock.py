@@ -15,6 +15,7 @@ from fs_utils import (
     _read_csv_table,
     _resolve_data_path,
     _tif_pixel_dimensions,
+    area_label,
 )
 from state import _GLOWPA_ANIMALS, _LIVESTOCK_EDITABLE_CSVS
 
@@ -567,16 +568,7 @@ def get_livestock_heads_by_area(scenario_id):
                 reader = csv.DictReader(f)
                 for idx, row in enumerate(reader):
                     iso_key = str(row.get('iso') or row.get('gid') or (idx + 1)).strip()
-                    label = (
-                        row.get('subarea')
-                        or row.get('NAME_4')
-                        or row.get('NAME_3')
-                        or row.get('NAME_2')
-                        or row.get('NAME_1')
-                        or row.get('NAME_0')
-                        or iso_key
-                    )
-                    area_labels[iso_key] = str(label)
+                    area_labels[iso_key] = str(area_label(row, iso_key))
 
         areas = []
         geometries = []
@@ -585,16 +577,7 @@ def get_livestock_heads_by_area(scenario_id):
             for idx, feat in enumerate(shp):
                 iso_key = str(idx + 1)
                 props = feat.get('properties') or {}
-                label = (
-                    area_labels.get(iso_key)
-                    or props.get('subarea')
-                    or props.get('NAME_4')
-                    or props.get('NAME_3')
-                    or props.get('NAME_2')
-                    or props.get('NAME_1')
-                    or props.get('NAME_0')
-                    or iso_key
-                )
+                label = area_labels.get(iso_key) or area_label(props, iso_key)
                 areas.append({'iso': iso_key, 'label': str(label)})
                 geometries.append(feat.get('geometry'))
 

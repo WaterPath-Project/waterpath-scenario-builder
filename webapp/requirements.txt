@@ -13,3 +13,10 @@ imagecodecs>=2024.0
 fiona>=1.9
 rasterio>=1.3
 pandas>=2.0
+
+# Narrative report rendering (report.py)
+# markdown converts the stored section Markdown to HTML, bleach sanitises it
+# before it reaches the PDF renderer, weasyprint produces the PDF itself.
+markdown==3.5.2
+bleach==6.1.0
+weasyprint==62.3

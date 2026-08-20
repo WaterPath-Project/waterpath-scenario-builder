@@ -1,0 +1,39 @@
+{#
+  driver_table_intro.j2
+  =====================
+  Text accompanying the full driver-comparison table, which acts as the
+  report's reference page. It names exactly which metrics crossed the
+  significance threshold so the reader knows what to look for.
+
+  Context variables (from _build_driver_table_ctx):
+    has_changes           bool
+    scenario_count        int
+    multi_scenario        bool
+    baseline_name         str
+    changed_by_driver     [ { driver, entries: [ { label, direction,
+                              magnitude, amount, scope } ] } ]
+                          entries are aggregated across the selected scenarios
+    changed_driver_names  [str]
+    unchanged_drivers     [str]
+
+  NOTE: each list item must render on a single line. Jinja's trim_blocks eats
+  the newline that follows a block tag, so lines ending in {% raw %}{% endif %}{% endraw %}
+  are terminated with an empty expression to keep the line break.
+#}
+The table on this page lists every input driver metric side by side, for {{ baseline_name }} and
+{{ "each of the " ~ scenario_count ~ " scenarios" if multi_scenario else "the scenario" }} in this report.
+It is intended as a reference: the narrative sections that follow discuss only the changes that are large enough to matter.
+
+{% if not has_changes %}
+None of the driver metrics differ from {{ baseline_name }} substantially. Any differences in modelled outcomes therefore stem from interactions between drivers rather than from a single dominant change.
+{% else %}
+The metrics that changed significantly relative to {{ baseline_name }} are grouped by driver below.
+
+{% for group in changed_by_driver %}
+- **{{ group.driver }}**: {% for e in group.entries %}{{ e.label }} {{ e.direction }} {{ e.magnitude }}, by {{ e.amount }}{% if e.scope %} ({{ e.scope }}){% endif %}{{ "; " if not loop.last else "." }}{% endfor %}{{ "" }}
+{% endfor %}
+
+{% if unchanged_drivers %}
+The remaining driver{{ "s" if unchanged_drivers | length != 1 }} ({{ unchanged_drivers | listjoin }}) show{{ "" if unchanged_drivers | length != 1 else "s" }} no significant changes and {{ "are" if unchanged_drivers | length != 1 else "is" }} not discussed further.
+{% endif %}
+{% endif %}

@@ -8,6 +8,7 @@
     sewage_treated            metric – share of sewage treated (pp change)
     fecal_sludge              metric – share of fecal sludge treated (pp change)
     facility_count            metric – number of treatment plants (relative_pct change)
+    capacity                  metric – total installed treatment capacity (relative_pct change)
     treatment_level_changed   bool   – any significant shift in treatment level mix
     advanced_treatment_increased bool
     primary_treatment_increased  bool
@@ -22,6 +23,10 @@ Fecal sludge treatment {{ "increases" if fecal_sludge.increased else "decreases"
 {% if is_point_mode %}
 {% if facility_count.is_significant %}
 The number of wastewater treatment plants {{ "increases" if facility_count.increased else "decreases" }} by {{ facility_count.abs_delta | num }}% to {{ facility_count.scen_val }} facilities.
+{% endif %}
+{% if capacity.is_significant %}
+Total installed treatment capacity {{ "grows" if capacity.increased else "contracts" }} {{ capacity.magnitude }} by {{ capacity.abs_delta | num }}%,
+{{ "so a greater volume of wastewater can be treated before discharge" if capacity.increased else "so a smaller volume of wastewater can be treated before discharge" }}.
 {% endif %}
 {% if treatment_level_changed %}
 {% if advanced_treatment_increased %}

@@ -1,0 +1,26 @@
+{#
+  manure_management.j2
+  ====================
+  Narrative text for the Manure management driver.
+
+  Context variables (from _build_manure_management_ctx), each a metric dict
+  measuring the share of manure handled by a group of management systems:
+    direct  – deposited on pasture or spread daily onto land (pp change)
+    storage – held in solid, dry-lot, slurry or lagoon storage (pp change)
+    treated – anaerobically digested or burned for fuel (pp change)
+
+  The three shares need not sum to 100%: manure handled by "other" systems is
+  deliberately left out of all three groups.
+#}
+{% if direct.is_significant %}
+The share of manure applied directly to land without prior storage {{ "rises" if direct.increased else "falls" }} {{ direct.magnitude }} by {{ direct.abs_delta | num }} percentage points to {{ direct.scen_val }},
+{{ "leaving pathogens less time to die off before they can be washed into surface water" if direct.increased else "allowing more manure to be held back from land surfaces where runoff can mobilise pathogens" }}.
+{% endif %}
+{% if storage.is_significant %}
+Manure held in storage before application {{ "increases" if storage.increased else "decreases" }} by {{ storage.abs_delta | num }} percentage points to {{ storage.scen_val }},
+{{ "extending the die-off period that reduces viable pathogen numbers before land application" if storage.increased else "shortening the die-off period, so a larger fraction of pathogens remains viable at the point of application" }}.
+{% endif %}
+{% if treated.is_significant %}
+The share of manure that is anaerobically digested or burned for fuel {{ "grows" if treated.increased else "declines" }} by {{ treated.abs_delta | num }} percentage points to {{ treated.scen_val }},
+{{ "which substantially inactivates pathogens before any residue reaches the environment" if treated.increased else "removing a treatment step that would otherwise inactivate pathogens before release" }}.
+{% endif %}

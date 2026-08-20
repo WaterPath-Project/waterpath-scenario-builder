@@ -16,12 +16,31 @@ from datetime import datetime
 from flask import jsonify, request, send_from_directory
 
 import state
-from fs_utils import create_baseline_metadata_entry, write_scenario_metadata_csv
+from fs_utils import (
+    area_label,
+    country_label,
+    create_baseline_metadata_entry,
+    find_geodata_shapefile,
+    write_scenario_metadata_csv,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Filesystem helpers
 # ──────────────────────────────────────────────────────────────────────────────
+
+# Free-text datapackage fields that exist purely to feed narrative reports.
+# They are optional everywhere: absent in older case studies, editable through
+# the normal datapackage PUT endpoint, and default to ''.
+_NARRATIVE_DATAPACKAGE_FIELDS = (
+    'study_area_description',
+    'authors',
+    'organisation',
+    'funding',
+    'citation',
+    'report_notes',
+)
+
 
 def create_datapackage_json(case_study_path, case_study_name, case_study_description, created_by, csv_files=None, enabled_categories=None):
     """Create a datapackage.json file with case study metadata and CSV file references"""
@@ -36,6 +55,9 @@ def create_datapackage_json(case_study_path, case_study_name, case_study_descrip
         "created_by": created_by,
         "resources": []
     }
+
+    for field in _NARRATIVE_DATAPACKAGE_FIELDS:
+        datapackage[field] = ""
 
     if enabled_categories is not None:
         datapackage["enabled_categories"] = enabled_categories
@@ -603,6 +625,125 @@ def update_case_study_datapackage(case_study_id):
         return jsonify({"error": f"Failed to update datapackage: {str(e)}"}), 500
 
 
+def _geodata_context(cs_path):
+    """Describe the case study's study area from its geodata shapefile.
+
+    Returns admin level (max GID_n field), polygon count, the distinct
+    countries covered and a short sample of area names. Any failure yields
+    empty values rather than an error -- geodata is optional.
+    """
+    out = {'admin_level': None, 'area_count': None, 'countries': [], 'area_names_sample': []}
+    shp_path = find_geodata_shapefile(cs_path, 'baseline')
+    if not shp_path:
+        return out
+    try:
+        import shapefile as sf_lib
+        reader = sf_lib.Reader(shp_path)
+        fields = [f[0] for f in reader.fields[1:]]
+
+        levels = [int(f[4:]) for f in fields
+                  if f.upper().startswith('GID_') and f[4:].isdigit()]
+        if levels:
+            out['admin_level'] = max(levels)
+
+        records = reader.records()
+        out['area_count'] = len(records)
+
+        countries = []
+        names = []
+        for rec in records:
+            props = dict(zip(fields, list(rec)))
+            country = country_label(props)
+            if country and country not in countries:
+                countries.append(country)
+            if len(names) < 8:
+                name = area_label(props)
+                if name and name not in names:
+                    names.append(name)
+        out['countries'] = countries
+        out['area_names_sample'] = names
+    except Exception:
+        pass
+    return out
+
+
+def derive_case_study_context(case_study):
+    """Assemble the descriptive context used to write a report's introduction.
+
+    Combines editable datapackage metadata with facts derived from the
+    scenario metadata CSV and the geodata shapefile.
+    """
+    cs_path = case_study['folder_path']
+
+    datapackage = {}
+    dp_path = os.path.join(cs_path, 'datapackage.json')
+    if os.path.exists(dp_path):
+        try:
+            with open(dp_path, 'r', encoding='utf-8') as f:
+                datapackage = json.load(f)
+        except Exception:
+            datapackage = {}
+
+    pathogens, ssps, years = [], [], []
+    scenario_count = 0
+    baseline_name = None
+    meta_path = os.path.join(cs_path, 'config', 'scenario_metadata.csv')
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, 'r', newline='', encoding='utf-8') as f:
+                for row in csv.DictReader(f):
+                    if not row.get('scenario_id'):
+                        continue
+                    scenario_count += 1
+                    if str(row.get('is_baseline', '')).lower() in ('true', '1', 'yes'):
+                        baseline_name = row.get('name') or baseline_name
+                    for value, bucket in ((row.get('pathogen'), pathogens),
+                                          (row.get('ssp'), ssps),
+                                          (row.get('year'), years)):
+                        value = (value or '').strip()
+                        if value and value not in bucket:
+                            bucket.append(value)
+        except Exception:
+            pass
+
+    def _year_sort(value):
+        try:
+            return (0, int(value))
+        except (TypeError, ValueError):
+            return (1, 0)
+
+    context = {
+        'case_study_id': case_study['id'],
+        'title': datapackage.get('title') or case_study.get('name') or '',
+        'name': datapackage.get('name') or case_study.get('folder_name') or '',
+        'description': datapackage.get('description') or '',
+        'version': datapackage.get('version') or '',
+        'created': datapackage.get('created') or '',
+        'created_by': datapackage.get('created_by') or '',
+        'enabled_categories': datapackage.get('enabled_categories') or [],
+        'scenario_count': scenario_count,
+        'baseline_name': baseline_name,
+        'pathogens': pathogens,
+        'ssps': sorted(ssps),
+        'years': sorted(years, key=_year_sort),
+    }
+    for field in _NARRATIVE_DATAPACKAGE_FIELDS:
+        context[field] = datapackage.get(field) or ''
+    context.update(_geodata_context(cs_path))
+    return context
+
+
+def get_case_study_context(case_study_id):
+    """Descriptive context for a case study, used by the narrative reports."""
+    case_study = next((cs for cs in state.case_studies if cs['id'] == case_study_id), None)
+    if not case_study:
+        return jsonify({'error': 'Case study not found'}), 404
+    try:
+        return jsonify(derive_case_study_context(case_study)), 200
+    except Exception as e:
+        return jsonify({'error': f'Failed to derive case study context: {str(e)}'}), 500
+
+
 def reload_case_studies():
     """Reload case studies from filesystem"""
     try:
@@ -670,6 +811,7 @@ def register_routes(app, frontend_app):
         ('/api/case-studies/upload',                             ['POST'],        upload_case_study),
         ('/api/case-studies/<case_study_id>/datapackage',        ['GET'],         get_case_study_datapackage),
         ('/api/case-studies/<case_study_id>/datapackage',        ['PUT'],         update_case_study_datapackage),
+        ('/api/case-studies/<case_study_id>/context',            ['GET'],         get_case_study_context),
         ('/api/case-studies/reload',                             ['GET', 'POST'], reload_case_studies),
     ]
     for rule, methods, view in routes:

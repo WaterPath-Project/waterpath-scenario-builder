@@ -14,7 +14,7 @@ Access to improved sanitation {{ "rises" if improved.increased else "falls" }} {
 {{ "reducing the fraction of waste deposited without adequate containment" if improved.increased else "leaving more people relying on inadequate sanitation and increasing direct contamination risks" }}.
 {% endif %}
 {% if open_defecation.is_significant %}
-Open defecation {{ "increases" if open_defecation.increased else "decreases" }} {{ open_defecation.magnitude }} by {{ open_defecation.abs_delta | num }} pp to {{ open_defecation.scen_val }} —
+Open defecation {{ "increases" if open_defecation.increased else "decreases" }} {{ open_defecation.magnitude }} by {{ open_defecation.abs_delta | num }} pp to {{ open_defecation.scen_val }},
 {{ "a major direct pathway for pathogen loading on land and into surface water" if open_defecation.increased else "reducing one of the most direct sources of land and waterway contamination" }}.
 {% endif %}
 {% if not improved.is_significant and not open_defecation.is_significant and unimproved.is_significant %}

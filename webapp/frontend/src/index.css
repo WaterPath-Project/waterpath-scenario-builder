@@ -121,6 +121,60 @@ input[type="range"].split-slider::-moz-range-thumb {
   pointer-events: none;
 }
 
+/* ── Narrative report preview ───────────────────────────────────────────────
+   Markdown rendered inside the /narratives section editor. Tailwind's preflight
+   strips all default typography, so the generated prose needs spacing rules of
+   its own to stay readable.
+   ──────────────────────────────────────────────────────────────────────── */
+.report-markdown > *:first-child {
+  margin-top: 0;
+}
+.report-markdown > *:last-child {
+  margin-bottom: 0;
+}
+.report-markdown p {
+  margin: 0 0 0.75em;
+}
+.report-markdown h1,
+.report-markdown h2,
+.report-markdown h3,
+.report-markdown h4 {
+  margin: 1.2em 0 0.4em;
+  font-family: 'Outfit', sans-serif;
+  font-weight: 600;
+  color: #0B4159;
+}
+.report-markdown ul,
+.report-markdown ol {
+  margin: 0 0 0.75em;
+  padding-left: 1.4em;
+}
+.report-markdown ul {
+  list-style: disc;
+}
+.report-markdown ol {
+  list-style: decimal;
+}
+.report-markdown li {
+  margin-bottom: 0.2em;
+}
+.report-markdown table {
+  border-collapse: collapse;
+  margin: 0 0 0.75em;
+  font-size: 0.9em;
+}
+.report-markdown th,
+.report-markdown td {
+  border: 1px solid #CAD8E3;
+  padding: 0.3em 0.6em;
+  text-align: left;
+}
+.report-markdown th {
+  background: #EEF2F5;
+  color: #0B4159;
+  font-weight: 600;
+}
+
 /* ── Print styles ───────────────────────────────────────────────────────────
    When the user triggers Print (or the print button), hide the app chrome so
    only the main content area is visible on the printed page.

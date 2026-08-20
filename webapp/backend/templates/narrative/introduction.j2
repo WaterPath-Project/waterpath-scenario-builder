@@ -1,0 +1,93 @@
+{#
+  introduction.j2
+  ===============
+  Opening section of the report: what the case study covers and which
+  scenarios this report compares.
+
+  Context variables (from _build_intro_ctx):
+    title, description, study_area_description, authors, organisation,
+    funding, report_notes           free text from the case study datapackage
+    countries, country_count, area_count, admin_level, admin_level_desc,
+    area_names_sample               study-area geography
+    pathogens, ssps, years          scenario dimensions
+    baseline_name, baseline_year    the reference scenario
+    scenario_count, scenario_rows, any_risk
+    driver_notes                    the drivers this case study parameterises
+#}
+This report presents the results of the **{{ title }}** case study, modelled with the WaterPath scenario builder.
+{% if description %}
+{{ description }}
+{% endif %}
+{% if authors or organisation %}
+It was prepared by {{ authors if authors else "the case study team" }}{% if organisation %} ({{ organisation }}){% endif %}.
+{% endif %}
+
+## Study area
+
+{% if has_geography %}
+{% if countries %}
+The study area covers {{ countries | listjoin }}.
+{% endif %}
+{% if area_count %}
+Results are resolved across {{ area_count }} reporting area{{ "s" if area_count != 1 }}
+{% if admin_level_desc %}
+at the {{ admin_level_desc }} level{% endif %}.
+{% if area_names_sample and area_count > countries | length %}
+These include {{ area_names_sample | listjoin }}{{ ", among others" if area_count > area_names_sample | length else "" }}.
+{% endif %}
+{% endif %}
+{% else %}
+No geographic boundary data is registered for this case study, so results are reported without a spatial breakdown.
+{% endif %}
+{% if study_area_description %}
+
+{{ study_area_description }}
+{% endif %}
+
+## Scope of the assessment
+
+{% if pathogens %}
+The assessment models {{ pathogens | listjoin }} as the reference pathogen{{ "s" if pathogens | length != 1 }}.
+{% endif %}
+{% if ssps %}
+Future conditions are drawn from the Shared Socioeconomic Pathway{{ "s" if ssps | length != 1 }} {{ ssps | listjoin }}.
+{% endif %}
+{% if years %}
+The modelled horizon{{ "s span" if years | length != 1 else " is" }} {{ years | listjoin }}.
+{% endif %}
+{% if any_risk %}
+Where quantitative microbial risk assessment (QMRA) results are available, the report also reports modelled probabilities of infection and expected annual infections.
+{% endif %}
+{% if driver_notes %}
+
+## The drivers
+
+A scenario in WaterPath is defined by changing one or more *drivers of contamination*: the model inputs that determine how many pathogens are produced, how many of them reach surface water, and how many people are exposed to them. The drivers below are the ones that were parametrized in the context of this case study.
+
+{% for note in driver_notes %}
+- **{{ note.name }}.** {{ note.description }}
+{% endfor %}
+
+Each scenario chapter walks through these drivers in turn, reports how the scenario differs from the baseline, and then shows the resulting emissions, river concentrations and health risk.
+{% endif %}
+
+## Scenarios compared
+
+{% if baseline_name %}
+All comparisons are made against the **{{ baseline_name }}** scenario{% if baseline_year %} ({{ baseline_year }}){% endif %}, which represents present-day conditions.
+{% endif %}
+{% if scenario_rows %}
+This report examines {{ scenario_count }} scenario{{ "s" if scenario_count != 1 }}:
+
+{% for row in scenario_rows %}
+- **{{ row.name }}**{% if row.detail %} ({{ row.detail }}){% endif %}{% if not row.has_risk %}, no risk results available{% endif %}{{ "" }}
+{% endfor %}
+{% endif %}
+{% if funding %}
+
+{{ funding }}
+{% endif %}
+{% if report_notes %}
+
+{{ report_notes }}
+{% endif %}
