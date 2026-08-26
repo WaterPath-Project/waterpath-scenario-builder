@@ -474,11 +474,11 @@ DRIVER_DESCRIPTIONS = [
      'The number of animals kept in the study area, by species. Livestock manure is usually the '
      'largest diffuse source of pathogens reaching surface water.'),
     ('Manure management', 'manure_',
-     'What happens to livestock manure: direct application to land, storage before application, or '
+     'What happens to that manure: direct application to land, storage before application, or '
      'digestion and burning. Storage and treatment give pathogens time to die off before the '
      'manure reaches a field.'),
     ('Production systems', 'production_',
-     'How far livestock keeping shifts from extensive towards intensive '
+     'How far livestock keeping shifts from extensive grazing towards intensive, confined '
      'production. Intensive systems concentrate manure in fewer places, which changes both where '
      'emissions arise and how they can be controlled.'),
     ('Hydrology', 'hydrology_',
@@ -486,7 +486,9 @@ DRIVER_DESCRIPTIONS = [
      'surface runoff, water temperature and solar radiation. Discharge dilutes the load, while '
      'temperature and sunlight speed up die-off.'),
     ('Risk', None,
-     'Determines the probability that a person becomes infected, given how often and in what way they come into contact with the water.'),
+     'The final step of the chain. Quantitative microbial risk assessment (QMRA) converts the '
+     'modelled concentrations into the probability that a person becomes infected, given how '
+     'often and in what way they come into contact with the water.'),
 ]
 
 

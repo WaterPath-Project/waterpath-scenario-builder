@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import useScenarioStore from '../store/scenarioStore';
+import ConfirmDialog from './ConfirmDialog';
 import {
   CheckCircle,
   XCircle,
@@ -96,6 +97,7 @@ function RunStatusBadge({ status }) {
     idle:    { label: 'Idle',  cls: 'bg-gray-100 text-gray-500' },
     pending: { label: 'Queued',   cls: 'bg-yellow-100 text-yellow-700' },
     running: { label: 'Running…', cls: 'bg-blue-100 text-blue-700' },
+    risk_running: { label: 'Estimating risk…', cls: 'bg-blue-100 text-blue-700' },
     success: { label: 'Done ✓',   cls: 'bg-green-100 text-green-700' },
     error:   { label: 'Error',    cls: 'bg-red-100 text-red-700' },
     timeout: { label: 'Timeout',  cls: 'bg-orange-100 text-orange-700' },
@@ -127,6 +129,7 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
   const [glowpaLog, setGlowpaLog] = useState(null);
   const [logLoading, setLogLoading] = useState(false);
   const [showLog, setShowLog] = useState(false);
+  const [showRiskRunDialog, setShowRiskRunDialog] = useState(false);
 
   const { readiness } = scenario;
   const canRun = readiness?.ready === true;
@@ -161,14 +164,16 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
   }, [runId]);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
-  const handleRunModel = async () => {
+  const startModelRun = async (includeRisk) => {
     setRunLoading(true);
     setRunStatus('pending');
     setShowOutput(true);
     setRunOutputFiles([]);
     onRunStart?.();
     try {
-      const res = await axios.post(`/api/scenarios/${scenario.id}/run-model`);
+      const res = await axios.post(`/api/scenarios/${scenario.id}/run-model`, {
+        include_risk: includeRisk,
+      });
       setRunId(res.data.run_id);
       setRunMode(res.data.mode);
     } catch (err) {
@@ -177,6 +182,14 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
       setRunOutput({ stdout: '', stderr: err.response?.data?.error || err.message });
       onRunEnd?.();
     }
+  };
+
+  const handleRunModel = () => {
+    if (scenario.qmra_available && !scenario.has_qmra_output) {
+      setShowRiskRunDialog(true);
+      return;
+    }
+    startModelRun(!!scenario.qmra_available);
   };
 
   const handleFetchLog = async (force = false) => {
@@ -368,6 +381,17 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
           )}
         </div>
       )}
+      <ConfirmDialog
+        isOpen={showRiskRunDialog}
+        onClose={() => setShowRiskRunDialog(false)}
+        onConfirm={() => { setShowRiskRunDialog(false); return startModelRun(true); }}
+        onCancel={() => { setShowRiskRunDialog(false); return startModelRun(false); }}
+        title="Include risk estimations?"
+        message="Exposure pathways are configured for this scenario. Risk estimation will run after the model completes."
+        confirmText="Include risk"
+        cancelText="Run without risk"
+        confirmVariant="primary"
+      />
     </div>
   );
 }

@@ -5,9 +5,11 @@ to ``qmra_run.R`` from the upstream library, executes them inside the
 
 The generated R script is a scratch artifact: it is written to a temporary
 subfolder and deleted once the run finishes (success or failure), so it never
-lingers in the persisted output tree. The QMRA config is likewise not
-duplicated per scenario -- the shared config lives once under
-``input/baseline/qmra/qmra_config.json`` (see ``_baseline_qmra_config_path``).
+lingers in the persisted output tree. The QMRA config is stored per scenario
+under ``input/<scenario_folder>/qmra/qmra_config.json`` (see
+``_scenario_qmra_config_path``), alongside the treatment raster. Pathway
+enablement is shared across a case study; all other settings remain specific
+to the scenario and its geographic areas.
 
 Fixed layout per scenario (previous run is overwritten each time):
 
@@ -25,6 +27,8 @@ Fixed layout per scenario (previous run is overwritten each time):
           daily/
 """
 
+import copy
+import hashlib
 import json
 import os
 import re
@@ -36,7 +40,11 @@ from datetime import datetime
 from flask import jsonify, request, send_file
 
 import state
-from fs_utils import _locate_scenario, area_label, find_geodata_shapefile
+from fs_utils import (
+    _locate_scenario,
+    area_label,
+    find_geodata_shapefile,
+)
 from state import DOCKER_SOCK, model_runs
 
 
@@ -89,6 +97,11 @@ MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun',
 MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
                'July', 'August', 'September', 'October', 'November', 'December']
 
+# Pathway fields that may be overridden per geographic area. Everything else
+# (volume distribution, use_treatment, and the engine/dose-response settings)
+# stays scenario-global because the R engine cannot vary it spatially.
+AREA_OVERRIDE_FIELDS = ('enabled', 'frequency', 'boiling')
+
 # ── Default per-pathway QMRA configuration ───────────────────────────────────
 # volume.type: 'poisson' (lambda, glass) or 'triangular' (min, mode, max)  — mL per event
 # frequency.type: 'fixed' (value) | 'poisson' (lambda) | 'nbinom' (size, prob)
@@ -97,6 +110,7 @@ DEFAULT_QMRA_CONFIG = {
     'model':     'bp',
     'quantiles': [0.025, 0.5, 0.975],
     'bp_params': DEFAULT_BP_PARAMS,
+    'area_overrides': {},
     'pathways': {
         'drinking': {
             'enabled': True,
@@ -403,7 +417,197 @@ def _baseline_config_to_panel(cfg):
     }
 
 
-def _load_qmra_config(cs_path, folder):
+def _scenario_qmra_dir(cs_path, folder):
+    """Directory holding the scenario's own QMRA config (and treatment raster)."""
+    return os.path.join(cs_path, 'input', folder, 'qmra')
+
+
+def _scenario_qmra_config_path(cs_path, folder):
+    """Path to the per-scenario QMRA config JSON (source of truth)."""
+    return os.path.join(_scenario_qmra_dir(cs_path, folder), 'qmra_config.json')
+
+
+def _load_scenario_qmra_config_file(cs_path, folder):
+    """Load the per-scenario QMRA config JSON, or None if absent/invalid."""
+    path = _scenario_qmra_config_path(cs_path, folder)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f'[QMRA] Error loading scenario config {path}: {e}')
+        return None
+
+
+def _enable_risk_category(cs_path):
+    """Add 'risk' to the case study's enabled_categories so the driver shows up.
+
+    Existing case studies were imported before the risk folder existed, so their
+    datapackage.json lists only the categories detected at import time.
+    """
+    dp_path = os.path.join(cs_path, 'datapackage.json')
+    if not os.path.isfile(dp_path):
+        return
+    try:
+        with open(dp_path, 'r', encoding='utf-8') as f:
+            dp = json.load(f)
+        cats = dp.get('enabled_categories')
+        if not isinstance(cats, list) or 'risk' in cats:
+            return
+        dp['enabled_categories'] = cats + ['risk']
+        with open(dp_path, 'w', encoding='utf-8') as f:
+            json.dump(dp, f, indent=2)
+        for cs in state.case_studies:
+            if cs.get('folder_path') == cs_path:
+                cs['enabled_categories'] = dp['enabled_categories']
+    except Exception as e:
+        print(f'[QMRA] Error enabling risk category for {cs_path}: {e}')
+
+
+def _save_scenario_qmra_config_file(cs_path, folder, config):
+    """Persist the per-scenario QMRA config JSON."""
+    os.makedirs(_scenario_qmra_dir(cs_path, folder), exist_ok=True)
+    with open(_scenario_qmra_config_path(cs_path, folder), 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=2)
+    _enable_risk_category(cs_path)
+
+
+def _save_shared_pathway_enabled(cs_path, source_folder, source_config):
+    """Save one scenario and copy its route enabled flags to all siblings."""
+    import csv as _csv
+
+    enabled = {
+        route: bool(pathway.get('enabled', False))
+        for route, pathway in source_config['pathways'].items()
+    }
+    folders = set()
+    metadata_path = os.path.join(cs_path, 'config', 'scenario_metadata.csv')
+    if os.path.isfile(metadata_path):
+        with open(metadata_path, 'r', newline='', encoding='utf-8') as metadata_file:
+            folders.update(
+                row.get('folder') or 'baseline'
+                for row in _csv.DictReader(metadata_file)
+            )
+    folders.add(source_folder)
+    for folder in folders:
+        config = source_config if folder == source_folder else resolve_qmra_config(cs_path, folder)
+        config = copy.deepcopy(config)
+        for route, is_enabled in enabled.items():
+            if route in config['pathways']:
+                config['pathways'][route]['enabled'] = is_enabled
+        _save_scenario_qmra_config_file(cs_path, folder, config)
+
+
+def _pathway_enabled_state(config):
+    return {
+        route: bool(pathway.get('enabled', False))
+        for route, pathway in config['pathways'].items()
+    }
+
+
+def _normalise_qmra_config(cfg):
+    """Fill in missing top-level keys and guarantee every route is present."""
+    out = copy.deepcopy(DEFAULT_QMRA_CONFIG)
+    out.update({k: v for k, v in (cfg or {}).items() if v is not None})
+    pathways = dict(out.get('pathways') or {})
+    for route, default_pc in DEFAULT_QMRA_CONFIG['pathways'].items():
+        merged = copy.deepcopy(default_pc)
+        merged.update(pathways.get(route) or {})
+        pathways[route] = merged
+    out['pathways'] = pathways
+    overrides = out.get('area_overrides')
+    out['area_overrides'] = overrides if isinstance(overrides, dict) else {}
+    return out
+
+
+def resolve_qmra_config(cs_path, folder):
+    """Return the effective QMRA config for a scenario, in panel schema.
+
+    Falls back through the pre-per-scenario storage locations so case studies
+    imported before this layout keep their settings: per-scenario JSON, then the
+    shared baseline JSON, then the qmra_config blob in scenario_metadata.csv.
+    """
+    saved = _load_scenario_qmra_config_file(cs_path, folder)
+    if saved:
+        panel_config = saved if saved.get('pathways') else _baseline_config_to_panel(saved)
+        return _normalise_qmra_config(panel_config)
+
+    baseline_cfg = _load_baseline_qmra_config(cs_path)
+    if baseline_cfg:
+        return _normalise_qmra_config(_baseline_config_to_panel(baseline_cfg))
+
+    legacy = _load_legacy_qmra_config(cs_path, folder)
+    if legacy:
+        return _normalise_qmra_config(legacy)
+
+    return _normalise_qmra_config(None)
+
+
+def _effective_pathways_for_area(cfg, area_key):
+    """Merge the scenario-level pathways with one area's overrides.
+
+    Only AREA_OVERRIDE_FIELDS are honoured; anything else in the override is
+    ignored so a stale or hand-edited config cannot smuggle in a field the
+    engine cannot vary spatially.
+    """
+    pathways = copy.deepcopy(cfg.get('pathways') or {})
+    overrides = (cfg.get('area_overrides') or {}).get(str(area_key)) or {}
+    for route, route_override in overrides.items():
+        if route not in pathways or not isinstance(route_override, dict):
+            continue
+        for field in AREA_OVERRIDE_FIELDS:
+            if field in route_override:
+                pathways[route][field] = route_override[field]
+    return pathways
+
+
+def _pathways_signature(pathways):
+    """Stable hash of a pathway config, used to dedupe identical area settings."""
+    blob = json.dumps(pathways, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha1(blob.encode('utf-8')).hexdigest()[:12]
+
+
+def derive_qmra_run_groups(cfg, area_keys):
+    """Group areas by their effective pathway config.
+
+    Returns a list of ``{'signature', 'area_keys', 'pathways', 'is_default'}``.
+    The first group is always the scenario default: it carries every area with
+    no (effective) override plus, at run time, all pixels that fall outside
+    every polygon, so the mosaicked output has no holes.
+    """
+    default_pathways = _effective_pathways_for_area(cfg, '__none__')
+    default_sig = _pathways_signature(default_pathways)
+
+    groups = {default_sig: {'signature': default_sig, 'area_keys': [],
+                            'pathways': default_pathways, 'is_default': True}}
+    order = [default_sig]
+    for key in area_keys:
+        pathways = _effective_pathways_for_area(cfg, key)
+        sig = _pathways_signature(pathways)
+        if sig not in groups:
+            groups[sig] = {'signature': sig, 'area_keys': [],
+                           'pathways': pathways, 'is_default': False}
+            order.append(sig)
+        groups[sig]['area_keys'].append(str(key))
+    return [groups[sig] for sig in order]
+
+
+def _area_keys(cs_path, folder):
+    """Return the scenario's area keys (1-based shapefile feature indexes)."""
+    shp_path = find_geodata_shapefile(cs_path, folder)
+    if not shp_path:
+        return []
+    try:
+        import fiona
+        with fiona.open(shp_path) as shp:
+            return [str(i + 1) for i in range(len(shp))]
+    except Exception as e:
+        print(f'[QMRA] Error reading areas from {shp_path}: {e}')
+        return []
+
+
+def _load_legacy_qmra_config(cs_path, folder):
     """Load QMRA config from the qmra_config JSON column in scenario_metadata.csv."""
     import csv as _csv
     meta = os.path.join(cs_path, 'config', 'scenario_metadata.csv')
@@ -419,27 +623,6 @@ def _load_qmra_config(cs_path, folder):
     except Exception as e:
         print(f'[QMRA] Error loading config from CSV: {e}')
     return None
-
-
-def _save_qmra_config(cs_path, folder, config):
-    """Save QMRA config as a JSON blob in the qmra_config column of scenario_metadata.csv."""
-    import csv as _csv
-    meta = os.path.join(cs_path, 'config', 'scenario_metadata.csv')
-    if not os.path.exists(meta):
-        return
-    try:
-        with open(meta, 'r', newline='', encoding='utf-8') as f:
-            rows = list(_csv.DictReader(f))
-        for row in rows:
-            if row.get('folder') == folder:
-                row['qmra_config'] = json.dumps(config)
-                break
-        with open(meta, 'w', newline='', encoding='utf-8') as f:
-            writer = _csv.DictWriter(f, fieldnames=state.SCENARIO_METADATA_FIELDS, extrasaction='ignore')
-            writer.writeheader()
-            writer.writerows(rows)
-    except Exception as e:
-        print(f'[QMRA] Error saving config to CSV: {e}')
 
 
 def _scenario_pathogen(scenario_id):
@@ -501,6 +684,137 @@ def _exposure_groups_r(groups):
     return 'list(\n  ' + ',\n  '.join(items) + '\n)'
 
 
+def _qmra_run_blocks_r(*, enabled, treatment_path, base_dir_expr, conc_var):
+    """R code running each enabled route in isolation plus the combined run.
+
+    Writes into ``<base>/routes/<route>/{monthly,daily}`` and
+    ``<base>/combined/{monthly,daily}``.
+    """
+    blocks = []
+    for route, pc in enabled.items():
+        eg_r = _exposure_groups_r([_pathway_to_exposure_group(route, pc)])
+        boiling_route = bool(pc.get('boiling', False)) if route == 'drinking' else False
+        use_tr_route  = bool(pc.get('use_treatment', False)) if route == 'drinking' else False
+        treat_route_r = (f'terra::rast({_r_literal(treatment_path)})'
+                         if (treatment_path and use_tr_route) else 'NULL')
+        safe = re.sub(r'[^a-z0-9]', '_', route)
+        blocks.append(f"""
+  # ── Route: {route}
+  {{
+    eg_{safe} <- {eg_r}
+    d_{safe}  <- file.path({base_dir_expr}, 'routes', {_r_literal(route)})
+    dir.create(d_{safe}, recursive = TRUE, showWarnings = FALSE)
+    t_{safe}  <- {treat_route_r}
+    cat('Running {route} (monthly)...\\n')
+    qmra_run_helper({conc_var}, eg_{safe}, t_{safe}, {_r_literal([route])}, {_r_literal(boiling_route)}, d_{safe}, 'monthly', 'monthly')
+    cat('Running {route} (daily)...\\n')
+    qmra_run_helper({conc_var}, eg_{safe}, t_{safe}, {_r_literal([route])}, {_r_literal(boiling_route)}, d_{safe}, 'daily',   'daily')
+    cat('{route} done.\\n')
+  }}""")
+
+    enabled_routes = list(enabled.keys())
+    drinking_pc = enabled.get('drinking', {})
+    combined_boiling = bool(drinking_pc.get('boiling', False)) if 'drinking' in enabled else False
+    use_treatment_combined = bool(drinking_pc.get('use_treatment', False)) if 'drinking' in enabled else False
+    combined_treat_r = (f'terra::rast({_r_literal(treatment_path)})'
+                        if (treatment_path and use_treatment_combined) else 'NULL')
+
+    blocks.append(f"""
+  # ── Combined run ({len(enabled_routes)} route(s))
+  {{
+    combined_dir <- file.path({base_dir_expr}, 'combined')
+    dir.create(combined_dir, recursive = TRUE, showWarnings = FALSE)
+    all_groups <- {_exposure_groups_r([_pathway_to_exposure_group(r, pc) for r, pc in enabled.items()])}
+    cat('Running combined (monthly)...\\n')
+    qmra_run_helper({conc_var}, all_groups, {combined_treat_r}, {_r_literal(enabled_routes)}, {_r_literal(combined_boiling)}, combined_dir, 'monthly', 'monthly')
+    cat('Running combined (daily)...\\n')
+    qmra_run_helper({conc_var}, all_groups, {combined_treat_r}, {_r_literal(enabled_routes)}, {_r_literal(combined_boiling)}, combined_dir, 'daily', 'daily')
+    cat('Combined done.\\n')
+  }}""")
+
+    return ''.join(blocks)
+
+
+# R helpers used only when a scenario has per-area overrides: they collapse each
+# group's scenario variants (untreated/treated/boiled) down to the one that
+# matches that group's configuration, so the per-group rasters share a band list
+# and can be mosaicked. Mirrors _select_band_index's "last match wins" rule.
+_QMRA_MOSAIC_R_HELPERS = """
+canon_band_name <- function(nm, ogs) {
+  for (og in ogs) {
+    if (!startsWith(nm, paste0(og, '_'))) next
+    for (ty in c('monthly', 'daily')) {
+      mid <- paste0('_', ty, '_q')
+      if (!grepl(mid, nm, fixed = TRUE)) next
+      q <- sub(paste0('^.*', mid), '', nm)
+      return(paste0(og, '_configured_', ty, '_q', q))
+    }
+  }
+  NA_character_
+}
+
+normalise_bands <- function(r, ogs, canon_names) {
+  nms  <- names(r)
+  cn   <- vapply(nms, canon_band_name, character(1), ogs = ogs, USE.NAMES = FALSE)
+  layers <- list()
+  for (target in canon_names) {
+    hits <- which(cn == target)
+    if (length(hits)) {
+      layers[[length(layers) + 1]] <- r[[max(hits)]]
+    } else {
+      blank <- terra::rast(r, nlyr = 1)
+      terra::values(blank) <- NA
+      layers[[length(layers) + 1]] <- blank
+    }
+  }
+  out <- do.call(c, layers)
+  names(out) <- canon_names
+  out
+}
+
+merge_group_dir <- function(group_dirs, rel_parts, out_root, ogs) {
+  srcs <- vapply(group_dirs, function(d) do.call(file.path, c(list(d), rel_parts)),
+                 character(1), USE.NAMES = FALSE)
+  srcs <- srcs[dir.exists(srcs)]
+  if (!length(srcs)) return(invisible(NULL))
+
+  files <- unique(unlist(lapply(srcs, function(d) list.files(d, pattern = '[.]tif$'))))
+  if (!length(files)) return(invisible(NULL))
+
+  out_dir <- do.call(file.path, c(list(out_root), rel_parts))
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  # Canonical band list = union across groups, so a group that disables a route
+  # (or skips boiling) still lines up with the others.
+  canon_names <- character(0)
+  for (d in srcs) {
+    for (fn in files) {
+      p <- file.path(d, fn)
+      if (!file.exists(p)) next
+      cn <- vapply(names(terra::rast(p)), canon_band_name, character(1), ogs = ogs,
+                   USE.NAMES = FALSE)
+      canon_names <- union(canon_names, cn[!is.na(cn)])
+    }
+  }
+  if (!length(canon_names)) return(invisible(NULL))
+
+  for (fn in files) {
+    parts <- list()
+    for (d in srcs) {
+      p <- file.path(d, fn)
+      if (!file.exists(p)) next
+      parts[[length(parts) + 1]] <- normalise_bands(terra::rast(p), ogs, canon_names)
+    }
+    if (!length(parts)) next
+    merged <- if (length(parts) == 1) parts[[1]] else do.call(terra::merge, parts)
+    names(merged) <- canon_names
+    terra::writeRaster(merged, file.path(out_dir, fn), overwrite = TRUE)
+  }
+  cat('Merged', length(files), 'file(s) into', out_dir, '\\n')
+}
+"""
+
+
 def _build_qmra_r_script(*,
                          pathogen,
                          conc_paths,
@@ -515,8 +829,16 @@ def _build_qmra_r_script(*,
                          conc_multiplier,
                          bp_params=None,
                          pop_rural_path=None,
-                         pop_urban_path=None):
+                         pop_urban_path=None,
+                         run_groups=None,
+                         zones_shp_path=None):
     """Generate R script that runs QMRA per-route (individual) and combined.
+
+    With a single run group the engine runs once over the whole grid. With more
+    than one -- i.e. the scenario has per-area pathway overrides -- each group
+    runs on concentration rasters masked to its own areas and the per-group
+    outputs are mosaicked back together, since the R engine cannot vary exposure
+    parameters spatially on its own.
 
     Output structure:
       <output_directory>/combined/monthly/  — annual_risk.tif, expected_cases.tif, …
@@ -524,17 +846,14 @@ def _build_qmra_r_script(*,
       <output_directory>/routes/<route>/monthly/
       <output_directory>/routes/<route>/daily/
     """
-    enabled = {r: pc for r, pc in pathway_configs.items() if pc.get('enabled', False)}
-    if not enabled:
-        enabled = {'drinking': DEFAULT_QMRA_CONFIG['pathways']['drinking']}
-    enabled_routes = list(enabled.keys())
-    all_groups = [_pathway_to_exposure_group(r, pc) for r, pc in enabled.items()]
+    def _enabled_of(pathways):
+        enabled = {r: pc for r, pc in pathways.items() if pc.get('enabled', False)}
+        return enabled or {'drinking': DEFAULT_QMRA_CONFIG['pathways']['drinking']}
 
-    drinking_pc = enabled.get('drinking', {})
-    combined_boiling = bool(drinking_pc.get('boiling', False)) if 'drinking' in enabled else False
-    use_treatment_combined = bool(drinking_pc.get('use_treatment', False)) if 'drinking' in enabled else False
-    combined_treat_r = (f'terra::rast({_r_literal(treatment_path)})'
-                        if (treatment_path and use_treatment_combined) else 'NULL')
+    if not run_groups:
+        run_groups = [{'signature': 'default', 'area_keys': [],
+                       'pathways': pathway_configs, 'is_default': True}]
+    multi_group = len(run_groups) > 1 and bool(zones_shp_path)
 
     pop_rural_r  = _r_literal(pop_rural_path) if pop_rural_path else 'NULL'
     pop_urban_r  = _r_literal(pop_urban_path) if pop_urban_path else 'NULL'
@@ -542,9 +861,9 @@ def _build_qmra_r_script(*,
                     if conc_multiplier != 1.0 else '')
 
     helper_fn = f"""\
-qmra_run_helper <- function(eg, treat, routes, boiling, out_dir, otype, rname) {{
+qmra_run_helper <- function(conc, eg, treat, routes, boiling, out_dir, otype, rname) {{
   GloWPaQMRA::qmra_ras_batch_fast(
-    conc.list             = conc.list,
+    conc.list             = conc,
     pathogen              = {_r_literal(pathogen)},
     model                 = {_r_literal(model)},
     bp.params             = bp.params,
@@ -563,34 +882,81 @@ qmra_run_helper <- function(eg, treat, routes, boiling, out_dir, otype, rname) {
   )
 }}"""
 
-    route_blocks = []
-    for route, pc in enabled.items():
-        eg = [_pathway_to_exposure_group(route, pc)]
-        eg_r = _exposure_groups_r(eg)
-        boiling_route = bool(pc.get('boiling', False)) if route == 'drinking' else False
-        use_tr_route  = bool(pc.get('use_treatment', False)) if route == 'drinking' else False
-        treat_route_r = (f'terra::rast({_r_literal(treatment_path)})'
-                         if (treatment_path and use_tr_route) else 'NULL')
-        safe = re.sub(r'[^a-z0-9]', '_', route)
-        route_dir = output_directory.rstrip('/') + f'/routes/{route}'
-        route_blocks.append(f"""
-# ── Route: {route}
-{{
-  eg_{safe} <- {eg_r}
-  d_{safe}  <- {_r_literal(route_dir)}
-  dir.create(d_{safe}, recursive = TRUE, showWarnings = FALSE)
-  t_{safe}  <- {treat_route_r}
-  cat('Running {route} (monthly)...\\n')
-  qmra_run_helper(eg_{safe}, t_{safe}, {_r_literal([route])}, {_r_literal(boiling_route)}, d_{safe}, 'monthly', 'monthly')
-  cat('Running {route} (daily)...\\n')
-  qmra_run_helper(eg_{safe}, t_{safe}, {_r_literal([route])}, {_r_literal(boiling_route)}, d_{safe}, 'daily',   'daily')
-  cat('{route} done.\\n')
-}}""")
+    if not multi_group:
+        run_section = _qmra_run_blocks_r(
+            enabled=_enabled_of(run_groups[0]['pathways']),
+            treatment_path=treatment_path,
+            base_dir_expr='output_directory',
+            conc_var='conc.list',
+        )
+        mosaic_helpers = ''
+    else:
+        all_routes = []
+        group_blocks = []
+        for i, group in enumerate(run_groups, start=1):
+            enabled = _enabled_of(group['pathways'])
+            for route in enabled:
+                if route not in all_routes:
+                    all_routes.append(route)
+            # The default group also absorbs pixels outside every polygon.
+            mask_expr = (f"group_mask({_r_literal([int(k) for k in group['area_keys']])}, "
+                         f"{_r_literal(bool(group.get('is_default')))})")
+            group_blocks.append(f"""
+# ── Run group {i}/{len(run_groups)} ({len(group['area_keys'])} area(s), signature {group['signature']})
+local({{
+  gdir <- file.path(group_root, {_r_literal(f'g{i}')})
+  dir.create(gdir, recursive = TRUE, showWarnings = FALSE)
+  sel <- {mask_expr}
+  conc_g <- lapply(conc.list, function(r) terra::mask(r, sel))
+{_qmra_run_blocks_r(
+    enabled=enabled,
+    treatment_path=treatment_path,
+    base_dir_expr='gdir',
+    conc_var='conc_g',
+)}
+}})""")
 
-    combined_dir = output_directory.rstrip('/') + '/combined'
-    all_groups_r = _exposure_groups_r(all_groups)
-    routes_r     = _r_literal(enabled_routes)
-    route_blocks_str = ''.join(route_blocks)
+        merge_calls = ["  merge_group_dir(group_dirs, c('combined', 'monthly'), output_directory, combined_ogs)",
+                       "  merge_group_dir(group_dirs, c('combined', 'daily'),   output_directory, combined_ogs)"]
+        for route in all_routes:
+            merge_calls.append(
+                f"  merge_group_dir(group_dirs, c('routes', {_r_literal(route)}, 'monthly'), "
+                f"output_directory, {_r_literal([route])})")
+            merge_calls.append(
+                f"  merge_group_dir(group_dirs, c('routes', {_r_literal(route)}, 'daily'),   "
+                f"output_directory, {_r_literal([route])})")
+
+        run_section = f"""
+# ── Area zones (1-based shapefile feature index, matching the app's area keys)
+zones <- local({{
+  v <- terra::vect({_r_literal(zones_shp_path)})
+  v$..area_key.. <- seq_len(nrow(v))
+  terra::rasterize(v, conc.list[[1]], field = '..area_key..')
+}})
+
+group_mask <- function(keys, include_unassigned) {{
+  terra::app(zones, function(x) {{
+    hit <- as.numeric(x %in% keys)
+    if (include_unassigned) hit[is.na(x)] <- 1
+    hit[hit == 0] <- NA
+    hit
+  }})
+}}
+
+group_root <- file.path(output_directory, '.groups')
+unlink(group_root, recursive = TRUE)
+dir.create(group_root, recursive = TRUE, showWarnings = FALSE)
+{''.join(group_blocks)}
+
+# ── Mosaic the per-group outputs back into the standard layout
+{{
+  group_dirs <- {_r_literal([f'g{i}' for i in range(1, len(run_groups) + 1)])}
+  group_dirs <- file.path(group_root, group_dirs)
+  combined_ogs <- {_r_literal(['combined'] + all_routes)}
+{chr(10).join(merge_calls)}
+  unlink(group_root, recursive = TRUE)
+}}"""
+        mosaic_helpers = _QMRA_MOSAIC_R_HELPERS
 
     return f"""# Auto-generated by waterpath-scenario-builder/webapp/backend/qmra.py
 suppressPackageStartupMessages({{
@@ -614,37 +980,30 @@ output_directory <- {_r_literal(output_directory)}
 dir.create(output_directory, recursive = TRUE, showWarnings = FALSE)
 
 {helper_fn}
-{route_blocks_str}
+{mosaic_helpers}
+{run_section}
 
-# ── Combined run ({len(enabled_routes)} route(s))
+# ── Expected cases (combined annual risk at q0.5 × population)
 {{
-  combined_dir <- {_r_literal(combined_dir)}
-  dir.create(combined_dir, recursive = TRUE, showWarnings = FALSE)
-  all_groups <- {all_groups_r}
-  cat('Running combined (monthly)...\\n')
-  result_monthly <- qmra_run_helper(all_groups, {combined_treat_r}, {routes_r}, {_r_literal(combined_boiling)}, combined_dir, 'monthly', 'monthly')
-  cat('Running combined (daily)...\\n')
-  qmra_run_helper(all_groups, {combined_treat_r}, {routes_r}, {_r_literal(combined_boiling)}, combined_dir, 'daily', 'daily')
-  cat('Combined done.\\n')
-
-  # Expected cases (combined monthly annual_risk × population)
+  annual_path <- file.path(output_directory, 'combined', 'monthly', 'annual_risk.tif')
   pop_rural_path <- {pop_rural_r}
   pop_urban_path <- {pop_urban_r}
-  if (!is.null(result_monthly) && !is.null(result_monthly$annual_risk) && !is.null(pop_rural_path)) {{
+  if (file.exists(annual_path) && !is.null(pop_rural_path)) {{
     tryCatch({{
+      annual_risk <- terra::rast(annual_path)
       pop_rural <- terra::rast(pop_rural_path)
       pop_urban <- terra::rast(pop_urban_path)
       pop_total <- pop_rural + pop_urban
-      band_names <- names(result_monthly$annual_risk)
+      band_names <- names(annual_risk)
       median_bands  <- grep('_q0\\\\.5$', band_names, value = TRUE)
       combined_bands <- grep('^combined_', median_bands, value = TRUE)
       chosen_band <- if (length(combined_bands) > 0) combined_bands[1] else if (length(median_bands) > 0) median_bands[1] else band_names[1]
-      ar_median <- result_monthly$annual_risk[[chosen_band]]
+      ar_median <- annual_risk[[chosen_band]]
       pop_resampled <- terra::resample(pop_total, ar_median, method = 'bilinear')
       expected_cases <- ar_median * pop_resampled
       names(expected_cases) <- 'expected_cases_per_year'
       terra::writeRaster(expected_cases,
-                         filename = file.path(combined_dir, 'monthly', 'expected_cases.tif'),
+                         filename = file.path(output_directory, 'combined', 'monthly', 'expected_cases.tif'),
                          overwrite = TRUE)
       cat('Expected cases saved.\\n')
     }}, error = function(e) {{
@@ -778,27 +1137,21 @@ def qmra_availability(scenario_id):
 
 
 def qmra_get_config(scenario_id):
-    """Return the saved QMRA config for a scenario, or sensible defaults."""
+    """Return the effective QMRA config for a scenario, in panel schema."""
     try:
         cs, folder = _locate_scenario(scenario_id)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 404
 
     cs_path = cs['folder_path']
-    saved = _load_qmra_config(cs_path, folder)
-    pathogen = _scenario_pathogen(scenario_id) or 'cryptosporidium'
-
-    if saved:
-        return jsonify(saved), 200
-
-    # Return defaults with treatment-availability flag.
-    cfg = dict(DEFAULT_QMRA_CONFIG)
+    cfg = resolve_qmra_config(cs_path, folder)
     cfg['treatment_available'] = bool(_treatment_tif(cs_path, folder))
+    cfg['pathogen'] = _scenario_pathogen(scenario_id) or 'cryptosporidium'
     return jsonify(cfg), 200
 
 
 def qmra_put_config(scenario_id):
-    """Save QMRA config for a scenario."""
+    """Save the QMRA config for a scenario."""
     try:
         cs, folder = _locate_scenario(scenario_id)
     except ValueError as exc:
@@ -808,12 +1161,53 @@ def qmra_put_config(scenario_id):
     if not body:
         return jsonify({'error': 'No config provided'}), 400
 
+    for key in ('treatment_available', 'pathogen', 'qmra_available', 'run_groups'):
+        body.pop(key, None)
+
+    previous_cfg = resolve_qmra_config(cs['folder_path'], folder)
+    cfg = _normalise_qmra_config(body)
     try:
-        _save_qmra_config(cs['folder_path'], folder, body)
+        if _pathway_enabled_state(previous_cfg) != _pathway_enabled_state(cfg):
+            _save_shared_pathway_enabled(cs['folder_path'], folder, cfg)
+        else:
+            _save_scenario_qmra_config_file(cs['folder_path'], folder, cfg)
     except OSError as exc:
         return jsonify({'error': str(exc)}), 500
 
-    return jsonify({'status': 'saved'}), 200
+    return jsonify({'status': 'saved',
+                    'run_group_count': len(derive_qmra_run_groups(
+                        cfg, _area_keys(cs['folder_path'], folder)))}), 200
+
+
+def qmra_areas(scenario_id):
+    """List the scenario's geographic areas (key + display name) for the UI."""
+    try:
+        cs, folder = _locate_scenario(scenario_id)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 404
+
+    shp_path = find_geodata_shapefile(cs['folder_path'], folder)
+    if not shp_path:
+        return jsonify({'areas': []}), 200
+
+    try:
+        import fiona
+    except ImportError:
+        return jsonify({'error': 'fiona not available'}), 500
+
+    areas = []
+    try:
+        with fiona.open(shp_path) as shp:
+            for idx, feat in enumerate(shp):
+                key = str(idx + 1)
+                areas.append({
+                    'key':  key,
+                    'name': area_label(dict(feat['properties'] or {}), fallback=f'Area {key}'),
+                })
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+    return jsonify({'areas': areas}), 200
 
 
 def _trigger_qmra_run(scenario_id, cs, folder):
@@ -830,8 +1224,8 @@ def _trigger_qmra_run(scenario_id, cs, folder):
         return None
 
     # Load saved config or use defaults.
-    cfg = _load_qmra_config(cs_path, folder) or {}
-    pathway_configs = cfg.get('pathways') or DEFAULT_QMRA_CONFIG['pathways']
+    cfg = resolve_qmra_config(cs_path, folder)
+    pathway_configs = cfg['pathways']
     model           = cfg.get('model', 'bp')
     mci             = int(cfg.get('mci', 1000))
     quantiles       = cfg.get('quantiles') or DEFAULT_QMRA_CONFIG['quantiles']
@@ -841,6 +1235,14 @@ def _trigger_qmra_run(scenario_id, cs, folder):
         if not host_path:
             return None
         return '/app/data/' + os.path.relpath(host_path, _data_root()).replace(os.sep, '/')
+
+    # Per-area overrides are realised by masking the concentration rasters to
+    # each distinct parameter set and mosaicking the results back together, so
+    # we need the area polygons alongside the deduped run groups.
+    run_groups     = derive_qmra_run_groups(cfg, _area_keys(cs_path, folder))
+    zones_shp_cont = _to_cont(find_geodata_shapefile(cs_path, folder)) if len(run_groups) > 1 else None
+    if not zones_shp_cont:
+        run_groups = run_groups[:1]
 
     # Treatment raster — only used when drinking pathway has use_treatment=True
     drinking_pc = pathway_configs.get('drinking', {})
@@ -878,6 +1280,8 @@ def _trigger_qmra_run(scenario_id, cs, folder):
         conc_multiplier=1.0,
         pop_rural_path=pop_rural_cont,
         pop_urban_path=pop_urban_cont,
+        run_groups=run_groups,
+        zones_shp_path=zones_shp_cont,
     )
 
     # Scratch location for the generated script -- deleted once the run
@@ -898,6 +1302,7 @@ def _trigger_qmra_run(scenario_id, cs, folder):
         'cs_path': cs_path,
         'folder': folder,
         'run_dir': qmra_dir_host,
+        'group_count': len(run_groups),
         'started_at': datetime.now().isoformat(),
     }
     threading.Thread(
@@ -927,10 +1332,15 @@ def qmra_run(scenario_id):
     body = request.get_json(silent=True) or {}
     if body:
         # Merge with existing config so partial updates work.
-        existing = _load_qmra_config(cs_path, folder) or {}
+        existing = resolve_qmra_config(cs_path, folder)
+        previous_enabled = _pathway_enabled_state(existing)
         existing.update(body)
         try:
-            _save_qmra_config(cs_path, folder, existing)
+            config = _normalise_qmra_config(existing)
+            if previous_enabled != _pathway_enabled_state(config):
+                _save_shared_pathway_enabled(cs_path, folder, config)
+            else:
+                _save_scenario_qmra_config_file(cs_path, folder, config)
         except OSError:
             pass
 
@@ -950,6 +1360,7 @@ def qmra_run_status(run_id):
         'status':       info.get('status'),
         'return_code':  info.get('return_code'),
         'output_files': info.get('output_files', []),
+        'group_count':  info.get('group_count'),
         'stdout':       info.get('stdout', ''),
         'stderr':       info.get('stderr', ''),
         'started_at':   info.get('started_at'),
@@ -1398,117 +1809,8 @@ def qmra_log(scenario_id):
         return jsonify({'error': str(exc)}), 500
 
 
-def qmra_rerun_all(case_study_id):
-    """Re-run QMRA for every scenario in a case study that has concentration outputs."""
-    import csv as _csv
-
-    if not _qmra_container_running():
-        return jsonify({'error': 'qmra-container is not running'}), 503
-
-    cs = next((c for c in state.case_studies if c['id'] == case_study_id), None)
-    if not cs:
-        return jsonify({'error': 'Case study not found'}), 404
-
-    meta_path = os.path.join(cs['folder_path'], 'config', 'scenario_metadata.csv')
-    if not os.path.exists(meta_path):
-        return jsonify({'error': 'No scenario metadata found'}), 404
-
-    started = []
-    with open(meta_path, 'r', newline='', encoding='utf-8') as f:
-        for row in _csv.DictReader(f):
-            scenario_id = row.get('scenario_id')
-            folder = row.get('folder', 'baseline')
-            if not scenario_id:
-                continue
-            if not _conc_tifs(cs['folder_path'], folder):
-                continue
-            run_id = _trigger_qmra_run(scenario_id, cs, folder)
-            if run_id:
-                started.append({'scenario_id': scenario_id, 'run_id': run_id})
-
-    return jsonify({'started': len(started), 'runs': started}), 202
-
-
 def _data_root():
     return getattr(state, 'DATA_DIR', '/app/data')
-
-
-def qmra_cs_get_config(case_study_id):
-    """Return QMRA config shared across all scenarios in a case study.
-
-    Source of truth is the imported baseline config JSON
-    (input/baseline/qmra/qmra_config.json), converted to the panel schema.
-    Falls back to the qmra_config blob in scenario_metadata.csv, then defaults.
-    """
-    import csv as _csv
-    cs = next((c for c in state.case_studies if c['id'] == case_study_id), None)
-    if not cs:
-        return jsonify({'error': 'Case study not found'}), 404
-    cs_path = cs['folder_path']
-
-    # 1) Prefer the imported baseline config JSON.
-    baseline_cfg = _load_baseline_qmra_config(cs_path)
-    if baseline_cfg:
-        panel_cfg = _baseline_config_to_panel(baseline_cfg)
-        panel_cfg['qmra_available'] = True
-        return jsonify(panel_cfg), 200
-
-    # 2) Fall back to a saved blob in scenario_metadata.csv.
-    meta = os.path.join(cs_path, 'config', 'scenario_metadata.csv')
-    if os.path.exists(meta):
-        try:
-            with open(meta, 'r', newline='', encoding='utf-8') as f:
-                for row in _csv.DictReader(f):
-                    blob = row.get('qmra_config', '').strip()
-                    if blob:
-                        cfg = json.loads(blob)
-                        cfg['qmra_available'] = _qmra_available(cs_path)
-                        return jsonify(cfg), 200
-        except Exception as e:
-            print(f'[QMRA] Error reading CS config: {e}')
-
-    default_cfg = dict(DEFAULT_QMRA_CONFIG)
-    default_cfg['qmra_available'] = _qmra_available(cs_path)
-    return jsonify(default_cfg), 200
-
-
-def qmra_cs_put_config(case_study_id):
-    """Save QMRA config for a case study.
-
-    Writes to the baseline config JSON (source of truth) and mirrors the blob to
-    every scenario row in scenario_metadata.csv for backward compatibility.
-    """
-    import csv as _csv
-    cs = next((c for c in state.case_studies if c['id'] == case_study_id), None)
-    if not cs:
-        return jsonify({'error': 'Case study not found'}), 404
-    cs_path = cs['folder_path']
-    body = request.get_json(force=True, silent=True) or {}
-    body.pop('qmra_available', None)
-
-    # 1) Persist to the baseline config JSON (source of truth).
-    try:
-        if os.path.isdir(_baseline_qmra_dir(cs_path)):
-            _save_baseline_qmra_config(cs_path, body)
-    except Exception as e:
-        print(f'[QMRA] Error saving baseline config: {e}')
-
-    # 2) Mirror to scenario_metadata.csv for backward compatibility.
-    meta = os.path.join(cs_path, 'config', 'scenario_metadata.csv')
-    if os.path.exists(meta):
-        try:
-            with open(meta, 'r', newline='', encoding='utf-8') as f:
-                rows = list(_csv.DictReader(f))
-            blob = json.dumps(body)
-            for row in rows:
-                row['qmra_config'] = blob
-            with open(meta, 'w', newline='', encoding='utf-8') as f:
-                writer = _csv.DictWriter(f, fieldnames=state.SCENARIO_METADATA_FIELDS, extrasaction='ignore')
-                writer.writeheader()
-                writer.writerows(rows)
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-    return jsonify({'ok': True}), 200
 
 
 def qmra_cs_treatment_tif(case_study_id):
@@ -1609,13 +1911,14 @@ def qmra_cs_treatment_codes(case_study_id):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def qmra_diff_tif():
-    """Return a float32 GeoTIFF of (B − A) / A × 100 % for two QMRA combined output files.
+    """Return a float32 GeoTIFF of (B − A) / A × 100 % for two QMRA output files.
 
     Query params: scA, scB, output_type (monthly|daily), file (e.g. annual_risk.tif),
-    quantile (which quantile band to diff, default '0.5').
+    quantile (which quantile band to diff, default '0.5'), and route
+    ('combined' by default, or an exposure pathway key).
     Returns nodata=-9999 float32 GeoTIFF in WGS-84.  Band 1 holds the first (or only)
-    matching band; for multi-band TIFs (annual_risk.tif) we use the combined band at
-    `quantile` (last-matching scenario variant, e.g. 'treated' if configured).
+    matching band; for multi-band TIFs (annual_risk.tif) we use the selected route
+    at `quantile` (last-matching scenario variant, e.g. 'treated' if configured).
     """
     import io
     import numpy as np
@@ -1624,6 +1927,7 @@ def qmra_diff_tif():
     sc_b        = request.args.get('scB')
     output_type = request.args.get('output_type', 'monthly')
     file_name   = request.args.get('file', 'annual_risk.tif')
+    route_key   = request.args.get('route', 'combined')
 
     if not sc_a or not sc_b:
         return jsonify({'error': 'scA and scB are required'}), 400
@@ -1631,6 +1935,8 @@ def qmra_diff_tif():
         return jsonify({'error': 'Invalid output_type'}), 400
     if '..' in file_name or '/' in file_name or '\\' in file_name:
         return jsonify({'error': 'Invalid file parameter'}), 400
+    if '..' in route_key or '/' in route_key or '\\' in route_key:
+        return jsonify({'error': 'Invalid route parameter'}), 400
     try:
         target_q = float(request.args.get('quantile', '0.5'))
     except ValueError:
@@ -1647,8 +1953,12 @@ def qmra_diff_tif():
 
         def _load_q50_band(sc_id):
             cs, folder = _locate_scenario(sc_id)
-            tif_path = os.path.join(_qmra_base(cs['folder_path'], folder),
-                                    'combined', output_type, file_name)
+            base = _qmra_base(cs['folder_path'], folder)
+            tif_path = (
+                os.path.join(base, 'combined', output_type, file_name)
+                if route_key == 'combined'
+                else os.path.join(base, 'routes', route_key, output_type, file_name)
+            )
             if not os.path.exists(tif_path):
                 raise ValueError(f'File not found for scenario {sc_id}: {file_name}')
             with rasterio.open(tif_path) as src:
@@ -1656,7 +1966,7 @@ def qmra_diff_tif():
                 nd     = src.nodata
                 src_tf = src.transform
                 src_crs = src.crs or wgs84
-                band_idx = _select_band_index(descs, 'combined', target_q) or 1
+                band_idx = _select_band_index(descs, route_key, target_q) or 1
                 data = src.read(band_idx).astype(np.float32)
                 bounds = src.bounds
             if nd is not None:
@@ -1759,21 +2069,17 @@ def compute_qmra_area_stats(cs, folder, output_type='monthly',
         nodata     = src.nodata
         wgs84      = 'EPSG:4326'
 
-        # Pick the combined band, plus one band per available pathway
-        # route, all at `target_q` (last-matching scenario variant wins
-        # -- see _select_band_index).
+        # Pathway values come from each route's dedicated output. Bands named
+        # after routes inside the combined run are intermediate scenarios and
+        # do not reliably represent the isolated pathway result.
         combined_idx = _select_band_index(descs, 'combined', target_q) or 1
-        route_keys = []
-        seen = set()
-        for desc in descs:
-            r, _q = _parse_band(desc)
-            if r and r != 'combined' and r not in seen:
-                seen.add(r)
-                route_keys.append(r)
-        band_keys    = ['combined'] + route_keys
-        band_indexes = [combined_idx]
-        for r in route_keys:
-            band_indexes.append(_select_band_index(descs, r, target_q) or combined_idx)
+        routes_dir = os.path.join(_qmra_base(cs['folder_path'], folder), 'routes')
+        route_paths = {}
+        if os.path.isdir(routes_dir):
+            for route in sorted(os.listdir(routes_dir)):
+                route_path = os.path.join(routes_dir, route, output_type, file_name)
+                if os.path.isfile(route_path):
+                    route_paths[route] = route_path
 
         # Full-grid combined band + resampled population, used to derive
         # per-area *expected infections* (risk_cell × population_cell,
@@ -1806,32 +2112,43 @@ def compute_qmra_area_stats(cs, folder, output_type='monthly',
                 except Exception:
                     geom_r = geom
                 try:
-                    out, _ = rio_mask(src, [geom_r], crop=True, all_touched=True,
-                                      filled=True, nodata=np.nan, indexes=band_indexes)
+                    out, _ = rio_mask(src, [geom_r], crop=True, all_touched=False,
+                                      filled=True, nodata=np.nan, indexes=[combined_idx])
                     combined_val   = None
                     combined_count = 0
                     routes_out     = {}
-                    for pos, key in enumerate(band_keys):
-                        vals = out[pos].astype(float)
-                        if nodata is not None:
-                            try:
-                                vals[vals == float(nodata)] = np.nan
-                            except Exception:
-                                pass
-                        vals[vals < 0]   = np.nan
-                        vals[vals > 1.0] = np.nan
-                        valid = vals[~np.isnan(vals)]
-                        # Average over populated (nonzero) cells so this matches
-                        # the headline "area-average" figure; background zero
-                        # cells inside the polygon would otherwise dilute it.
-                        positive = valid[valid > 0]
-                        if len(positive):
-                            mean_val = float(np.mean(positive))
-                            if key == 'combined':
-                                combined_val   = mean_val
-                                combined_count = int(len(positive))
-                            else:
-                                routes_out[key] = mean_val
+                    vals = out[0].astype(float)
+                    if nodata is not None:
+                        try:
+                            vals[vals == float(nodata)] = np.nan
+                        except Exception:
+                            pass
+                    vals[(vals < 0) | (vals > 1.0)] = np.nan
+                    valid = vals[np.isfinite(vals)]
+                    if len(valid):
+                        combined_val = float(np.mean(valid))
+                        combined_count = int(len(valid))
+
+                    for route, route_path in route_paths.items():
+                        with rasterio.open(route_path) as route_src:
+                            route_idx = _select_band_index(
+                                route_src.descriptions or [], route, target_q,
+                            ) or 1
+                            route_out, _ = rio_mask(
+                                route_src, [geom_r], crop=True, all_touched=False,
+                                filled=True, nodata=np.nan, indexes=[route_idx],
+                            )
+                            route_vals = route_out[0].astype(float)
+                            route_nodata = route_src.nodata
+                            if route_nodata is not None:
+                                try:
+                                    route_vals[route_vals == float(route_nodata)] = np.nan
+                                except Exception:
+                                    pass
+                            route_vals[(route_vals < 0) | (route_vals > 1.0)] = np.nan
+                            route_valid = route_vals[np.isfinite(route_vals)]
+                            if len(route_valid):
+                                routes_out[route] = float(np.mean(route_valid))
                     if combined_val is not None:
                         cases_val = None
                         if combined_band_full is not None and pop_grid is not None:
@@ -1918,6 +2235,7 @@ def register_routes(app, frontend_app):
         ('/api/scenarios/<scenario_id>/qmra/availability',                                    ['GET'],  qmra_availability),
         ('/api/scenarios/<scenario_id>/qmra/config',                                          ['GET'],  qmra_get_config),
         ('/api/scenarios/<scenario_id>/qmra/config',                                          ['PUT'],  qmra_put_config),
+        ('/api/scenarios/<scenario_id>/qmra/areas',                                           ['GET'],  qmra_areas),
         ('/api/scenarios/<scenario_id>/qmra/run',                                             ['POST'], qmra_run),
         ('/api/qmra/run-status/<run_id>',                                                     ['GET'],  qmra_run_status),
         ('/api/scenarios/<scenario_id>/qmra/output',                                          ['GET'],  qmra_output_files),
@@ -1926,9 +2244,6 @@ def register_routes(app, frontend_app):
         ('/api/scenarios/<scenario_id>/qmra/raster/<route_key>/<output_type>/<path:filename>',['GET'],  qmra_raster),
         ('/api/scenarios/<scenario_id>/qmra/log',                                             ['GET'],  qmra_log),
         ('/api/qmra/diff-tif',                                                                ['GET'],  qmra_diff_tif),
-        ('/api/case-studies/<case_study_id>/qmra/rerun-all',                                  ['POST'], qmra_rerun_all),
-        ('/api/case-studies/<case_study_id>/qmra/config',                                     ['GET'],  qmra_cs_get_config),
-        ('/api/case-studies/<case_study_id>/qmra/config',                                     ['PUT'],  qmra_cs_put_config),
         ('/api/case-studies/<case_study_id>/qmra/treatment-tif',                              ['GET'],  qmra_cs_treatment_tif),
         ('/api/case-studies/<case_study_id>/qmra/treatment-codes',                            ['GET'],  qmra_cs_treatment_codes),
     ]

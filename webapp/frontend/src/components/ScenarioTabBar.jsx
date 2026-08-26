@@ -2,26 +2,26 @@ import React from 'react';
 import { Grid3x3, X, ChartColumn, Plus } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import useScenarioStore from '../store/scenarioStore';
-import { paths, QMRA_SEGMENT } from '../routes';
+import { paths } from '../routes';
 const DEFAULT_CATEGORY = 'human-emissions';
 const DEFAULT_SUBCATEGORY = 'population';
 
-const ScenarioTabBar = ({ onCreateScenario, caseStudySlug = '', onBeforeTabChange, showQmraTab = false }) => {
-  const { tabs, activeTab, setActiveTab, deleteScenario, openMetadataEditor, dirtyScenarioIds } = useScenarioStore();
+const ScenarioTabBar = ({ onCreateScenario, caseStudySlug = '', onBeforeTabChange, analyticsScenarios = [] }) => {
+  const { tabs, activeTab, setActiveTab, deleteScenario, openMetadataEditor, dirtyScenarioIds, needsRerunIds, scenarioRunStatuses } = useScenarioStore();
   const navigate = useNavigate();
   const location = useLocation();
 
   // Build a minimal `cs` shape for `paths.*` — we only need `folder_name`.
   const csShape = caseStudySlug ? { folder_name: decodeURIComponent(caseStudySlug) } : null;
+  const scenariosWithResults = new Set(
+    analyticsScenarios.filter((scenario) => scenario.has_outputs).map((scenario) => scenario.id)
+  );
 
   const handleTabClick = (tabId) => {
     const doNav = () => {
       setActiveTab(tabId);
       if (tabId === 'main') {
         navigate(paths.scenarios(csShape));
-      } else if (tabId === 'qmra-config') {
-        // QMRA-config is only reachable when a case study is selected.
-        navigate(csShape ? paths.qmra(csShape) : `/scenarios/${QMRA_SEGMENT}`);
       } else {
         const tab = tabs.find((t) => t.id === tabId);
         if (tab) {
@@ -86,15 +86,25 @@ const ScenarioTabBar = ({ onCreateScenario, caseStudySlug = '', onBeforeTabChang
               {tab.type === 'main' ? (
                 <Grid3x3 size={16} />
               ) : (
-                <ChartColumn size={16} className={
-                  tab.isTemp ? 'text-yellow-400' : 'text-wpBlue-400'
-                } />
+                <ChartColumn
+                  size={16}
+                  className={activeTab === tab.id
+                    ? 'text-wpBlue-600'
+                    : scenarioRunStatuses?.[tab.id] === 'error'
+                      ? 'text-red-500'
+                      : needsRerunIds?.[tab.id]
+                        ? 'text-orange-500'
+                        : scenariosWithResults.has(tab.id)
+                          ? 'text-wpGreen'
+                          : 'text-wpBlue'}
+                />
               )}
               
               {/* Tab name */}
               {tab.type !== 'main' && (
               <span className="max-w-[120px] truncate">
                 {tab.name}
+                {tab.isBaseline && <span className="ml-0.5 text-wpGreen" title="Baseline scenario">*</span>}
               </span>
               )}
               
@@ -114,24 +124,6 @@ const ScenarioTabBar = ({ onCreateScenario, caseStudySlug = '', onBeforeTabChang
                 <div className="absolute top-1 right-1 w-2 h-2 bg-orange-400 rounded-full" />
               )}
             </button>
-
-            {/* QMRA tab — inserted after main tab, non-deletable */}
-            {tab.type === 'main' && showQmraTab && (
-              <button
-                onClick={() => handleTabClick('qmra-config')}
-                className={`
-                  flex font-outfit items-center gap-2 px-4 py-2 text-sm font-semibold
-                  whitespace-nowrap flex-shrink-0 relative group mr-2
-                  ${activeTab === 'qmra-config'
-                    ? 'bg-wpWhite-100 text-wpBlue-600 -mb-px'
-                    : 'text-wpBlue bg-wpBrown hover:bg-gray-100 hover:text-gray-800'
-                  }
-                `}
-                title="QMRA configuration"
-              >
-                <span className="max-w-[120px] truncate">QMRA settings</span>
-              </button>
-            )}
           </React.Fragment>
         ))}
         

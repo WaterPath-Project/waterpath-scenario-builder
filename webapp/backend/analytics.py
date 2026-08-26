@@ -20,7 +20,7 @@ from fs_utils import (
 from glowpa import _detect_wwtp_mode
 from hydrology import _compute_hydrology_metrics, _detect_hydrology_module
 from livestock import _compute_livestock_mean_heads, _detect_livestock_module
-from qmra import _qmra_available
+from qmra import _qmra_available, resolve_qmra_config
 from state import case_studies
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -73,8 +73,9 @@ def _enrich_scenario(scenario, cs_path, case_study_id):
             if f.endswith('.tif'))
     )
     scenario['has_qmra_output'] = os.path.exists(
-        os.path.join(cs_path, 'output', folder, 'qmra', 'monthly', 'annual_risk.tif')
+        os.path.join(cs_path, 'output', folder, 'qmra', 'combined', 'monthly', 'annual_risk.tif')
     )
+    scenario['qmra_available'] = _qmra_available(cs_path)
     return scenario
 
 
@@ -197,6 +198,40 @@ def _compute_manure_management_metrics(ls_dir):
     return {k: v / count for k, v in sums.items()}
 
 
+def _exposure_events_per_year(freq):
+    if not isinstance(freq, dict):
+        return None
+    ftype = freq.get('type')
+    if ftype == 'fixed':
+        return _num(freq.get('value'), None)
+    if ftype == 'poisson':
+        return _num(freq.get('lambda'), None)
+    if ftype == 'nbinom':
+        size = _num(freq.get('size'), None)
+        prob = _num(freq.get('prob'), None)
+        if size is not None and prob:
+            return size * (1.0 - prob) / prob
+    return None
+
+
+def _compute_exposure_pathway_metrics(cs_path, folder):
+    """Summarise the scenario's QMRA exposure-pathway configuration."""
+    route_keys = ('drinking', 'swimming', 'flooding', 'open_drain', 'playing', 'washing_clothes')
+    empty = {f'exposure_{route}_events_per_year': None for route in route_keys}
+    try:
+        cfg = resolve_qmra_config(cs_path, folder)
+    except Exception:
+        return empty
+
+    pathways = cfg.get('pathways') or {}
+    return {
+        f'exposure_{route}_events_per_year': _exposure_events_per_year(
+            (pathways.get(route) or {}).get('frequency')
+        )
+        for route in route_keys
+    }
+
+
 def _compute_driver_metrics_for_scenario(cs_path, folder):
     iso_path = _resolve_data_path(cs_path, folder, 'isodata.csv')
     iso_rows, _ = _read_csv_rows(iso_path)
@@ -312,6 +347,8 @@ def _compute_driver_metrics_for_scenario(cs_path, folder):
     hy = _detect_hydrology_module(cs_path, folder)
     hy_metrics = _compute_hydrology_metrics(hy)
 
+    ep_metrics = _compute_exposure_pathway_metrics(cs_path, folder)
+
     return {
         'wwtp_mode': wwtp_mode,
         'metrics': {
@@ -336,6 +373,7 @@ def _compute_driver_metrics_for_scenario(cs_path, folder):
             'manure_treated_pct': (100.0 * manure['treated']) if manure['treated'] is not None else None,
             'production_mean_progress_intensive_pct': production_progress_intensive,
             **hy_metrics,
+            **ep_metrics,
         },
     }
 
@@ -412,6 +450,12 @@ DRIVER_METRIC_DEFS = [
     {'key': 'hydrology_mean_annual_runoff',      'driver': 'Hydrology', 'label': 'Mean surface runoff (mm/day)',  'delta_mode': 'relative_pct', 'value_format': 'decimal', 'color_direction': 'negative_good'},
     {'key': 'hydrology_mean_river_temperature',  'driver': 'Hydrology', 'label': 'Mean river temperature (°C)',   'delta_mode': 'absolute',     'value_format': 'decimal', 'color_direction': 'positive_good'},
     {'key': 'hydrology_mean_ssrd',               'driver': 'Hydrology', 'label': 'Mean solar radiation (W/m²)', 'delta_mode': 'relative_pct', 'value_format': 'decimal', 'color_direction': 'positive_good'},
+    {'key': 'exposure_drinking_events_per_year',        'driver': 'Exposure pathways', 'label': 'Drinking',        'delta_mode': 'relative_pct', 'value_format': 'integer', 'color_direction': 'neutral'},
+    {'key': 'exposure_swimming_events_per_year',        'driver': 'Exposure pathways', 'label': 'Swimming',        'delta_mode': 'relative_pct', 'value_format': 'integer', 'color_direction': 'neutral'},
+    {'key': 'exposure_flooding_events_per_year',        'driver': 'Exposure pathways', 'label': 'Flooding',        'delta_mode': 'relative_pct', 'value_format': 'integer', 'color_direction': 'neutral'},
+    {'key': 'exposure_open_drain_events_per_year',      'driver': 'Exposure pathways', 'label': 'Open drain',      'delta_mode': 'relative_pct', 'value_format': 'integer', 'color_direction': 'neutral'},
+    {'key': 'exposure_playing_events_per_year',         'driver': 'Exposure pathways', 'label': 'Playing',         'delta_mode': 'relative_pct', 'value_format': 'integer', 'color_direction': 'neutral'},
+    {'key': 'exposure_washing_clothes_events_per_year', 'driver': 'Exposure pathways', 'label': 'Washing clothes', 'delta_mode': 'relative_pct', 'value_format': 'integer', 'color_direction': 'neutral'},
 ]
 
 

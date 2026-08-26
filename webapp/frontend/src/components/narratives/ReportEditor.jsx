@@ -40,7 +40,7 @@ const ReportEditor = ({ caseStudyId, report, onReportChange, onClose }) => {
       if (!current || current.key !== key) {
         current = {
           key,
-          label: section.scenario_id ? (scenarioNames[section.scenario_id] || 'Scenario') : 'Front matter',
+          label: section.scenario_id ? (scenarioNames[section.scenario_id] || 'Scenario') : '',
           sections: [],
         };
         out.push(current);

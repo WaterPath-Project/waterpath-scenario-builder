@@ -636,6 +636,16 @@ def _execute_model_run(run_id, params):
         model_runs[run_id]['simulation_complete'] = simulation_complete
         model_runs[run_id]['status'] = 'success' if (exit_code == 0 and simulation_complete) else 'error'
 
+        if model_runs[run_id]['status'] == 'success' and model_runs[run_id].get('include_risk'):
+            from qmra import _trigger_qmra_run
+            scenario_id = model_runs[run_id]['scenario_id']
+            cs, scenario_folder = _locate_scenario(scenario_id)
+            risk_run_id = _trigger_qmra_run(scenario_id, cs, scenario_folder)
+            if risk_run_id:
+                model_runs[run_id]['risk_run_id'] = risk_run_id
+            else:
+                model_runs[run_id]['risk_error'] = 'Risk estimation could not be started.'
+
         if cs_path and folder:
             exec_log = os.path.join(cs_path, 'output', folder, 'glowpa.log')
             if not os.path.exists(exec_log):
@@ -888,6 +898,7 @@ def run_model(scenario_id):
     try:
         body = request.get_json(silent=True) or {}
         debug_mode = bool(body.get('debug_mode', False))
+        include_risk = bool(body.get('include_risk', False))
 
         cs, folder = _locate_scenario(scenario_id)
         cs_path = cs['folder_path']
@@ -916,6 +927,9 @@ def run_model(scenario_id):
             'cs_path': cs_path,
             'folder': folder,
             'debug_mode': debug_mode,
+            'include_risk': include_risk,
+            'risk_run_id': None,
+            'risk_error': None,
             'started_at': datetime.now().isoformat(),
             'finished_at': None,
             'stdout': '',
@@ -937,7 +951,22 @@ def run_status(run_id):
     run = model_runs.get(run_id)
     if not run:
         return jsonify({'error': 'Run not found'}), 404
-    return jsonify(run), 200
+    response = dict(run)
+    risk_run_id = run.get('risk_run_id')
+    if risk_run_id:
+        risk_run = model_runs.get(risk_run_id, {})
+        response['risk_status'] = risk_run.get('status')
+        if run.get('status') == 'success' and risk_run.get('status') in ('queued', 'running'):
+            response['status'] = 'risk_running'
+        elif risk_run.get('status') == 'error':
+            response['status'] = 'error'
+            response['stderr'] = risk_run.get('stderr') or 'Risk estimation failed.'
+    elif run.get('status') == 'success' and run.get('include_risk') and not run.get('risk_error'):
+        response['status'] = 'running'
+    elif run.get('status') == 'success' and run.get('include_risk') and run.get('risk_error'):
+        response['status'] = 'error'
+        response['stderr'] = run['risk_error']
+    return jsonify(response), 200
 
 
 def get_glowpa_log(scenario_id):

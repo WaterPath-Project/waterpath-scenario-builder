@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { MapContainer, TileLayer, GeoJSON as LeafletGeoJSON, useMap } from 'react-leaflet';
+import { MapContainer, GeoJSON as LeafletGeoJSON, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import axios from 'axios';
 import { TrendingUp, Calendar, ChartColumn, Edit, Trash2 } from 'lucide-react';
 import SSPScenarioDialog from './SSPScenarioDialog';
+import ConfirmDialog from './ConfirmDialog';
 import { paths } from '../routes';
+import OpenFreeMapLayer from './OpenFreeMapLayer';
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
 const FLOW_LABEL_W   = 160;          // wider to fit inline description text
@@ -44,9 +46,6 @@ function emissionColorFromRatio(ratio, scale) {
   }
   return scale[scale.length - 1].color;
 }
-
-const TILE_URL = 'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png';
-const TILE_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/">CARTO</a>';
 
 // ─── SSP metadata ─────────────────────────────────────────────────────────────
 // Short descriptions rendered inside the SVG label column
@@ -349,6 +348,7 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
   const [runningScenarios, setRunningScenarios] = useState({});
   const [sspDialogOpen,    setSspDialogOpen]    = useState(false);
   const [pendingSSPData,   setPendingSSPData]   = useState(null);
+  const [riskRunScenarioId, setRiskRunScenarioId] = useState(null);
 
   // Load case study metadata (datapackage.json)
   useEffect(() => {
@@ -428,16 +428,28 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
   }, [scenarios]); // eslint-disable-line
 
   // Launch a scenario model run from the flow diagram play button
-  const handleFlowRun = useCallback(async (scenarioId) => {
+  const startFlowRun = useCallback(async (scenarioId, includeRisk) => {
     if (runningScenarios[scenarioId]) return;
     setRunningScenarios(prev => ({ ...prev, [scenarioId]: { runId: null, status: 'pending' } }));
     try {
-      const { data } = await axios.post(`/api/scenarios/${scenarioId}/run-model`);
+      const { data } = await axios.post(`/api/scenarios/${scenarioId}/run-model`, {
+        include_risk: includeRisk,
+      });
       setRunningScenarios(prev => ({ ...prev, [scenarioId]: { runId: data.run_id, status: 'running' } }));
     } catch {
       setRunningScenarios(prev => { const n = { ...prev }; delete n[scenarioId]; return n; });
     }
   }, [runningScenarios]);
+
+  const handleFlowRun = useCallback((scenarioId) => {
+    if (runningScenarios[scenarioId]) return;
+    const scenario = scenarios.find(item => item.id === scenarioId);
+    if (scenario?.qmra_available && !scenario.has_qmra_output) {
+      setRiskRunScenarioId(scenarioId);
+      return;
+    }
+    startFlowRun(scenarioId, !!scenario?.qmra_available);
+  }, [runningScenarios, scenarios, startFlowRun]);
 
   // Poll active run statuses every 2 s
   useEffect(() => {
@@ -592,7 +604,7 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
               scrollWheelZoom={false}
               attributionControl={false}
             >
-              <TileLayer url={TILE_URL} attribution={TILE_ATTR} />
+              <OpenFreeMapLayer />
               <LeafletGeoJSON
                 data={geodata}
                 style={{ color: '#0B4159', weight: 1.5, fillColor: '#CAD8E3', fillOpacity: 0.45 }}
@@ -697,6 +709,25 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
         onSubmit={handleSSPSubmit}
         defaultPathogen={baseline?.pathogen || ''}
         prefillData={pendingSSPData}
+      />
+      <ConfirmDialog
+        isOpen={!!riskRunScenarioId}
+        onClose={() => setRiskRunScenarioId(null)}
+        onConfirm={() => {
+          const scenarioId = riskRunScenarioId;
+          setRiskRunScenarioId(null);
+          return startFlowRun(scenarioId, true);
+        }}
+        onCancel={() => {
+          const scenarioId = riskRunScenarioId;
+          setRiskRunScenarioId(null);
+          return startFlowRun(scenarioId, false);
+        }}
+        title="Include risk estimations?"
+        message="Exposure pathways are configured for this scenario. Risk estimation will run after the model completes."
+        confirmText="Include risk"
+        cancelText="Run without risk"
+        confirmVariant="primary"
       />
     </div>
   );

@@ -8,6 +8,7 @@ const ScenarioCard = ({ scenario, selectedCaseStudy, analyticsInfo }) => {
   const [isSaving, setIsSaving] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const nameInputRef = useRef(null);
+  const isBaseline = String(scenario.is_baseline).toLowerCase() === 'true';
 
   const { 
     updateTempScenario, 
@@ -135,6 +136,7 @@ const ScenarioCard = ({ scenario, selectedCaseStudy, analyticsInfo }) => {
               scenario.isTemp ? 'text-orange-800' : 'text-wpBlue'
             }`}>
               {scenario.name}
+              {isBaseline && <span className="ml-1 text-wpGreen" title="Baseline scenario">*</span>}
             </h4>
             {scenario.isTemp && (
               <span className="text-xs px-2 py-1 bg-yellow-200 text-yellow-800 rounded-full">
@@ -188,9 +190,9 @@ const ScenarioCard = ({ scenario, selectedCaseStudy, analyticsInfo }) => {
         
 
         {/* Show SSP, Pathogen and Year if available */}
-        {(scenario.ssp || scenario.year || scenario.pathogen || scenario.is_baseline) && (
+        {(scenario.ssp || scenario.year || scenario.pathogen || isBaseline) && (
           <div className="flex flex-wrap items-center gap-2 text-sm text-gray-500">
-            {scenario.is_baseline && (
+            {isBaseline && (
               <span className="bg-gray-100 text-gray-700 px-2 py-1 rounded text-xs font-medium">
                 Baseline
               </span>

@@ -21,7 +21,7 @@ export const scenSlug = (name) => encodeURIComponent(name ?? '');
 
 /**
  * Reserved words that MUST NOT be used as scenario names, because their URI
- * encodings match dedicated route segments under `/scenarios/:csSlug/*`.
+ * encodings could shadow dedicated route segments under `/scenarios/:csSlug/*`.
  * Keep this list in sync with `RESERVED_SCENARIO_NAMES` in
  * `webapp/backend/scenario.py`.
  */
@@ -41,9 +41,6 @@ export const validateScenarioName = (rawName) => {
   }
   return null;
 };
-
-// Reserved URL segment for the QMRA config tab (under a case study).
-export const QMRA_SEGMENT = '_qmra';
 
 // Reserved URL segments used by the app itself (top-level or under scenarios).
 // Exported for tests / defensive checks; not currently used for validation
@@ -67,7 +64,6 @@ export const paths = {
   caseStudies: () => '/case-studies',
   caseStudy: (cs) => `/case-studies/${csSlug(cs)}`,
   scenarios: (cs) => (cs ? `/scenarios/${csSlug(cs)}` : '/scenarios'),
-  qmra: (cs) => `/scenarios/${csSlug(cs)}/${QMRA_SEGMENT}`,
   scenario: (cs, scenarioName, category, subcategory) => {
     const parts = ['/scenarios', csSlug(cs), scenSlug(scenarioName)];
     if (category) parts.push(category);

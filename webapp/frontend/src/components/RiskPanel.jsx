@@ -5,7 +5,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { ArrowUpRight, ArrowDownRight, ArrowRight, Minus, Plus, X, Maximize2, Minimize2, Printer } from 'lucide-react';
-import { MapContainer, TileLayer, useMap, GeoJSON as LeafletGeoJSON } from 'react-leaflet';
+import { MapContainer, useMap, GeoJSON as LeafletGeoJSON } from 'react-leaflet';
 import parseGeoraster from 'georaster';
 import GeoRasterLayer from 'georaster-layer-for-leaflet';
 import proj4 from 'proj4';
@@ -17,11 +17,9 @@ import FloodIcon        from '../../assets/icons/floods.svg';
 import OpenDrainIcon    from '../../assets/icons/open_drains.svg';
 import PlayingIcon      from '../../assets/icons/playing.svg';
 import WashingIcon      from '../../assets/icons/washing.svg';
+import OpenFreeMapLayer from './OpenFreeMapLayer';
 
 window.proj4 = proj4;
-
-const TILE_URL  = 'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png';
-const TILE_ATTR = '&copy; <a href="https://carto.com/">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>';
 
 // --- Colour helpers ---------------------------------------------------------
 // Risk scale: white → green → yellow-green → yellow → amber → orange-red → dark red
@@ -578,10 +576,11 @@ function DeltaChip({ pri, sec, loading, mode = 'pp' }) {
 }
 
 // --- Region click dialog (per-pathway risk breakdown) -----------------------
-function RiskAreaDialog({ area, riskAreaStats, availableRoutes, quantile, onClose }) {
+function RiskAreaDialog({ area, riskAreaStats, secondaryRiskAreaStats, isComparison, availableRoutes, quantile, primaryLabel, secondaryLabel, onClose }) {
   if (!area) return null;
   const { iso, name } = area;
   const stats = riskAreaStats?.[String(iso)];
+  const secondaryStats = secondaryRiskAreaStats?.[String(iso)];
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40" onClick={onClose}>
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 overflow-hidden" onClick={e => e.stopPropagation()}>
@@ -599,15 +598,25 @@ function RiskAreaDialog({ area, riskAreaStats, availableRoutes, quantile, onClos
             <>
               <div className="flex items-center justify-between mb-3 pb-2 border-b border-gray-100">
                 <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Combined</span>
-                <span
-                  className="text-xl font-bold font-outfit tabular-nums"
-                  style={{ color: `rgb(${colorForRisk(stats.risk).join(',')})`, filter: riskGlowFilter(stats.risk) }}
-                >{fmtRisk(stats.risk)}</span>
+                {isComparison ? (
+                  <span className="flex items-center gap-1.5 font-outfit tabular-nums">
+                    <span className="font-bold" title={primaryLabel}>{fmtRisk(stats.risk)}</span>
+                    <ArrowRight size={13} className="text-gray-400" />
+                    <span className="font-bold" title={secondaryLabel}>{secondaryStats ? fmtRisk(secondaryStats.risk) : EM}</span>
+                    {secondaryStats && <DeltaChip pri={stats.risk} sec={secondaryStats.risk} mode="pp" />}
+                  </span>
+                ) : (
+                  <span
+                    className="text-xl font-bold font-outfit tabular-nums"
+                    style={{ color: `rgb(${colorForRisk(stats.risk).join(',')})`, filter: riskGlowFilter(stats.risk) }}
+                  >{fmtRisk(stats.risk)}</span>
+                )}
               </div>
               <table className="w-full text-xs"><tbody>
                 {availableRoutes.map(rk => {
                   const conf = ROUTE_CONFIG[rk] || { label: rk };
                   const v = stats.routes?.[rk];
+                  const secondaryValue = secondaryStats?.routes?.[rk];
                   return (
                     <tr key={rk} className="border-b border-gray-100 last:border-0">
                       <td className="py-1.5 pr-2 text-gray-600 font-medium">
@@ -616,9 +625,15 @@ function RiskAreaDialog({ area, riskAreaStats, availableRoutes, quantile, onClos
                           {conf.label}
                         </span>
                       </td>
-                      <td className="py-1.5 text-right font-semibold tabular-nums"
-                        style={v != null ? { color: `rgb(${colorForRisk(v).join(',')})`, filter: riskGlowFilter(v) } : {}}>
-                        {v != null ? fmtRisk(v) : EM}
+                      <td className="py-1.5 text-right font-semibold tabular-nums">
+                        {isComparison ? (
+                          <span className="inline-flex items-center gap-1">
+                            <span title={primaryLabel}>{v != null ? fmtRisk(v) : EM}</span>
+                            <ArrowRight size={11} className="text-gray-400" />
+                            <span title={secondaryLabel}>{secondaryValue != null ? fmtRisk(secondaryValue) : EM}</span>
+                            {v != null && secondaryValue != null && <DeltaChip pri={v} sec={secondaryValue} mode="pp" />}
+                          </span>
+                        ) : (v != null ? fmtRisk(v) : EM)}
                       </td>
                     </tr>
                   );
@@ -751,9 +766,13 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
   }, [secondaryScenarioId, outputType, quantile]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const availableRoutes = useMemo(() => {
-    const all = Object.keys(files.routes || {});
-    return ROUTE_ORDER.filter(r => all.includes(r));
-  }, [files]);
+    const all = new Set([
+      ...Object.keys(files.routes || {}),
+      ...Object.keys(qmraStats?.routes || {}),
+      ...Object.keys(secStats?.routes || {}),
+    ]);
+    return ROUTE_ORDER.filter(r => all.has(r));
+  }, [files, qmraStats, secStats]);
 
   const allEmpty = useMemo(() => {
     const m = files.combined?.monthly || [];
@@ -808,8 +827,7 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
 
   const bands = qmraStats?.bands ?? {};
   const isCasesFile = selectedFile === 'expected_cases.tif';
-  // Only offer per-pathway map layers on a plain (non-diff, non-cases) view.
-  const layerSelectable = !secondaryScenarioId && !isCasesFile;
+  const layerSelectable = !isCasesFile;
   const mapBandIndex = layerSelectable ? (bands?.[mapLayer] || 1) : 1;
   const canClickCombined = layerSelectable && !!bands['combined'];
   // Bar-chart values always from navStats (annual_risk.tif), not from the
@@ -822,8 +840,8 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
 
   const diffTifUrl = useMemo(() => {
     if (!isComparison || !selectedFile) return null;
-    return `/api/qmra/diff-tif?scA=${scenarioId}&scB=${secondaryScenarioId}&output_type=${outputType}&file=${encodeURIComponent(selectedFile)}&quantile=${quantile}`;
-  }, [isComparison, scenarioId, secondaryScenarioId, outputType, selectedFile, quantile]); // eslint-disable-line react-hooks/exhaustive-deps
+    return `/api/qmra/diff-tif?scA=${scenarioId}&scB=${secondaryScenarioId}&output_type=${outputType}&file=${encodeURIComponent(selectedFile)}&quantile=${quantile}&route=${encodeURIComponent(mapLayer)}`;
+  }, [isComparison, scenarioId, secondaryScenarioId, outputType, selectedFile, quantile, mapLayer]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Region polygons on the map are clickable (same interaction as the
   // emissions map): clicking opens a dialog with the per-pathway risk
@@ -967,9 +985,10 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
         {availableRoutes.map(rk => {
           const conf  = ROUTE_CONFIG[rk] || { label: rk };
           const rSelQ = getQ(qmraStats?.routes?.[rk]?.risk ?? {}, qKey(quantile));
+          const secRSelQ = getQ(secStats?.routes?.[rk]?.risk ?? {}, qKey(quantile));
           const rQ025 = getQ(qmraStats?.routes?.[rk]?.risk ?? {}, 'q0.025');
           const rQ975 = getQ(qmraStats?.routes?.[rk]?.risk ?? {}, 'q0.975');
-          const canClick = layerSelectable && !!bands[rk];
+          const canClick = layerSelectable && !!rSelQ && (!isComparison || !!secRSelQ);
           const isActiveLayer = layerSelectable && mapLayer === rk;
           return (
             <div
@@ -983,13 +1002,28 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
                 ? <img src={conf.icon} alt={conf.label} className="w-8 h-8 flex-shrink-0 opacity-75" />
                 : <div className="w-8 h-8 flex-shrink-0" />}
               {loading || statsLoading ? <Skeleton w="w-12" h="h-5" /> : (
-                rSelQ ? (
+                rSelQ || (isComparison && secRSelQ) ? (
                   <div className="min-w-0 flex-1 flex flex-col p-4">
                     <span className="text-sm font-semibold text-wpBlue truncate">{conf.label}</span>
-                    <span
-                      style={{ color: `rgb(${colorForRisk(rSelQ.mean).join(',')})`, filter: riskGlowFilter(rSelQ.mean) }}
-                      className="text-lg font-bold font-outfit tabular-nums"
-                    >{fmtRisk(rSelQ.mean)}</span>
+                    {isComparison ? (
+                      <span className="flex items-center gap-1 flex-wrap font-outfit tabular-nums">
+                        <span
+                          className="text-lg font-bold"
+                          style={rSelQ ? { color: `rgb(${colorForRisk(rSelQ.mean).join(',')})`, filter: riskGlowFilter(rSelQ.mean) } : {}}
+                        >{rSelQ ? fmtRisk(rSelQ.mean) : EM}</span>
+                        <ArrowRight size={12} className="text-gray-400" />
+                        <span
+                          className="text-lg font-bold"
+                          style={secRSelQ ? { color: `rgb(${colorForRisk(secRSelQ.mean).join(',')})`, filter: riskGlowFilter(secRSelQ.mean) } : {}}
+                        >{secStatsLoading ? '…' : secRSelQ ? fmtRisk(secRSelQ.mean) : EM}</span>
+                        {rSelQ && secRSelQ && <DeltaChip pri={rSelQ.mean} sec={secRSelQ.mean} mode="pp" />}
+                      </span>
+                    ) : (
+                      <span
+                        style={{ color: `rgb(${colorForRisk(rSelQ.mean).join(',')})`, filter: riskGlowFilter(rSelQ.mean) }}
+                        className="text-lg font-bold font-outfit tabular-nums"
+                      >{fmtRisk(rSelQ.mean)}</span>
+                    )}
                   </div>
                 ) : <NoDash title="No valid output pixels for this route." />
               )}
@@ -1048,7 +1082,7 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
                   center={[0, 30]} zoom={3}
                   scrollWheelZoom={false} zoomControl={false} attributionControl={false}
                 >
-                  <TileLayer url={TILE_URL} attribution={TILE_ATTR} />
+                  <OpenFreeMapLayer />
                   {isComparison && diffTifUrl
                     ? <RiskDiffRasterLayer key={diffTifUrl} diffUrl={diffTifUrl} hlCtx={hlCtx} />
                     : tifUrl && <RiskRasterLayer key={tifUrl} tifUrl={tifUrl} isCases={selectedFile === 'expected_cases.tif'} hlCtx={hlCtx} bandIndex={mapBandIndex} />
@@ -1195,8 +1229,12 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
     <RiskAreaDialog
       area={clickedArea}
       riskAreaStats={riskAreaStats}
+      secondaryRiskAreaStats={secRiskAreaStats}
+      isComparison={isComparison}
       availableRoutes={availableRoutes}
       quantile={quantile}
+      primaryLabel={scenarioName}
+      secondaryLabel={secondaryScenarioName}
       onClose={() => setClickedArea(null)}
     />
     </>

@@ -74,6 +74,7 @@ export const DRIVER_META = {
   'Livestock population':   { icon: LivestockPopulationIcon,  label: 'Livestock population' },
   'Manure management':      { icon: ManureManagementIcon,     label: 'Manure management' },
   'Production systems':     { icon: ProductionSystemsIcon,    label: 'Production systems' },
+  'Exposure pathways':      { icon: RiskIcon,                  label: 'Exposure pathways' },
   Risk:                     { icon: RiskIcon,                 label: 'Risk' },
 };
 
@@ -88,5 +89,6 @@ export const DRIVER_ORDER = [
   'Manure management',
   'Production systems',
   'Hydrology',
+  'Exposure pathways',
   'Risk',
 ];

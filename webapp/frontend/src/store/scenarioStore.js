@@ -12,6 +12,8 @@ const useScenarioStore = create((set, get) => ({
   metadataEditScenarioId: null, // Scenario ID whose metadata should be edited
   dirtyScenarioIds: {},          // { [scenarioId]: true } — scenarios with unsaved isodata edits
   needsRerunIds: {},             // { [scenarioId]: true } — model needs re-run after data save
+  scenarioRunStatuses: {},       // { [scenarioId]: 'idle' | 'pending' | 'running' | 'success' | 'error' }
+  scenarioFetchRequestId: 0,
 
   // Actions
   setScenarios: (scenarios) => set({ scenarios }),
@@ -36,6 +38,12 @@ const useScenarioStore = create((set, get) => ({
       else delete next[scenarioId];
       return { needsRerunIds: next };
     });
+  },
+
+  setScenarioRunStatus: (scenarioId, status) => {
+    set((state) => ({
+      scenarioRunStatuses: { ...state.scenarioRunStatuses, [scenarioId]: status },
+    }));
   },
 
   createTempScenario: (caseStudyId, sspData = null) => {
@@ -224,7 +232,8 @@ const useScenarioStore = create((set, get) => ({
       id: scenario.id,
       name: scenario.name,
       type: 'scenario',
-      isTemp: false
+      isTemp: false,
+      isBaseline: String(scenario.is_baseline).toLowerCase() === 'true'
     }));
 
     const tempTabs = caseStudyTempScenarios.map(scenario => ({
@@ -245,18 +254,31 @@ const useScenarioStore = create((set, get) => ({
   },
 
   fetchScenarios: async (caseStudyId = null) => {
+    const requestId = get().scenarioFetchRequestId + 1;
+    set({
+      scenarioFetchRequestId: requestId,
+      ...(caseStudyId ? {
+        scenarios: [],
+        tabs: [{ id: 'main', name: 'Main', type: 'main', icon: 'Home' }],
+        activeTab: 'main',
+      } : {}),
+    });
     try {
       const url = caseStudyId ? `/api/scenarios?case_study_id=${caseStudyId}` : '/api/scenarios';
       const response = await axios.get(url);
+      if (get().scenarioFetchRequestId !== requestId) return false;
       set({ scenarios: response.data.scenarios || [] });
       
       // Set up tabs for the case study
       if (caseStudyId) {
         get().setupTabsForCaseStudy(caseStudyId);
       }
+      return true;
     } catch (error) {
       console.error('Error fetching scenarios:', error);
+      if (get().scenarioFetchRequestId !== requestId) return false;
       set({ scenarios: [] });
+      return false;
     }
   },
 

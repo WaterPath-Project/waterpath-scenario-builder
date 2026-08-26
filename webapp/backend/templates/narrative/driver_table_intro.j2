@@ -25,7 +25,7 @@ The table on this page lists every input driver metric side by side, for {{ base
 It is intended as a reference: the narrative sections that follow discuss only the changes that are large enough to matter.
 
 {% if not has_changes %}
-None of the driver metrics differ from {{ baseline_name }} substantially. Any differences in modelled outcomes therefore stem from interactions between drivers rather than from a single dominant change.
+None of the driver metrics differ from {{ baseline_name }} by more than the significance threshold. Any differences in modelled outcomes therefore stem from interactions between drivers rather than from a single dominant change.
 {% else %}
 The metrics that changed significantly relative to {{ baseline_name }} are grouped by driver below.
 
@@ -34,6 +34,6 @@ The metrics that changed significantly relative to {{ baseline_name }} are group
 {% endfor %}
 
 {% if unchanged_drivers %}
-The remaining driver{{ "s" if unchanged_drivers | length != 1 }} ({{ unchanged_drivers | listjoin }}) show{{ "" if unchanged_drivers | length != 1 else "s" }} no significant changes and {{ "are" if unchanged_drivers | length != 1 else "is" }} not discussed further.
+The remaining driver{{ "s" if unchanged_drivers | length != 1 }} ({{ unchanged_drivers | listjoin }}) show{{ "" if unchanged_drivers | length != 1 else "s" }} no changes above the significance threshold and {{ "are" if unchanged_drivers | length != 1 else "is" }} not discussed further.
 {% endif %}
 {% endif %}

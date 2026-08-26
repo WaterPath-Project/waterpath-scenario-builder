@@ -9,13 +9,20 @@ const ConfirmDialog = ({
   title = "Confirm Action", 
   message = "Are you sure you want to proceed?", 
   confirmText = "Confirm", 
+  cancelText = "Cancel",
   confirmVariant = "danger",
+  onCancel,
   isLoading = false 
 }) => {
   const handleConfirm = async () => {
     if (onConfirm) {
       await onConfirm();
     }
+  };
+
+  const handleCancel = async () => {
+    if (onCancel) await onCancel();
+    else onClose?.();
   };
 
   const confirmButtonClass = confirmVariant === "danger" 
@@ -27,7 +34,7 @@ const ConfirmDialog = ({
       <DialogContent className="max-w-md">
         <DialogHeader>
           <div className="flex items-center gap-3">
-            <AlertTriangle className="h-6 w-6 text-red-500" />
+            <AlertTriangle className={`h-6 w-6 ${confirmVariant === 'danger' ? 'text-red-500' : 'text-blue-500'}`} />
             <DialogTitle className="text-lg font-semibold text-gray-900">
               {title}
             </DialogTitle>
@@ -39,11 +46,11 @@ const ConfirmDialog = ({
         
         <div className="flex justify-end gap-3 mt-6">
           <button
-            onClick={onClose}
+            onClick={handleCancel}
             disabled={isLoading}
             className="px-4 py-2 text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-md transition-colors disabled:opacity-50"
           >
-            Cancel
+            {cancelText}
           </button>
           <button
             onClick={handleConfirm}

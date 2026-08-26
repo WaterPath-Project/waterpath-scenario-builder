@@ -10,11 +10,14 @@ import PopulationPanel from './PopulationPanel';
 import SanitationLadderPanel from './SanitationLadderPanel';
 import WastewaterTreatmentPanel from './WastewaterTreatmentPanel';
 import LivestockEditorPanel from './LivestockEditorPanel';
+import ExposurePathwaysPanel from './ExposurePathwaysPanel';
+import ConfirmDialog from './ConfirmDialog';
 import { paths } from '../routes';
 // Import category icons
 import HumanEmissionsIcon from '../../assets/icons/human_emissions.svg';
 import LivestockEmissionsIcon from '../../assets/icons/livestock_emissions.svg';
 import ConcentrationsIcon from '../../assets/icons/concentrations.svg';
+import RiskIcon from '../../assets/icons/risk.svg';
 
 // Import subcategory icons
 import HumanPopulationIcon from '../../assets/icons/human_population.svg';
@@ -33,6 +36,7 @@ import RiverParametersIcon from '../../assets/icons/river_parameters.svg';
 const RUN_STATUS_CFG = {
   pending: { label: 'Queued',   cls: 'bg-yellow-100 text-yellow-700' },
   running: { label: 'Running\u2026', cls: 'bg-blue-100 text-blue-700' },
+  risk_running: { label: 'Estimating risk\u2026', cls: 'bg-blue-100 text-blue-700' },
   success: { label: 'Done \u2713',   cls: 'bg-green-100 text-green-700' },
   error:   { label: 'Error',    cls: 'bg-red-100 text-red-700' },
   timeout: { label: 'Timeout',  cls: 'bg-orange-100 text-orange-700' },
@@ -73,6 +77,14 @@ const CATEGORIES = [
       { id: 'river-parameters', label: 'River Parameters', icon: RiverParametersIcon },
     ]
   },
+  {
+    id: 'risk',
+    label: 'Risk',
+    icon: RiskIcon,
+    subcategories: [
+      { id: 'exposure-pathways', label: 'Exposure Pathways', icon: RiskIcon },
+    ]
+  },
 ];
 
 // Flat list of emission driver subcategories shown in the side panel (human + livestock)
@@ -83,6 +95,7 @@ const DRIVER_SUBCATEGORIES = [
   { id: 'livestock-population', label: 'Livestock Population',  icon: LivestockPopulationIcon, categoryId: 'livestock-emissions' },
   { id: 'manure-management',    label: 'Manure Management',     icon: ManureManagementIcon,   categoryId: 'livestock-emissions' },
   { id: 'production-systems',   label: 'Production Systems',    icon: ProductionSystemsIcon,  categoryId: 'livestock-emissions' },
+  { id: 'exposure-pathways',    label: 'Exposure Pathways',     icon: RiskIcon,               categoryId: 'risk' },
 ];
 
 const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '', initialCategory, initialSubcategory, onViewResults, onCloneScenario, analyticsInfo = null }) => {
@@ -99,6 +112,8 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
     setScenarioDirty,
     needsRerunIds,
     setNeedsRerun,
+    scenarioRunStatuses,
+    setScenarioRunStatus,
   } = useScenarioStore();
   
   const navigate = useNavigate();
@@ -108,7 +123,11 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
   const [scenarioInfo, setScenarioInfo] = useState(analyticsInfo);
   const [runId,     setRunId]     = useState(null);
   const [runMode,   setRunMode]   = useState(null);
-  const [runStatus, setRunStatus] = useState('idle');
+  const runStatus = scenarioRunStatuses[scenarioId] || 'idle';
+  const setRunStatus = useCallback(
+    (status) => setScenarioRunStatus(scenarioId, status),
+    [scenarioId, setScenarioRunStatus]
+  );
   const [runLoading, setRunLoading] = useState(false);
   const [runOutput,  setRunOutput]  = useState({ stdout: '', stderr: '' });
   const [runOutputFiles, setRunOutputFiles] = useState([]);
@@ -116,6 +135,7 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
   const [glowpaLog,  setGlowpaLog]  = useState(null);
   const [logLoading, setLogLoading] = useState(false);
   const [showLog,    setShowLog]    = useState(false);
+  const [showRiskRunDialog, setShowRiskRunDialog] = useState(false);
   const needsRerun = needsRerunIds[scenarioId] ?? false;
 
   // Sync scenarioInfo when the parent re-loads analytics data (e.g. after a
@@ -129,9 +149,11 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
   const canRun     = scenarioInfo?.readiness?.ready === true;
   const hasResults = runStatus === 'success' || !!scenarioInfo?.has_outputs;
 
-  // Filter categories to those enabled by the case study (null/undefined means all)
+  // Filter categories to those enabled by the case study (null/undefined means all).
+  // 'risk' is always available: its config lives per scenario and is created on
+  // first save, so it cannot be detected from the imported folder layout.
   const enabledCategoryIds = selectedCaseStudy?.enabled_categories ?? null;
-  const isCategoryEnabled = (id) => !enabledCategoryIds || enabledCategoryIds.includes(id);
+  const isCategoryEnabled = (id) => id === 'risk' || !enabledCategoryIds || enabledCategoryIds.includes(id);
   // All categories are shown; only enabled ones are interactive
   const availableCategories = CATEGORIES;
 
@@ -143,6 +165,7 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
 
   // Find the scenario (either temp or persistent)
   const scenario = [...scenarios, ...tempScenarios].find(s => s.id === scenarioId);
+  const isBaseline  = String(scenario?.is_baseline ?? scenarioInfo?.is_baseline ?? '').toLowerCase() === 'true';
 
   const validCat = (id) => CATEGORIES.find((c) => c.id === id && isCategoryEnabled(c.id));
   const validSub = (catId, subId) => CATEGORIES.find((c) => c.id === catId && isCategoryEnabled(c.id))?.subcategories.find((s) => s.id === subId);
@@ -287,14 +310,17 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
   // ── Re-run risk handler ────────────────────────────────────────────────────
 
   // ── Run model handler ──────────────────────────────────────────────────────
-  const handleRunModel = async () => {
+  const startModelRun = async (includeRisk) => {
     setRunLoading(true);
     setRunStatus('pending');
     setShowOutput(false);
     setShowLog(false);
     try {
       const { debugMode } = useSettingsStore.getState();
-      const res = await axios.post(`/api/scenarios/${scenarioId}/run-model`, { debug_mode: debugMode });
+      const res = await axios.post(`/api/scenarios/${scenarioId}/run-model`, {
+        debug_mode: debugMode,
+        include_risk: includeRisk,
+      });
       setRunId(res.data.run_id);
       setRunMode(res.data.mode);
     } catch (err) {
@@ -302,6 +328,14 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
       setRunStatus('error');
       setRunOutput({ stdout: '', stderr: err.response?.data?.error || err.message });
     }
+  };
+
+  const handleRunModel = () => {
+    if (scenarioInfo?.qmra_available && !scenarioInfo?.has_qmra_output) {
+      setShowRiskRunDialog(true);
+      return;
+    }
+    startModelRun(!!scenarioInfo?.qmra_available);
   };
 
   // ── Fetch GloWPa execution log ─────────────────────────────────────────────
@@ -400,39 +434,40 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
       <div className="flex-shrink-0 bg-white border-b border-gray-200">
         <div className="flex items-center justify-between px-6 py-4">
           <div className="flex items-center space-x-3">
-            <BarChart3 className="text-wpBlue" size={24} />
+            <BarChart3 className={hasResults ? 'text-wpGreen' : 'text-wpBlue'} size={24} />
             <div>
               <h2 className="text-xl font-semibold font-outfit text-wpBlue">
-                {scenario.name || 'Untitled Scenario'}
+                {scenario.name || 'Untitled Scenario'}{isBaseline && <span className="ml-1 text-wpGreen" title="Baseline scenario">*</span>}
               </h2>
               <p className="text-sm font-outfit text-wpBlue">
-                {scenario.isTemp
-                  ? 'Temporary scenario (not saved)'
-                  : runStatus === 'pending' || runStatus === 'running'
-                    ? <span className="flex items-center gap-1.5 text-xs" style={{ color: '#18B6A3' }}>
-                        <span className="w-2 h-2 rounded-full bg-[#18B6A3] animate-pulse"/>
-                        Running model…
-                      </span>
-                    : runStatus === 'success'
-                      ? <span className="flex items-center gap-1.5 text-xs" style={{ color: '#9EB65B' }}>
-                          <span className="w-2 h-2 rounded-full bg-[#9EB65B]"/>
-                          Saved scenario
-                        </span>
-                      : runStatus === 'error'
-                        ? <span className="flex items-center gap-1.5 text-xs text-red-500">
-                            <span className="w-2 h-2 rounded-full bg-red-500"/>
-                            Error during model run
-                          </span>
-                        : needsRerun
-                          ? <span className="flex items-center gap-1.5 text-xs text-orange-500">
-                            <span className="w-2 h-2 rounded-full bg-orange-500 animate-pulse"/>
-                            Changed scenario (needs re-run)
-                          </span>
-                          : <span className="flex items-center gap-1.5 text-xs text-wpBlue">
-                            <span className="w-2 h-2 rounded-full bg-wpBlue"/>
-                            Saved scenario
-                          </span>
-                }
+                {scenario.isTemp ? (
+                  <span className="text-xs text-wpBlue">Temporary scenario (not saved)</span>
+                ) : runStatus === 'pending' || runStatus === 'running' || runStatus === 'risk_running' ? (
+                  <span className="flex items-center gap-1.5 text-xs text-wpTeal">
+                    <span className="w-2 h-2 rounded-full bg-wpTeal animate-pulse" />
+                    {runStatus === 'risk_running' ? 'Estimating risk…' : 'Running model…'}
+                  </span>
+                ) : runStatus === 'error' ? (
+                  <span className="flex items-center gap-1.5 text-xs text-red-500">
+                    <span className="w-2 h-2 rounded-full bg-red-500" />
+                    Error during model run
+                  </span>
+                ) : needsRerun ? (
+                  <span className="flex items-center gap-1.5 text-xs text-orange-500">
+                    <span className="w-2 h-2 rounded-full bg-orange-500 animate-pulse" />
+                    Changed scenario (needs re-run)
+                  </span>
+                ) : hasResults ? (
+                  <span className="flex items-center gap-1.5 text-xs text-wpGreen">
+                    <span className="w-2 h-2 rounded-full bg-wpGreen" />
+                    results available
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 text-xs text-wpBlue">
+                    <span className="w-2 h-2 rounded-full bg-wpBlue" />
+                    No results yet
+                  </span>
+                )}
               </p>
             </div>
           </div>
@@ -495,7 +530,7 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
           <div className="px-6 pb-3 flex items-center gap-3">
             {RUN_STATUS_CFG[runStatus] && (
               <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                runStatus === 'running' || runStatus === 'pending'
+                runStatus === 'running' || runStatus === 'pending' || runStatus === 'risk_running'
                   ? 'text-[#18B6A3] bg-[#18B6A3]/10'
                   : runStatus === 'success'
                     ? 'text-[#9EB65B] bg-[#9EB65B]/10'
@@ -624,6 +659,12 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
               onDirtyChange={handleLivestockDirtyChange}
               onSaved={handleSubcatSaved}
             />
+          ) : activeSubcategory === 'exposure-pathways' ? (
+            <ExposurePathwaysPanel
+              key={scenario.id}
+              scenario={scenario}
+              caseStudyId={selectedCaseStudy?.id}
+            />
           ) : (
             <div className="bg-white rounded-lg border border-gray-200 p-6">
               <p className="text-gray-500 text-sm">
@@ -642,6 +683,17 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
         onSave={handleMetadataSave}
         locked={!scenario?.isTemp && !!scenarioInfo?.has_outputs}
         onClone={onCloneScenario ? handleCloneScenario : undefined}
+      />
+      <ConfirmDialog
+        isOpen={showRiskRunDialog}
+        onClose={() => setShowRiskRunDialog(false)}
+        onConfirm={() => { setShowRiskRunDialog(false); return startModelRun(true); }}
+        onCancel={() => { setShowRiskRunDialog(false); return startModelRun(false); }}
+        title="Include risk estimations?"
+        message="Exposure pathways are configured for this scenario. Risk estimation will run after the model completes."
+        confirmText="Include risk"
+        cancelText="Run without risk"
+        confirmVariant="primary"
       />
     </div>
   );

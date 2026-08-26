@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { MapContainer, TileLayer, GeoJSON as LeafletGeoJSON, ImageOverlay, useMap } from 'react-leaflet';
+import { MapContainer, GeoJSON as LeafletGeoJSON, ImageOverlay, useMap } from 'react-leaflet';
 import parseGeoraster from 'georaster';
 import GeoRasterLayer from 'georaster-layer-for-leaflet';
 import proj4 from 'proj4';
@@ -29,6 +29,7 @@ import PoultryIcon    from '../../assets/icons/poultry.svg';
 import SheepIcon      from '../../assets/icons/sheep.svg';
 import BuffaloesIcon      from '../../assets/icons/buffaloes.svg';
 import useSettingsStore      from '../store/settingsStore';
+import OpenFreeMapLayer from './OpenFreeMapLayer';
 
 // Make proj4 available globally so georaster-layer-for-leaflet can reproject
 // TIFs that are not in WGS84 / Web Mercator.
@@ -40,10 +41,6 @@ delete L.Icon.Default.prototype._getIconUrl;
 
 const LOG_MIN = 0;
 const LOG_MAX = 17;
-const TILE_URL        = 'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png';
-const TILE_LABELS_URL = 'https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png';
-const TILE_ATTR       = '&copy; <a href="https://carto.com/">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>';
-
 const LIVESTOCK_ICONS = {
   asses:     AssesIcon,
   camels:    CamelsIcon,
@@ -367,7 +364,7 @@ function Legend({ hlCtx, hlNorm, onHlChange }) {
             </div>
           ))}
         </div>
-        <p className="text-xs text-gray-400 mt-1">Log₁₀ scale · viral particles / grid cell / year</p>
+        <p className="text-xs text-gray-400 mt-1">Log₁₀ scale · pathogen particles / grid cell / year</p>
       </div>
     );
   }
@@ -416,7 +413,7 @@ function Legend({ hlCtx, hlNorm, onHlChange }) {
         {/* Open-ended indicator only shown when fixed scale */}
         {fixedColorScale && <span className="text-gray-400 text-xs font-bold flex-shrink-0">+</span>}
       </div>
-      <p className="text-xs text-gray-400 mt-1">Log₁₀ scale · viral particles / grid cell / year</p>
+      <p className="text-xs text-gray-400 mt-1">Log₁₀ scale · pathogen particles / grid cell / year</p>
     </div>
   );
 }
@@ -530,7 +527,7 @@ function AreaDialog({ area, waterStats, landStats, onClose }) {
         <div className="flex items-center justify-between px-5 py-3 bg-gray-50 border-b border-gray-200">
           <div>
             <p className="font-semibold text-gray-900">{name}</p>
-            <p className="text-xs text-gray-400">viral particles / grid cell / year</p>
+            <p className="text-xs text-gray-400">pathogen particles / grid cell / year</p>
           </div>
           <button onClick={onClose} className="p-1.5 rounded hover:bg-gray-200"><X size={16} /></button>
         </div>
@@ -921,7 +918,7 @@ function EmissionMapPanel({
           <div className="flex flex-col min-w-0" style={{ flex: 2 }}>
             <div className="rounded overflow-hidden border border-gray-100 flex-1">
               <MapContainer center={[0,0]} zoom={2} style={{ height:'100%', width:'100%' }} scrollWheelZoom>
-                <TileLayer url={TILE_URL} attribution={TILE_ATTR}/>
+                <OpenFreeMapLayer />
                 <CreateBlendPane/>
                 {/* Single raster: GeoTIFF rendered via georaster-layer-for-leaflet with proj4 CRS support.
                     Skipped in choropleth mode — area is too small for the raster grid, polygons are
@@ -941,7 +938,6 @@ function EmissionMapPanel({
                   />
                 )}
                 <LeafletGeoJSON key={geoKey} ref={geoJsonLayerRef} data={geojson} style={getStyle} onEachFeature={onEachFeature}/>
-                <TileLayer url={TILE_LABELS_URL} pane="labelsPane"/>
                 <FitBounds geojson={geojson}/>
                 <MapExportControls title={title}/>
                 <LegendMapTooltip hlNorm={hlNorm} effectiveLogMax={effectiveLogMax} isDiff={isComparison} diffScale={emScale} />
@@ -970,7 +966,7 @@ function EmissionMapPanel({
               ) : (
                 <p className="text-5xl font-bold font-outfit tabular-nums text-wpBlue">{formatScientific(priTotal)}</p>
               )}
-              <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">Combined viral particle emissions across all areas, sanitation technologies, and emission pathways (viral particles / year).</p>
+              <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">Combined pathogen particle emissions across all areas, sanitation technologies, and emission pathways (pathogen particles / year).</p>
             </div>
 
             {/* Emissions by area */}
@@ -2088,7 +2084,7 @@ function ConcentrationAreaDialog({ area, avgAreaStats, onClose }) {
         <div className="flex items-center justify-between px-5 py-3 bg-gray-50 border-b border-gray-200">
           <div>
             <p className="font-semibold text-gray-900">{area.name}</p>
-            <p className="text-xs text-gray-400">viral particles / L</p>
+            <p className="text-xs text-gray-400">pathogen particles / L</p>
           </div>
           <button onClick={onClose} className="p-1.5 rounded hover:bg-gray-200"><X size={16} /></button>
         </div>
@@ -2478,7 +2474,7 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
               </div>
             </div>
           </div>
-          <p className="text-xs text-gray-400 mt-0.5">Log₁₀ · viral particles / L</p>
+          <p className="text-xs text-gray-400 mt-0.5">Log₁₀ · pathogen particles / L</p>
         </div>
       )}
     </div>
@@ -2492,14 +2488,14 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
         <p className="text-lg font-outfit font-semibold text-wpBlue uppercase tracking-wide mb-1">Concentrations ({areaStatMode === 'mean' ? 'mean' : 'peak'})</p>
         {rasterStats ? (
           <div>
-            <p className="text-3xl font-bold font-outfit tabular-nums text-wpBlue">{formatScientific(areaStatMode === 'mean' ? globalMean : globalPeak)}</p>
+            <p className="text-5xl font-bold font-outfit tabular-nums text-wpBlue">{formatScientific(areaStatMode === 'mean' ? globalMean : globalPeak)}</p>
           </div>
         ) : statsLoading ? (
           <div className="flex items-center gap-1.5 text-xs text-gray-400">
             <RefreshCw size={11} className="animate-spin" /> Computing…
           </div>
         ) : null}
-        <p className="text-xs text-gray-400 mt-1">viral particles / L</p>
+        <p className="text-xs text-gray-400 mt-1">pathogen particles / L</p>
         {/* Comparison annual change summary */}
         {isComparison && monthlyStats && secondaryMonthlyStats && (() => {
           const priTotal = Object.values(monthlyStats.months || {}).reduce((s, m) => s + (m.sum || 0), 0);
@@ -2620,7 +2616,7 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
       legendChildren={legendBlock}
       mapChildren={
         <MapContainer center={[0, 0]} zoom={2} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
-          <TileLayer url={TILE_URL} attribution={TILE_ATTR} />
+          <OpenFreeMapLayer />
           <CreateBlendPane />
           {!isComparison && rasterUrl && <HydrologyGeoTiffLayer key={rasterUrl} url={rasterUrl} hlCtx={hlCtx} />}
           {diffUrl && <HydrologyDiffGeoTiffLayer key={`${diffUrl}-${hydroScale ?? 'auto'}`} url={diffUrl} scale={hydroScale} hlCtx={hlCtx} onError={() => setDiffError(true)} onStats={setDiffStats} />}
@@ -2633,10 +2629,8 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
             style={() => ({ fillColor: 'transparent', fillOpacity: 0, color: '#1e293b', weight: 0.6, opacity: 0.5 })}
             onEachFeature={onAreaFeature}
           />
-          <TileLayer url={TILE_LABELS_URL} pane="labelsPane" />
           <FitBounds geojson={geojson} />
           <MapExportControls title={'Concentrations'} />
-          {!isComparison && showFlow && <TileLayer url={TILE_URL} pane="waterPane" opacity={0.9} />}
           {!isComparison && showFlow && <FlowArrowLayer key={`flow-${scenarioId}-${month}-${minAccPct}`} scenarioId={scenarioId} month={month} minAccPct={minAccPct} onLegendData={setFlowLegend} />}
           <LegendMapTooltip hlNorm={hlNorm} effectiveLogMax={LOG_MAX} isDiff={!!diffUrl} diffScale={hydroScale ?? diffStats?.scale ?? 100} />
           <HydroMapControls

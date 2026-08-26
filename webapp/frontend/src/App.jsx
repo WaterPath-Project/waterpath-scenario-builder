@@ -5,10 +5,10 @@ import Terminal from './components/Terminal';
 import ScenarioCard from './components/ScenarioCard';
 import ScenarioTabBar from './components/ScenarioTabBar';
 import ScenarioDetailView from './components/ScenarioDetailView';
-import QmraCaseStudyPanel from './components/QmraCaseStudyPanel';
 import useScenarioStore from './store/scenarioStore';
 import useConfigStore from './store/configStore';
 import useSettingsStore from './store/settingsStore';
+import { BASEMAP_STYLES } from './components/OpenFreeMapLayer';
 import { 
   Play, 
   ChartColumn, 
@@ -47,7 +47,7 @@ import CaseStudyPage from './components/CaseStudyPage';
 import ScenarioSummaryView from './components/ScenarioSummaryView';
 import NarrativeReportView from './components/narratives/NarrativeReportView';
 import NotFound from './components/NotFound';
-import { csSlug as toCsSlug, scenSlug as toScenSlug, paths, QMRA_SEGMENT, parseScenariosParam } from './routes';
+import { csSlug as toCsSlug, scenSlug as toScenSlug, paths, parseScenariosParam } from './routes';
 import './index.css';
 
 // Bootstrap global config (pathogens, etc.) as early as possible.
@@ -141,6 +141,7 @@ function AnalyticsRouteWrapper({ caseStudies, fallbackCaseStudyId, fallbackScena
 
   return (
     <ResultsView
+      key={initialCaseStudyId}
       caseStudies={caseStudies}
       initialCaseStudyId={initialCaseStudyId}
       initialScenarioIds={initialScenarioIds}
@@ -206,6 +207,7 @@ function Dashboard() {
   const [analyticsCaseStudy, setAnalyticsCaseStudy] = useState(null);
   const [analyticsScenarios, setAnalyticsScenarios] = useState([]);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const analyticsRequestRef = React.useRef(0);
 
   // Results viewer state (pre-populates scene from "View Results" click)
   const [resultsState, setResultsState] = useState({ caseStudyId: null, scenarioId: null });
@@ -226,7 +228,7 @@ function Dashboard() {
     setScenarioDirty,
   } = useScenarioStore();
 
-  const { heatmapView, setHeatmapView, fixedColorScale, setFixedColorScale, choroplethPixelThreshold, setChoroplethPixelThreshold, debugMode, setDebugMode } = useSettingsStore();
+  const { heatmapView, setHeatmapView, basemapStyle, setBasemapStyle, fixedColorScale, setFixedColorScale, choroplethPixelThreshold, setChoroplethPixelThreshold, debugMode, setDebugMode } = useSettingsStore();
 
   // Effect to sync activeSection with URL changes
   useEffect(() => {
@@ -258,7 +260,7 @@ function Dashboard() {
         fetchScenarios(matchedCs.id);
         // Propagate to model and analytics screens
         setAnalyticsCaseStudy(matchedCs);
-        setResultsState(prev => ({ ...prev, caseStudyId: matchedCs.id }));
+        setResultsState({ caseStudyId: matchedCs.id, scenarioId: null });
       } else if (matchedCs && section === 'scenarios' && !scenSlug) {
         // Same case study, but user navigated back to the root page – re-fetch
         // to pick up any server-side changes (e.g. newly created scenarios).
@@ -278,22 +280,22 @@ function Dashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname, caseStudies]);
 
-  // Effect 2: sync active scenario tab from URL (no dependency on caseStudies/selectedCaseStudy)
+  // Effect 2: sync active scenario tab from URL. Scenario names repeat across
+  // case studies, so resolution must be scoped to the case study in the URL.
   useEffect(() => {
     const parts = location.pathname.split('/').filter(Boolean);
     if (parts[0] !== 'scenarios') return;
+    const routeCaseStudy = caseStudies.find((cs) => toCsSlug(cs) === parts[1]);
     const scenSlug = parts[2];
     if (!scenSlug) { if (activeTab !== 'main') setActiveTab('main'); return; }
-    // Handle QMRA tab special URL segment
-    if (scenSlug === QMRA_SEGMENT) {
-      if (activeTab !== 'qmra-config') setActiveTab('qmra-config');
-      return;
-    }
+    if (!routeCaseStudy) return;
     const allS = [...scenarios, ...tempScenarios];
-    const matched = allS.find((s) => toScenSlug(s.name) === scenSlug);
+    const matched = allS.find(
+      (s) => s.case_study_id === routeCaseStudy.id && toScenSlug(s.name) === scenSlug
+    );
     if (matched && activeTab !== matched.id) setActiveTab(matched.id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname, scenarios, tempScenarios]);
+  }, [location.pathname, caseStudies, scenarios, tempScenarios]);
 
   // Unsaved-changes guard
   // pendingNavAction stored as { fn } to prevent React treating it as a state updater
@@ -392,7 +394,8 @@ function Dashboard() {
   };
 
   const fetchScenarios = async (caseStudyId = null) => {
-    await fetchScenariosFromStore(caseStudyId);
+    const applied = await fetchScenariosFromStore(caseStudyId);
+    if (!applied) return;
     // After fetch, check whether the baseline is missing a pathogen
     if (caseStudyId) {
       const loaded = useScenarioStore.getState().scenarios;
@@ -623,16 +626,20 @@ function Dashboard() {
   };
 
   const loadAnalyticsScenarios = async (caseStudyId) => {
-    if (!caseStudyId) { setAnalyticsScenarios([]); return; }
+    const requestId = ++analyticsRequestRef.current;
+    setAnalyticsScenarios([]);
+    if (!caseStudyId) { setAnalyticsLoading(false); return; }
     setAnalyticsLoading(true);
     try {
       const res = await axios.get(`/api/case-studies/${caseStudyId}/analytics`);
+      if (analyticsRequestRef.current !== requestId) return;
       setAnalyticsScenarios(res.data.scenarios || []);
     } catch (err) {
+      if (analyticsRequestRef.current !== requestId) return;
       console.error('Error loading analytics scenarios:', err);
       setAnalyticsScenarios([]);
     } finally {
-      setAnalyticsLoading(false);
+      if (analyticsRequestRef.current === requestId) setAnalyticsLoading(false);
     }
   };
 
@@ -855,6 +862,22 @@ function Dashboard() {
               <DashboardCard title="Map Display">
                 <div className="space-y-4">
                   <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
+                    <div className="flex-1">
+                      <label htmlFor="basemap-style" className="text-sm font-medium text-gray-800">Basemap style</label>
+                      <p className="text-xs text-gray-500 mt-0.5">Choose the OpenFreeMap vector style used throughout the application.</p>
+                    </div>
+                    <select
+                      id="basemap-style"
+                      value={basemapStyle}
+                      onChange={event => setBasemapStyle(event.target.value)}
+                      className="ml-6 w-36 px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-wpBlue"
+                    >
+                      {BASEMAP_STYLES.map(style => (
+                        <option key={style.id} value={style.id}>{style.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
                     <div>
                       <p className="text-sm font-medium text-gray-800">Continuous colour gradient</p>
                       <p className="text-xs text-gray-500 mt-0.5">
@@ -1060,6 +1083,7 @@ function Dashboard() {
                     if (cs) {
                       setSelectedCaseStudy(cs);
                       setAnalyticsCaseStudy(cs);
+                      setResultsState({ caseStudyId: id, scenarioId: null });
                     }
                   }}
                   onGoToAnalytics={(id) => {
@@ -1067,7 +1091,7 @@ function Dashboard() {
                     if (cs) {
                       setSelectedCaseStudy(cs);
                       setAnalyticsCaseStudy(cs);
-                      setResultsState(prev => ({ ...prev, caseStudyId: id }));
+                      setResultsState({ caseStudyId: id, scenarioId: null });
                       navigate(paths.analytics(cs));
                     } else {
                       navigate(paths.caseStudies());
@@ -1091,21 +1115,10 @@ function Dashboard() {
       
       case 'scenarios': {
 
-        if (activeTab === 'qmra-config') {
-          /* QMRA configuration tab */
-          return (
-            <div className="flex flex-col h-full p-6">
-              <div className="flex-1 overflow-auto">
-                <QmraCaseStudyPanel
-                  caseStudyId={selectedCaseStudy?.id}
-                  scenarios={analyticsScenarios.filter(s => s.has_hydrology)}
-                />
-              </div>
-            </div>
-          );
-        }
-
-        if (activeTab !== 'main') {
+        const activeScenario = [...scenarios, ...tempScenarios].find(
+          (scenario) => scenario.id === activeTab && scenario.case_study_id === selectedCaseStudy?.id
+        );
+        if (activeTab !== 'main' && activeScenario) {
           /* Detail view: full-height, no card wrapper, no scroll wrapper */
           const urlParts = location.pathname.split('/').filter(Boolean);
           // parts: [scenarios, csSlug, scenSlug, category, subcategory]
@@ -1116,6 +1129,7 @@ function Dashboard() {
             <div className="flex flex-col h-full overflow-hidden p-6">
               <div className="flex-1 overflow-hidden">
                 <ScenarioDetailView
+                  key={activeTab}
                   scenarioId={activeTab}
                   selectedCaseStudy={selectedCaseStudy}
                   caseStudySlug={caseStudySlug}
@@ -1147,6 +1161,13 @@ function Dashboard() {
                 <p><span className="font-semibold">Scenarios</span> represent a specific combination of population, sanitation, and livestock assumptions for a given year. Each scenario produces its own model output that can be compared in Analytics.</p>
                 <p><span className="font-semibold">Baseline</span> is the reference scenario that reflects current conditions. All other scenarios (e.g., SSP projections) are compared against it.</p>
                 <p><span className="font-semibold">Pathogen</span> must be set on every scenario before running the model. It determines which excretion and survival parameters are used (e.g., Rotavirus, Cryptosporidium).</p>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-2 border-t border-wpBrown-100">
+                  <span className="flex items-center gap-1.5"><ChartColumn size={14} className="text-wpGreen" /> Results available</span>
+                  <span className="flex items-center gap-1.5"><ChartColumn size={14} className="text-wpBlue" /> No results</span>
+                  <span className="flex items-center gap-1.5"><ChartColumn size={14} className="text-orange-500" /> Changed scenario (needs re-run)</span>
+                  <span className="flex items-center gap-1.5"><ChartColumn size={14} className="text-red-500" /> Error during model run</span>
+                  <span className="flex items-center gap-1.5"><span className="text-base leading-none font-bold text-wpGreen">*</span> Baseline scenario</span>
+                </div>
               </div>
             )}
                 {!selectedCaseStudy ? (
@@ -1213,7 +1234,7 @@ function Dashboard() {
             onCaseStudyChange={(cs) => {
               setAnalyticsCaseStudy(cs);
               setSelectedCaseStudy(cs);
-              setResultsState(prev => ({ ...prev, caseStudyId: cs.id }));
+              setResultsState({ caseStudyId: cs.id, scenarioId: null });
             }}
           />
         );
@@ -1301,9 +1322,11 @@ function Dashboard() {
                   }
                   const cs = caseStudies.find(c => c.id === e.target.value);
                   if (!cs) return;
+                  clearTempScenarios();
+                  setActiveTab('main');
                   setSelectedCaseStudy(cs);
                   setAnalyticsCaseStudy(cs);
-                  setResultsState(prev => ({ ...prev, caseStudyId: cs.id }));
+                  setResultsState({ caseStudyId: cs.id, scenarioId: null });
                   if (activeSection === 'scenarios') navigate(paths.scenarios(cs));
                   else if (activeSection === 'analytics') navigate(paths.analytics(cs));
                   else if (activeSection === 'summary')   navigate(paths.summary(cs));
@@ -1374,7 +1397,7 @@ function Dashboard() {
           onCreateScenario={selectedCaseStudy ? handleCreateNewScenario : null}
           caseStudySlug={selectedCaseStudy ? toCsSlug(selectedCaseStudy) : ''}
           onBeforeTabChange={safeNavigate}
-          showQmraTab={analyticsScenarios.some(s => s.has_hydrology)}
+          analyticsScenarios={analyticsScenarios}
         />}
 
         {/* Main Content */}

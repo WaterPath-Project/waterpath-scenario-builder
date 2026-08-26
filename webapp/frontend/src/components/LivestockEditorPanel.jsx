@@ -6,12 +6,13 @@ import AreaEditModeToggle from './AreaEditModeToggle';
 import { scaleProportional, scaleGroupProportional } from './areaEditUtils';
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle } from './Dialog';
 import useScenarioStore from '../store/scenarioStore';
-import { MapContainer, TileLayer, useMap, GeoJSON as LeafletGeoJSON } from 'react-leaflet';
+import { MapContainer, useMap, GeoJSON as LeafletGeoJSON } from 'react-leaflet';
 import GeoRasterLayer from 'georaster-layer-for-leaflet';
 import parseGeoraster from 'georaster';
 import proj4 from 'proj4';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import OpenFreeMapLayer from './OpenFreeMapLayer';
 
 // Required by georaster-layer-for-leaflet to reproject TIFs not in WGS84
 window.proj4 = proj4;
@@ -442,18 +443,9 @@ function AnimalHeadsMap({ scenarioId, animals }) {
         zoom={2}
         style={{ height: 380, width: '100%', borderRadius: 8 }}
       >
-        <TileLayer
-          url="https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png"
-          attribution='&copy; CARTO &copy; OSM'
-        />
+        <OpenFreeMapLayer />
         <HeadsRasterLayer key={selectedAnimal} tifUrl={tifUrl} />
         <AreaOverlay scenarioId={scenarioId} />
-        <TileLayer
-          url="https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png"
-          attribution=''
-          zIndex={650}
-          pane="overlayPane"
-        />
       </MapContainer>
     </div>
   );
@@ -544,18 +536,9 @@ export function PopulationMap({ scenarioId }) {
         zoom={2}
         style={{ height: 420, width: '100%', borderRadius: 8 }}
       >
-        <TileLayer
-          url="https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png"
-          attribution='&copy; CARTO &copy; OSM'
-        />
+        <OpenFreeMapLayer />
         <PopRasterLayer key="popurban" tifUrl={tifUrl} mode="population" />
         <AreaOverlay scenarioId={scenarioId} />
-        <TileLayer
-          url="https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png"
-          attribution=''
-          zIndex={650}
-          pane="overlayPane"
-        />
       </MapContainer>
       <p className="text-xs text-gray-400">Urban population per cell</p>
     </div>

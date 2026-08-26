@@ -21,6 +21,9 @@ const useSettingsStore = create(
        */
       heatmapView: true,
 
+      /** OpenFreeMap vector style used by every map in the app. */
+      basemapStyle: 'bright',
+
       /**
        * When true (default): clamp the colour-scale maximum at log₁₀ = 17 so maps from
        * different case studies are always visually comparable.
@@ -52,6 +55,7 @@ const useSettingsStore = create(
       // ── Actions ──────────────────────────────────────────────────────────────
 
       setHeatmapView:                (value) => set({ heatmapView: value }),
+      setBasemapStyle:               (value) => set({ basemapStyle: value }),
       setFixedColorScale:            (value) => set({ fixedColorScale: value }),
       setDynamicLogMax:              (value) => set({ dynamicLogMax: value }),
       setChoroplethPixelThreshold:   (value) => set({ choroplethPixelThreshold: value }),
@@ -62,6 +66,7 @@ const useSettingsStore = create(
       // Exclude runtime state (dynamicLogMax) from persistence
       partialize: (state) => ({
         heatmapView:               state.heatmapView,
+        basemapStyle:              state.basemapStyle,
         fixedColorScale:           state.fixedColorScale,
         choroplethPixelThreshold:  state.choroplethPixelThreshold,
         debugMode:                 state.debugMode,

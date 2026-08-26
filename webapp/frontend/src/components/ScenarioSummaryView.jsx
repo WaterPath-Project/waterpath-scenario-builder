@@ -229,7 +229,7 @@ export default function ScenarioSummaryView({ caseStudyId }) {
         </div>
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-2 text-xs font-semibold text-gray-500">
-            <span className="uppercase tracking-wide">SSP</span>
+            <span className="uppercase tracking-wide">Select SSP:</span>
             <select
               value={selectedSsp}
               onChange={(e) => setSelectedSsp(e.target.value)}
@@ -309,6 +309,7 @@ export default function ScenarioSummaryView({ caseStudyId }) {
               <tbody>
                 {groupedMetrics.map(group => {
                   const meta = DRIVER_META[group.driver] || null;
+                  const neutralDriver = group.driver === 'Hydrology' || group.driver === 'Exposure pathways';
                   return group.rows.map((metric, idx) => (
                     <tr key={metric.key} className="border-b border-gray-100 last:border-b-0">
                       {idx === 0 && (
@@ -319,7 +320,9 @@ export default function ScenarioSummaryView({ caseStudyId }) {
                           </div>
                         </td>
                       )}
-                      <td className="px-3 py-2 text-gray-700 font-inter">{metric.label}</td>
+                      <td className="px-3 py-2 text-gray-700 font-inter">
+                        {metric.label}{group.driver === 'Exposure pathways' ? ' (events/year)' : ''}
+                      </td>
                       {orderedScenarios.map(sc => {
                         const applicable = isMetricApplicableForScenario(metric.key, sc);
                         if (!applicable) {
@@ -330,7 +333,7 @@ export default function ScenarioSummaryView({ caseStudyId }) {
                         if (viewMode === 'values' || sc.id === baselineId) {
                           return (
                             <td key={`${metric.key}-${sc.id}`} className="px-3 py-2 text-center">
-                              <span className={`font-semibold font-inter ${sc.id === baselineId ? 'text-wpBlue' : 'text-gray-700'}`}>{valueStr}</span>
+                              <span className={`font-semibold font-inter ${!neutralDriver && sc.id === baselineId ? 'text-wpBlue' : 'text-gray-700'}`}>{valueStr}</span>
                             </td>
                           );
                         }
@@ -339,7 +342,7 @@ export default function ScenarioSummaryView({ caseStudyId }) {
                         const delta = computeMetricDelta(base, val, metric.delta_mode || 'relative_pct');
                         const direction = metric.color_direction || 'positive_good';
                         let deltaColor = 'text-gray-700';
-                        if (delta !== null && delta !== 0) {
+                        if (!neutralDriver && delta !== null && delta !== 0) {
                           if (direction === 'neutral')       deltaColor = 'text-wpBlue';
                           else if (direction === 'positive_good') deltaColor = delta > 0 ? 'text-green-700' : 'text-red-600';
                           else if (direction === 'negative_good') deltaColor = delta > 0 ? 'text-red-600'   : 'text-green-700';
