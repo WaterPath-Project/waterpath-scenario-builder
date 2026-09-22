@@ -171,6 +171,7 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
   const validSub = (catId, subId) => CATEGORIES.find((c) => c.id === catId && isCategoryEnabled(c.id))?.subcategories.find((s) => s.id === subId);
 
   const [isMetadataDialogOpen, setIsMetadataDialogOpen] = useState(false);
+  const [driverActionsTarget, setDriverActionsTarget] = useState(null);
 
   // ── Projection summary / assumptions ──────────────────────────────────────
   const [summaryData, setSummaryData] = useState(null); // { [schema]: { assumptions, ... } }
@@ -209,6 +210,29 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
 
   // Track which subcategories have unsaved changes
   const [dirtySubcategories, setDirtySubcategories] = useState({});
+  const [savedChangedSubcategories, setSavedChangedSubcategories] = useState({});
+  const savedChangesRequestRef = useRef(0);
+
+  const loadSavedChangedSubcategories = useCallback(async () => {
+    const requestId = ++savedChangesRequestRef.current;
+    if (!selectedCaseStudy?.id || !scenarioId || scenario?.isTemp) {
+      setSavedChangedSubcategories({});
+      return;
+    }
+
+    try {
+      const { data } = await axios.get(`/api/scenarios/${scenarioId}/driver-changes`);
+      if (savedChangesRequestRef.current !== requestId) return;
+      const changed = Object.fromEntries((data.changed_drivers || []).map((driverId) => [driverId, true]));
+      setSavedChangedSubcategories(changed);
+    } catch {
+      if (savedChangesRequestRef.current === requestId) setSavedChangedSubcategories({});
+    }
+  }, [scenarioId, scenario?.isTemp, selectedCaseStudy?.id]);
+
+  useEffect(() => {
+    loadSavedChangedSubcategories();
+  }, [loadSavedChangedSubcategories]);
 
   const handleSubcatDirtyChange = useCallback((subcategoryId, isDirty) => {
     setDirtySubcategories((prev) => {
@@ -222,7 +246,8 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
   // Called by panels only when a save actually reached the server (not on Reset).
   const handleSubcatSaved = useCallback(() => {
     setNeedsRerun(scenarioId, true);
-  }, [scenarioId, setNeedsRerun]);
+    loadSavedChangedSubcategories();
+  }, [scenarioId, setNeedsRerun, loadSavedChangedSubcategories]);
 
   // If the active subcategory is a livestock one but livestock is absent, reset to the first human sub
   useEffect(() => {
@@ -436,9 +461,29 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
           <div className="flex items-center space-x-3">
             <BarChart3 className={hasResults ? 'text-wpGreen' : 'text-wpBlue'} size={24} />
             <div>
-              <h2 className="text-xl font-semibold font-outfit text-wpBlue">
-                {scenario.name || 'Untitled Scenario'}{isBaseline && <span className="ml-1 text-wpGreen" title="Baseline scenario">*</span>}
-              </h2>
+              <div className="flex items-center gap-1.5">
+                <h2 className="text-xl font-semibold font-outfit text-wpBlue">
+                  {scenario.name || 'Untitled Scenario'}{isBaseline && <span className="ml-1 text-wpGreen" title="Baseline scenario">*</span>}
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => setIsMetadataDialogOpen(true)}
+                  aria-label="Edit scenario metadata"
+                  title="Edit scenario metadata"
+                  className="p-1.5 text-gray-400 hover:text-wpBlue hover:bg-wpBlue-50 rounded-md transition-colors"
+                >
+                  <Edit3 size={17} />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDeleteScenario}
+                  aria-label="Delete scenario"
+                  title="Delete scenario"
+                  className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                >
+                  <Trash2 size={17} />
+                </button>
+              </div>
               <p className="text-sm font-outfit text-wpBlue">
                 {scenario.isTemp ? (
                   <span className="text-xs text-wpBlue">Temporary scenario (not saved)</span>
@@ -473,12 +518,24 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
           </div>
 
           <div className="flex items-center gap-2 flex-wrap justify-end">
+            
+            {/* Execution log */}
+            { (hasResults || runStatus === 'error') && (
+            <button
+              onClick={handleFetchLog}
+              disabled={logLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 bg-gray-100 rounded-lg transition-colors disabled:opacity-40"
+            >
+              {logLoading ? <Loader2 size={15} className="animate-spin" /> : <ScrollText size={15} />}
+              <span>Show logs</span>
+            </button>
+            )}
             {/* Run model */}
             <button
               onClick={handleRunModel}
               disabled={!canRun || runLoading}
               title={canRun ? 'Run model for this scenario' : 'Scenario is not ready (missing files or pathogen)'}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-wpGreen text-wpBlue font-semibold rounded-lg hover:bg-wpGreen/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-wpBlue text-white font-semibold rounded-lg hover:bg-wpBlue/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {runLoading ? <Loader2 size={15} className="animate-spin" /> : <Play size={15} />}
               <span>Run model</span>
@@ -488,40 +545,13 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
             {hasResults && (
               <button
                 onClick={() => onViewResults?.({ id: scenarioId, ...scenarioInfo })}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-wpBlue text-white rounded-lg hover:bg-wpBlue/90 transition-colors"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-wpGreen text-wpBlue rounded-lg hover:bg-wpGreen/90 transition-colors font-semibold"
               >
                 <BarChart2 size={15} />
                 <span>View results</span>
               </button>
             )}
 
-            {/* Execution log */}
-            <button
-              onClick={handleFetchLog}
-              disabled={logLoading}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-40"
-            >
-              {logLoading ? <Loader2 size={15} className="animate-spin" /> : <ScrollText size={15} />}
-              <span>Execution log</span>
-            </button>
-
-            <div className="w-px h-5 bg-gray-200 mx-1" />
-
-            {/* Edit metadata */}
-            <button
-              onClick={() => setIsMetadataDialogOpen(true)}
-              className="flex items-center space-x-1 px-3 py-1 text-sm text-wpBlue-600 hover:text-wpBlue-700 hover:bg-wpBlue-50 rounded transition-colors"
-            >
-              <Edit3 size={16} />
-              <span>Edit metadata</span>
-            </button>
-            <button
-              onClick={handleDeleteScenario}
-              className="flex items-center space-x-1 px-3 py-1 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
-            >
-              <Trash2 size={16} />
-              <span>Delete</span>
-            </button>
           </div>
         </div>
 
@@ -613,8 +643,11 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
                 >
                   <img src={subcategory.icon} alt={subcategory.label} className="w-10 h-10" />
                   <span className="text-sm font-medium">{subcategory.label}</span>
-                  {dirtySubcategories[subcategory.id] && (
-                    <span className="ml-auto w-2 h-2 rounded-full bg-orange-400 flex-shrink-0" title="Unsaved changes" />
+                  {(dirtySubcategories[subcategory.id] || savedChangedSubcategories[subcategory.id]) && (
+                    <span
+                      className="ml-auto w-2 h-2 rounded-full bg-orange-400 flex-shrink-0"
+                      title={dirtySubcategories[subcategory.id] ? 'Unsaved changes' : 'Changed from original values'}
+                    />
                   )}
                 </button>
               );
@@ -624,10 +657,13 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
 
         {/* Right Content Area */}
         <div className="flex-1 bg-gray-50 p-6 overflow-y-auto">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">
-            {visibleDriverSubcategories.find(sub => sub.id === activeSubcategory)?.label
-              || currentCategory?.subcategories.find(sub => sub.id === activeSubcategory)?.label}
-          </h3>
+          <div className="flex min-h-[42px] items-center justify-between gap-4 mb-4">
+            <h3 className="text-lg font-semibold text-gray-900">
+              {visibleDriverSubcategories.find(sub => sub.id === activeSubcategory)?.label
+                || currentCategory?.subcategories.find(sub => sub.id === activeSubcategory)?.label}
+            </h3>
+            <div ref={setDriverActionsTarget} className="flex items-center gap-2" />
+          </div>
 
           {activeSubcategory === 'population' ? (
             <PopulationPanel
@@ -636,6 +672,7 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
               onDirtyChange={(d) => handleSubcatDirtyChange('population', d)}
               onSaved={handleSubcatSaved}
               assumptions={assumptionEntries}
+              actionsTarget={driverActionsTarget}
             />
           ) : activeSubcategory === 'sanitation' ? (
             <SanitationLadderPanel
@@ -643,6 +680,7 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
               scenario={scenario}
               onDirtyChange={(d) => handleSubcatDirtyChange('sanitation', d)}
               onSaved={handleSubcatSaved}
+              actionsTarget={driverActionsTarget}
             />
           ) : activeSubcategory === 'wastewater-treatment' ? (
             <WastewaterTreatmentPanel
@@ -650,6 +688,7 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
               scenario={scenario}
               onDirtyChange={(d) => handleSubcatDirtyChange('wastewater-treatment', d)}
               onSaved={handleSubcatSaved}
+              actionsTarget={driverActionsTarget}
             />
           ) : activeSubcategory === 'livestock-population' || activeSubcategory === 'manure-management' || activeSubcategory === 'production-systems' ? (
             <LivestockEditorPanel
@@ -658,12 +697,14 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
               subcategoryId={activeSubcategory}
               onDirtyChange={handleLivestockDirtyChange}
               onSaved={handleSubcatSaved}
+              actionsTarget={driverActionsTarget}
             />
           ) : activeSubcategory === 'exposure-pathways' ? (
             <ExposurePathwaysPanel
               key={scenario.id}
               scenario={scenario}
               caseStudyId={selectedCaseStudy?.id}
+              onSaved={handleSubcatSaved}
             />
           ) : (
             <div className="bg-white rounded-lg border border-gray-200 p-6">

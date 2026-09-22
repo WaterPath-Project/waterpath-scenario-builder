@@ -1,10 +1,11 @@
 ﻿import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import { RotateCcw, Save, ChevronDown, ChevronRight, ChevronUp, AlertTriangle, TableProperties, ChartBarStacked } from 'lucide-react';
+import { ChevronDown, ChevronRight, ChevronUp, AlertTriangle, TableProperties, ChartBarStacked } from 'lucide-react';
 import axios from 'axios';
 import DataGridView from './DataGridView';
 import AreaSelector from './AreaSelector';
 import AreaEditModeToggle from './AreaEditModeToggle';
 import { scaleGroupProportional } from './areaEditUtils';
+import DriverSaveActions from './DriverSaveActions';
 
 // ─── Color palette ────────────────────────────────────────────────────────────
 
@@ -424,7 +425,7 @@ let _persistedMode    = 'all';    // 'all' | 'individual'
 
 // ─── SanitationLadderInner ────────────────────────────────────────────────────
 
-const SanitationLadderInner = ({ scenario, initialRows, fieldnames, isFractionsMode = false, onDirtyChange, onSaved }) => {
+const SanitationLadderInner = ({ scenario, initialRows, fieldnames, isFractionsMode = false, onDirtyChange, onSaved, actionsTarget }) => {
   // Default to All (empty Set); restore persisted selection if available (clamp to row count).
   const [selectedIndices, setSelectedIndices] = useState(() => {
     if (_persistedIndices !== null) {
@@ -675,28 +676,15 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, isFractionsM
         </div>
       )}
 
-      <div className="flex items-center gap-2 flex-shrink-0">
-          {isDirty && (
-            <>
-              <span className="w-2 h-2 rounded-full bg-orange-400" title="Unsaved changes" />
-              <button
-                onClick={handleReset}
-                className="flex items-center gap-1 px-2 py-1 text-xs text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded transition-colors"
-              >
-                <RotateCcw size={12} /> Reset
-              </button>
-              <button
-                onClick={handleSave}
-                disabled={isSaving || !canSave}
-                title={!canSave ? 'Fix technology mix totals before saving' : ''}
-                className="flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                style={{ backgroundColor: canSave ? '#8DD0A4' : '#9ca3af', color: canSave ? '#0B4159' : 'white' }}
-              >
-                <Save size={12} /> {isSaving ? 'Saving…' : 'Save'}
-              </button>
-            </>
-          )}
-      </div>
+      <DriverSaveActions
+        target={actionsTarget}
+        isDirty={isDirty}
+        isSaving={isSaving}
+        onReset={handleReset}
+        onSave={handleSave}
+        canSave={canSave}
+        disabledTitle="Fix technology mix totals before saving"
+      />
 
       {/* ── Validation banner ─────────────────────────────────────────────── */}
       {isDirty && !canSave && (
@@ -1105,7 +1093,7 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, isFractionsM
 
 // ─── Outer wrapper ────────────────────────────────────────────────────────────
 
-const SanitationLadderPanel = ({ scenario, onDirtyChange, onSaved }) => {
+const SanitationLadderPanel = ({ scenario, onDirtyChange, onSaved, actionsTarget }) => {
   const [fetchState, setFetchState] = useState({ status: 'loading', rows: [], fieldnames: [], isFractionsMode: false });
 
   useEffect(() => {
@@ -1177,6 +1165,7 @@ const SanitationLadderPanel = ({ scenario, onDirtyChange, onSaved }) => {
       isFractionsMode={fetchState.isFractionsMode ?? false}
       onDirtyChange={onDirtyChange}
       onSaved={onSaved}
+      actionsTarget={actionsTarget}
     />
   );
 };

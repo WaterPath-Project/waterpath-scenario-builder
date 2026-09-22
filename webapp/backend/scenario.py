@@ -22,6 +22,7 @@ from fs_utils import (
     load_scenarios_from_metadata_csv,
     write_scenario_metadata_csv,
 )
+from driver_changes import get_changed_drivers, initialize_driver_reference
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -167,6 +168,7 @@ def create_scenario():
             'updated_at':   now,
         }
         add_scenario_to_metadata(case_study_path, scenario_entry)
+        initialize_driver_reference(case_study_path, scenario_id, folder_name)
 
         case_study['scenario_count'] = case_study.get('scenario_count', 0) + 1
 
@@ -481,6 +483,7 @@ def clone_scenario(scenario_id):
             'updated_at':  now,
         }
         add_scenario_to_metadata(cs_path, scenario_entry)
+        initialize_driver_reference(cs_path, new_id, dest_folder)
         target_case_study['scenario_count'] = target_case_study.get('scenario_count', 0) + 1
 
         new_scenario = {
@@ -753,6 +756,18 @@ def input_raster(scenario_id, filename):
         return jsonify({'error': str(e)}), 500
 
 
+def get_scenario_driver_changes(scenario_id):
+    """Return drivers whose saved inputs differ from this scenario's originals."""
+    from fs_utils import _locate_scenario
+    try:
+        cs, folder = _locate_scenario(scenario_id)
+        return jsonify({'changed_drivers': get_changed_drivers(cs['folder_path'], scenario_id, folder)}), 200
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 def register_routes(app, frontend_app):
     routes = [
         ('/api/scenarios',                                              ['GET'],    get_scenarios),
@@ -769,6 +784,7 @@ def register_routes(app, frontend_app):
         ('/api/scenarios/<scenario_id>/geodata',                        ['GET'],    get_geodata),
         ('/api/scenarios/<scenario_id>/treatment-fractions',            ['PUT'],    update_treatment_fractions),
         ('/api/scenarios/<scenario_id>/input-raster/<path:filename>',   ['GET'],    input_raster),
+        ('/api/scenarios/<scenario_id>/driver-changes',                 ['GET'],    get_scenario_driver_changes),
     ]
     for rule, methods, view in routes:
         app.add_url_rule(rule, endpoint=f'main_{view.__name__}_{methods[0]}', view_func=view, methods=methods)

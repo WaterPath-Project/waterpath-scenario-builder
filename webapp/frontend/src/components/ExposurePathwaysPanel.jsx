@@ -480,7 +480,7 @@ function countRunGroups(config, areaKeys) {
   return sigs.size;
 }
 
-export default function ExposurePathwaysPanel({ scenario, caseStudyId }) {
+export default function ExposurePathwaysPanel({ scenario, caseStudyId, onSaved }) {
   const scenarioId = scenario?.id;
   const [config, setConfig]                     = useState(DEFAULT_CONFIG);
   const [areas, setAreas]                       = useState([]);
@@ -535,6 +535,7 @@ export default function ExposurePathwaysPanel({ scenario, caseStudyId }) {
         const { data } = await axios.put(`/api/scenarios/${scenarioId}/qmra/config`, config);
         if (data?.run_group_count) setRunGroupCount(data.run_group_count);
         setSaveOk(true);
+        onSaved?.();
         setTimeout(() => setSaveOk(false), 1500);
       } catch (_) {}
     }, 600);

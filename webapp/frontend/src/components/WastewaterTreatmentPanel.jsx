@@ -1,11 +1,12 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { ComposableMap, Geographies, Geography, Marker } from 'react-simple-maps';
-import { Plus, Save, RotateCcw, Trash2, TableProperties, ChevronUp, ChevronDown, AlertTriangle, Copy } from 'lucide-react';
+import { Plus, Trash2, TableProperties, ChevronUp, ChevronDown, AlertTriangle, Copy } from 'lucide-react';
 import axios from 'axios';
 import { adjustSlider } from './SanitationPanel';
 import DataGridView from './DataGridView';
 import useConfigStore from '../store/configStore';
 import AreaSelector from './AreaSelector';
+import DriverSaveActions from './DriverSaveActions';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -234,7 +235,7 @@ const FEmittedReadout = ({ value, pathogenLabel }) => {
 
 // ─── Inner panel (receives already-loaded data) ───────────────────────────────
 
-const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions, initialFecalSludge = [], isoRows = [], isoFieldnames = [], onDirtyChange, onSaved }) => {
+const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions, initialFecalSludge = [], isoRows = [], isoFieldnames = [], onDirtyChange, onSaved, actionsTarget }) => {
   const { pathogens } = useConfigStore();
 
   // Resolve the active pathogen type ('virus' or 'protozoa') for the scenario
@@ -620,21 +621,15 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
           <span className={`ml-auto text-xs font-outfit px-1.5 py-0.5 rounded ${fractionSumOk ? 'text-gray-400' : 'text-red-600 bg-red-50 font-semibold'}`}>
             Σ = {(fractionSum * 100).toFixed(1)}%
           </span>
-          {isDirty && (
-            <>
-              <button onClick={handleReset} className="flex items-center gap-1 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 rounded transition-colors">
-                <RotateCcw size={12} /> Reset
-              </button>
-              <button
-                onClick={handleSave}
-                disabled={isSaving || !canSave}
-                title={!canSave ? 'Treatment fractions exceed 100% — reduce before saving' : ''}
-                className="flex items-center gap-1 px-2 py-1 text-xs text-white bg-wpGreen hover:bg-wpGreen-600 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <Save size={12} /> {isSaving ? 'Saving…' : 'Save'}
-              </button>
-            </>
-          )}
+          <DriverSaveActions
+            target={actionsTarget}
+            isDirty={isDirty}
+            isSaving={isSaving}
+            onReset={handleReset}
+            onSave={handleSave}
+            canSave={canSave}
+            disabledTitle="Treatment fractions exceed 100% — reduce before saving"
+          />
         </div>
         <div className="px-5 py-4 space-y-4">
           {areaLabels.length > 1 && (
@@ -794,20 +789,13 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
               >
                 <Plus size={12} /> Add WWTP
               </button>
-              {isDirty && (
-                <>
-                  <button onClick={handleReset} className="flex items-center gap-1 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 rounded transition-colors">
-                    <RotateCcw size={12} /> Reset
-                  </button>
-                  <button
-                    onClick={handleSave}
-                    disabled={isSaving}
-                    className="flex items-center gap-1 px-2 py-1 text-xs text-white bg-wpGreen hover:bg-wpGreen-600 rounded transition-colors disabled:opacity-50"
-                  >
-                    <Save size={12} /> {isSaving ? 'Saving…' : 'Save'}
-                  </button>
-                </>
-              )}
+              <DriverSaveActions
+                target={actionsTarget}
+                isDirty={isDirty}
+                isSaving={isSaving}
+                onReset={handleReset}
+                onSave={handleSave}
+              />
             </div>
           </div>
 
@@ -929,7 +917,7 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
 
 // ─── Outer wrapper: fetches data then renders inner panel ─────────────────────
 
-const WastewaterTreatmentPanel = ({ scenario, onDirtyChange, onSaved }) => {
+const WastewaterTreatmentPanel = ({ scenario, onDirtyChange, onSaved, actionsTarget }) => {
   const [state, setState] = useState({ status: 'loading' });
 
   useEffect(() => {
@@ -1047,6 +1035,7 @@ const WastewaterTreatmentPanel = ({ scenario, onDirtyChange, onSaved }) => {
       isoFieldnames={state.isoFieldnames ?? []}
       onDirtyChange={onDirtyChange}
       onSaved={onSaved}
+      actionsTarget={actionsTarget}
     />
   );
 };

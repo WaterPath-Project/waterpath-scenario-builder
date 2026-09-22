@@ -175,6 +175,10 @@ input[type="range"].split-slider::-moz-range-thumb {
   font-weight: 600;
 }
 
+.analytics-print-header {
+  display: none;
+}
+
 /* ── Print styles ───────────────────────────────────────────────────────────
    When the user triggers Print (or the print button), hide the app chrome so
    only the main content area is visible on the printed page.
@@ -211,5 +215,42 @@ input[type="range"].split-slider::-moz-range-thumb {
   /* Avoid breaking cards across pages */
   .rounded-lg.border {
     break-inside: avoid;
+  }
+
+  body.print-map-only * {
+    visibility: hidden !important;
+  }
+
+  body.print-map-only .print-map-target,
+  body.print-map-only .print-map-target * {
+    visibility: visible !important;
+  }
+
+  body.print-map-only .print-map-target {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    overflow: hidden !important;
+  }
+
+  body.print-map-only [data-map-export-controls] {
+    display: none !important;
+  }
+
+  body.print-analytics #app-header,
+  body.print-analytics #app-sidebar,
+  body.print-analytics .analytics-selector {
+    display: none !important;
+  }
+
+  body.print-analytics .analytics-print-header {
+    display: flex !important;
+  }
+
+  body.print-analytics .analytics-page {
+    height: auto !important;
+    overflow: visible !important;
+    padding: 0 !important;
   }
 }

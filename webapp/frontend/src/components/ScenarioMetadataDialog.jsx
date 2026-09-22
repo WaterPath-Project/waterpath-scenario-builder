@@ -123,7 +123,7 @@ const ScenarioMetadataDialog = ({ isOpen, onClose, scenario, onSave, requirePath
               type="text"
               value={formData.name}
               onChange={(e) => handleChange('name', e.target.value)}
-              className={`w-full p-2 border rounded-md focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent ${
+              className={`w-full p-2 border rounded-lg focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent ${
                 errors.name ? 'border-red-500' : 'border-gray-300'
               }`}
               placeholder="Enter scenario name"
@@ -141,7 +141,7 @@ const ScenarioMetadataDialog = ({ isOpen, onClose, scenario, onSave, requirePath
             <textarea
               value={formData.description}
               onChange={(e) => handleChange('description', e.target.value)}
-              className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent"
               rows={3}
               placeholder="Enter scenario description"
             />
@@ -165,7 +165,7 @@ const ScenarioMetadataDialog = ({ isOpen, onClose, scenario, onSave, requirePath
                 <select
                   value={formData.ssp}
                   onChange={(e) => handleChange('ssp', e.target.value)}
-                  className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent"
+                  className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent"
                 >
                   <option value="">Select SSP</option>
                   <option value="SSP1">SSP1 - Sustainability</option>
@@ -183,14 +183,14 @@ const ScenarioMetadataDialog = ({ isOpen, onClose, scenario, onSave, requirePath
                 {requirePathogen && <span className="text-red-500 ml-1">*</span>}
               </label>
               {locked ? (
-                <p className="p-2 text-sm text-gray-800 bg-gray-100 rounded-md border border-gray-200">
+                <p className="p-2 text-sm text-gray-800 bg-gray-100 rounded-lg border border-gray-200">
                   {pathogenOptions.find(o => o.value === formData.pathogen)?.label || formData.pathogen || '—'}
                 </p>
               ) : (
                 <select
                   value={formData.pathogen}
                   onChange={(e) => handleChange('pathogen', e.target.value)}
-                  className={`w-full p-2 border rounded-md focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent ${
+                  className={`w-full p-2 border rounded-lg focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent ${
                     errors.pathogen
                       ? 'border-red-500 ring-2 ring-red-300'
                       : requirePathogen && !formData.pathogen
@@ -214,12 +214,12 @@ const ScenarioMetadataDialog = ({ isOpen, onClose, scenario, onSave, requirePath
                 Year
               </label>
               {locked ? (
-                <p className="p-2 text-sm text-gray-800 bg-gray-100 rounded-md border border-gray-200">{formData.year || '—'}</p>
+                <p className="p-2 text-sm text-gray-800 bg-gray-100 rounded-lg border border-gray-200">{formData.year || '—'}</p>
               ) : (
                 <select
                   value={formData.year}
                   onChange={(e) => handleChange('year', e.target.value)}
-                  className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent"
+                  className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent"
                 >
                   <option value="">Select Year</option>
                   <option value="2025">2025</option>
@@ -239,7 +239,7 @@ const ScenarioMetadataDialog = ({ isOpen, onClose, scenario, onSave, requirePath
             <textarea
               value={formData.additional_notes}
               onChange={(e) => handleChange('additional_notes', e.target.value)}
-              className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent"
+              className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-wpBlue-500 focus:border-transparent"
               rows={2}
               placeholder="Additional notes or comments"
             />
@@ -285,7 +285,7 @@ const ScenarioMetadataDialog = ({ isOpen, onClose, scenario, onSave, requirePath
                 type="button"
                 onClick={() => { onClone(scenario); handleClose(); }}
                 disabled={isSaving}
-                className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-gray-600 border border-gray-300 hover:bg-gray-50 rounded-lg transition-colors disabled:opacity-50"
+                className="flex items-center gap-1.5 px-4 py-2 bg-wpBlue text-sm font-medium text-white hover:bg-wpBlue/70 rounded-lg transition-colors disabled:opacity-50"
               >
                 <Copy size={15} />
                 Clone scenario

@@ -175,7 +175,7 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
           key={`${label}-${isEditing}`}
           defaultValue={value || ''}
           onBlur={(e) => onChange(e.target.value)}
-          className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           rows={3}
         />
       );
@@ -189,7 +189,7 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
           type="date"
           defaultValue={dateValue}
           onBlur={(e) => onChange(e.target.value ? new Date(e.target.value).toISOString() : '')}
-          className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
         />
       );
     }
@@ -200,7 +200,7 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
         type={type}
         defaultValue={value || ''}
         onBlur={(e) => onChange(e.target.value)}
-        className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+        className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
       />
     );
   };
@@ -220,7 +220,7 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
               {!isEditing ? (
                 <button
                   onClick={() => setIsEditing(true)}
-                  className="flex items-center mr-4 mt-4 gap-1 px-3 py-1 bg-wpBlue text-white rounded-md hover:bg-wpBlue-200 transition-colors"
+                  className="flex items-center mr-4 mt-4 gap-1 px-3 py-1 bg-wpBlue text-white text-sm rounded-lg hover:bg-wpBlue-200 transition-colors font-semibold"
                 >
                   <Edit3 size={16} />
                   Edit
@@ -230,14 +230,14 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
                   <button
                     onClick={handleSave}
                     disabled={isSaving}
-                    className="flex items-center gap-1 px-3 py-1 bg-wpGreen text-wpBlue rounded-md hover:bg-wpGreen-200 transition-colors disabled:opacity-50"
+                    className="flex items-center gap-1 px-3 py-1 bg-wpGreen text-wpBlue rounded-lg hover:bg-wpGreen/80 transition-colors disabled:opacity-50 text-sm font-semibold"
                   >
                     <Save size={16} />
                     {isSaving ? 'Saving...' : 'Save'}
                   </button>
                   <button
                     onClick={handleCancel}
-                    className="flex items-center gap-1 px-3 py-1 bg-gray-500 text-white rounded-md hover:bg-gray-600 transition-colors"
+                    className="flex items-center gap-1 px-3 py-1 bg-wpGray text-wpBlue rounded-lg font-semibold hover:bg-wpGray/80 transition-colors text-sm"
                   >
                     <X size={16} />
                     Cancel
@@ -263,10 +263,9 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
 
         <div className="space-y-6">
           {/* Case Study Metadata */}
-          <div className="bg-wpGray-100 p-4 rounded-lg">
+          <div className="bg-wpBrown/40 p-4 rounded-lg">
             <div className="flex items-center gap-2 mb-3">
-              <FileText className="h-5 w-5 text-wpBlue-600" />
-              <h3 className="text-lg font-semibold text-wpBlue-900">Metadata</h3>
+              <h3 className="text-lg font-semibold text-wpBlue">Metadata</h3>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
               <div>
@@ -278,7 +277,7 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
               </div>
               <div>
                 <span className="font-medium text-wpBlue-900">Name:</span>
-                <p className="text-wpBlue-600 font-outfit text-xs mt-1 px-2 py-1 bg-wpBlue-100 rounded">
+                <p className="text-wpBlue-600 font-outfit text-xs mt-1 px-2 py-1 bg-wpBrown/60 rounded">
                   {displayData.name || slugify(displayData.title || '')}
                 </p>
                 {isEditing && (
@@ -320,7 +319,7 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
                 {isEditing && (
                   <button
                     onClick={() => addArrayItem('contributors', { title: '', role: 'author' })}
-                    className="p-1 text-blue-600 hover:bg-blue-100 rounded"
+                    className="p-1 text-wpBlue hover:bg-wpBlue-100 rounded-lg"
                   >
                     <Plus size={16} />
                   </button>
@@ -337,18 +336,18 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
                             placeholder="Name"
                             defaultValue={contributor.title || ''}
                             onBlur={(e) => handleArrayChange('contributors', index, { ...contributor, title: e.target.value })}
-                            className="flex-1 p-1 border border-gray-300 rounded text-sm"
+                            className="flex-1 p-1 border border-gray-300 rounded-lg text-sm"
                           />
                           <input
                             type="text"
                             placeholder="Role"
                             defaultValue={contributor.role || ''}
                             onBlur={(e) => handleArrayChange('contributors', index, { ...contributor, role: e.target.value })}
-                            className="w-24 p-1 border border-gray-300 rounded text-sm"
+                            className="w-24 p-1 border border-gray-300 rounded-lg text-sm"
                           />
                           <button
                             onClick={() => removeArrayItem('contributors', index)}
-                            className="p-1 text-red-600 hover:bg-red-100 rounded"
+                            className="p-1 text-red-600 hover:bg-red-100 rounded-lg"
                           >
                             <X size={14} />
                           </button>
@@ -366,14 +365,13 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
           </div>
 
           {/* Keywords */}
-          <div className="bg-wpBrown-200 p-4 rounded-lg">
+          <div className="bg-wpBrown/40 p-4 rounded-lg">
             <div className="flex items-center gap-2 mb-3">
-              <Tag className="h-5 w-5 text-wpBrown-900" />
-              <h3 className="text-lg font-semibold text-wpBrown-900">Keywords</h3>
+              <h3 className="text-lg font-semibold text-wpBlue">Keywords</h3>
               {isEditing && (
                 <button
                   onClick={() => addArrayItem('keywords', '')}
-                  className="p-1 text-wpBrown-900 hover:bg-wpBrown-100 rounded"
+                  className="p-1 text-wpBlue hover:bg-wpBlue/20 rounded-lg"
                 >
                   <Plus size={16} />
                 </button>
@@ -389,17 +387,17 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
                           type="text"
                           value={keyword}
                           onChange={(e) => handleArrayChange('keywords', index, e.target.value)}
-                          className="px-2 py-1 bg-wpBrown-100 text-wpBrown-800 rounded-full text-sm border border-wpBrown-300"
+                          className="px-2 py-1 bg-wpBrown-100 text-wpBrown-800 rounded-lg text-sm"
                         />
                         <button
                           onClick={() => removeArrayItem('keywords', index)}
-                          className="p-1 text-red-600 hover:bg-red-100 rounded-full"
+                          className="p-1 text-red-600 hover:bg-red-100 rounded-lg"
                         >
                           <X size={12} />
                         </button>
                       </>
                     ) : (
-                      <span className="px-2 py-1 bg-wpBrown-100 text-wpBrown-800 rounded-full text-sm">
+                      <span className="px-2 py-1 bg-wpBrown-100 text-wpBrown-800 rounded-lg text-sm">
                         {keyword}
                       </span>
                     )}
@@ -412,20 +410,19 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
           </div>
 
           {/* Sources and Licenses */}
-          <div className="bg-wpTeal-100 p-4 rounded-lg">
+          <div className="bg-wpBrown/40 p-4 rounded-lg">
             <div className="flex items-center gap-2 mb-3">
-              <ExternalLink className="h-5 w-5 text-wpTeal" />
-              <h3 className="text-lg font-semibold text-wpTeal">Sources & Licenses</h3>
+              <h3 className="text-lg font-semibold text-wpBlue">Sources & Licenses</h3>
             </div>
             
             {/* Sources */}
             <div className="mb-4">
               <div className="flex items-center gap-2 mb-2">
-                <span className="font-medium text-wpTeal-900">Sources:</span>
+                <span className="font-medium text-wpBlue">Sources:</span>
                 {isEditing && (
                   <button
                     onClick={() => addArrayItem('sources', { title: '', path: '' })}
-                    className="p-1 text-wpTeal hover:bg-wpTeal-800 rounded"
+                    className="p-1 text-wpBlue hover:bg-wpBlue/20 rounded"
                   >
                     <Plus size={16} />
                   </button>
@@ -442,14 +439,14 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
                             placeholder="Title"
                             defaultValue={source.title || ''}
                             onBlur={(e) => handleArrayChange('sources', index, { ...source, title: e.target.value })}
-                            className="flex-1 p-1 border border-wpTeal-900 rounded text-sm"
+                            className="flex-1 p-1 border border-wpBlue-900 rounded-lg text-sm"
                           />
                           <input
                             type="url"
                             placeholder="URL"
                             defaultValue={source.path || ''}
                             onBlur={(e) => handleArrayChange('sources', index, { ...source, path: e.target.value })}
-                            className="flex-1 p-1 border border-wpTeal-900 rounded text-sm"
+                            className="flex-1 p-1 border border-wpBlue-900 rounded-lg text-sm"
                           />
                           <button
                             onClick={() => removeArrayItem('sources', index)}
@@ -475,11 +472,11 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
             {/* Licenses */}
             <div>
               <div className="flex items-center gap-2 mb-2">
-                <span className="font-medium text-gray-700">Licenses:</span>
+                <span className="font-medium text-wpBlue">Licenses:</span>
                 {isEditing && (
                   <button
                     onClick={() => addArrayItem('licenses', { name: '', title: '', path: '' })}
-                    className="p-1 text-wpTeal hover:bg-wpTeal-200 rounded"
+                    className="p-1 text-wpBlue hover:bg-wpBlue/20 rounded"
                   >
                     <Plus size={16} />
                   </button>
@@ -496,7 +493,7 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
                             placeholder="Name"
                             value={license.name || ''}
                             onChange={(e) => handleArrayChange('licenses', index, { ...license, name: e.target.value })}
-                            className="flex-1 p-1 border border-gray-300 rounded text-sm"
+                            className="flex-1 p-1 border border-gray-300 rounded-lg text-sm"
                           />
                           <input
                             type="text"
@@ -510,11 +507,11 @@ const MetadataDialog = ({ isOpen, onClose, datapackage, onSave, onReload }) => {
                             placeholder="URL"
                             value={license.path || ''}
                             onChange={(e) => handleArrayChange('licenses', index, { ...license, path: e.target.value })}
-                            className="flex-1 p-1 border border-gray-300 rounded text-sm"
+                            className="flex-1 p-1 border border-gray-300 rounded-lg text-sm"
                           />
                           <button
                             onClick={() => removeArrayItem('licenses', index)}
-                            className="p-1 text-red-600 hover:bg-red-100 rounded"
+                            className="p-1 text-red-600 hover:bg-red-100 rounded-lg"
                           >
                             <X size={14} />
                           </button>

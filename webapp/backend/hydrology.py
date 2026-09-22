@@ -275,7 +275,7 @@ def hydrology_monthly_stats(scenario_id):
         if not tif_files:
             return jsonify({'error': 'No monthly TIFs found'}), 404
 
-        month_sums = {}
+        month_stats = {}
         for fname in tif_files:
             m = re.search(r'm(\d{1,2})\.tif$', fname)
             if not m:
@@ -287,16 +287,26 @@ def hydrology_monthly_stats(scenario_id):
             if nd is not None:
                 arr[arr == nd] = np.nan
             arr[arr <= 0] = np.nan
-            month_sums[month_int] = float(np.nansum(arr))
+            valid = arr[np.isfinite(arr)]
+            month_stats[month_int] = {
+                'sum': float(valid.sum()) if valid.size else 0.0,
+                'mean': float(valid.mean()) if valid.size else 0.0,
+            }
 
-        avg_sum = float(np.mean(list(month_sums.values()))) if month_sums else 0.0
+        avg_sum = float(np.mean([stats['sum'] for stats in month_stats.values()])) if month_stats else 0.0
+        avg_mean = float(np.mean([stats['mean'] for stats in month_stats.values()])) if month_stats else 0.0
 
         months_result = {}
-        for m_int, s in month_sums.items():
-            pct = (s - avg_sum) / avg_sum * 100.0 if avg_sum > 0 else 0.0
-            months_result[str(m_int)] = {'sum': s, 'pct_diff': round(pct, 1)}
+        for m_int, stats in month_stats.items():
+            mean = stats['mean']
+            pct = (mean - avg_mean) / avg_mean * 100.0 if avg_mean > 0 else 0.0
+            months_result[str(m_int)] = {
+                'sum': stats['sum'],
+                'mean': mean,
+                'pct_diff': round(pct, 1),
+            }
 
-        return jsonify({'avg_sum': avg_sum, 'months': months_result}), 200
+        return jsonify({'avg_sum': avg_sum, 'avg_mean': avg_mean, 'months': months_result}), 200
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 404
     except Exception as exc:

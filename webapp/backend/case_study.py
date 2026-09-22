@@ -23,6 +23,7 @@ from fs_utils import (
     find_geodata_shapefile,
     write_scenario_metadata_csv,
 )
+from driver_changes import initialize_case_study_driver_references
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -314,6 +315,8 @@ def _do_zip_upload(file):
                 scenario_count = 1
             else:
                 print(f"[WARN] No isodata.csv found in {file.filename}; baseline entry not created.")
+
+        initialize_case_study_driver_references(case_study_path)
 
         case_study = {
             "id":               case_study_id,

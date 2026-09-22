@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MapContainer, GeoJSON as LeafletGeoJSON, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import axios from 'axios';
-import { TrendingUp, Calendar, ChartColumn, Edit, Trash2 } from 'lucide-react';
+import { TrendingUp, Calendar, ChartColumn, Download, Edit, Printer, Trash2 } from 'lucide-react';
 import SSPScenarioDialog from './SSPScenarioDialog';
 import ConfirmDialog from './ConfirmDialog';
 import { paths } from '../routes';
@@ -195,7 +195,7 @@ function ScenarioFlowDiagram({ scenarios, emissionTotals, riskTotals, colorScale
           <line x1={FLOW_YEAR_X[yr]} y1={FLOW_HEADER_H - 8} x2={FLOW_YEAR_X[yr]} y2={svgH - 4}
             stroke="#cbd5e1" strokeWidth="1" strokeDasharray="4 4" />
           <text x={FLOW_YEAR_X[yr]} y={24} textAnchor="middle"
-            fontSize="12" fontWeight="700" fill="#475569"
+            fontSize="14" fontWeight="700" fill="#475569"
             fontFamily="Inter, sans-serif" letterSpacing="0.05em">
             {yr}
           </text>
@@ -204,7 +204,7 @@ function ScenarioFlowDiagram({ scenarios, emissionTotals, riskTotals, colorScale
 
       {/* ── Baseline row ── */}
       <text x={FLOW_LABEL_W - 6} y={baselineY + 4} textAnchor="end"
-        fontSize="11" fontWeight="700" fill={BASELINE_STOP_COLOR}
+        fontSize="14" fontWeight="700" fill={BASELINE_STOP_COLOR}
         fontFamily="Inter, sans-serif" letterSpacing="0.08em">
         BASELINE
       </text>
@@ -273,7 +273,7 @@ function ScenarioFlowDiagram({ scenarios, emissionTotals, riskTotals, colorScale
                 <circle cx={FLOW_YEAR_X[yr]} cy={sspY} r={11}
                   fill="white" stroke={SSP_FLOW_COLOR} strokeWidth="1.5" strokeDasharray="3 3" opacity="0.65" />
                 <text x={FLOW_YEAR_X[yr]} y={sspY + 4} textAnchor="middle"
-                  fontSize="13" fill={SSP_FLOW_COLOR} fontFamily="Inter, sans-serif" opacity="0.65">
+                  fontSize="14" fill={SSP_FLOW_COLOR} fontFamily="Inter, sans-serif" opacity="0.65">
                   +
                 </text>
               </g>
@@ -335,6 +335,7 @@ function ScenarioFlowDiagram({ scenarios, emissionTotals, riskTotals, colorScale
 // ─── CaseStudyPage ────────────────────────────────────────────────────────────
 export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAnalytics, onEdit, onDelete, initialScenarios = null }) {
   const navigate = useNavigate();
+  const pathwayDiagramRef = useRef(null);
 
   const [metadata,         setMetadata]         = useState(null);
   // Seed from prop when the parent already has analytics data for this case study.
@@ -551,44 +552,102 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
     ? new Date(metadata.created).toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' })
     : null;
 
+  const serializePathwayDiagram = useCallback(() => {
+    const svg = pathwayDiagramRef.current?.querySelector('svg');
+    if (!svg) return null;
+    const clone = svg.cloneNode(true);
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    clone.setAttribute('width', '1000');
+    clone.setAttribute('height', String(svg.viewBox.baseVal.height));
+    return new XMLSerializer().serializeToString(clone);
+  }, []);
+
+  const handleDownloadDiagram = useCallback(() => {
+    const markup = serializePathwayDiagram();
+    if (!markup) return;
+
+    const svgBlob = new Blob([markup], { type: 'image/svg+xml;charset=utf-8' });
+    const objectUrl = URL.createObjectURL(svgBlob);
+    const image = new Image();
+    image.onload = () => {
+      const scale = 2;
+      const canvas = document.createElement('canvas');
+      canvas.width = 1000 * scale;
+      canvas.height = image.height * scale;
+      const context = canvas.getContext('2d');
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = 'scenario-pathways.png';
+        link.click();
+        URL.revokeObjectURL(link.href);
+      }, 'image/png');
+      URL.revokeObjectURL(objectUrl);
+    };
+    image.src = objectUrl;
+  }, [serializePathwayDiagram]);
+
+  const handlePrintDiagram = useCallback(() => {
+    const markup = serializePathwayDiagram();
+    if (!markup) return;
+    const printBlob = new Blob([
+      `<!doctype html><html><head><title>Scenario Pathways</title><style>@page{size:landscape;margin:12mm}body{margin:0;display:flex;align-items:center;min-height:100vh}svg{width:100%;height:auto}</style></head><body>${markup}</body></html>`,
+    ], { type: 'text/html' });
+    const objectUrl = URL.createObjectURL(printBlob);
+    const printWindow = window.open(objectUrl, '_blank');
+    if (!printWindow) {
+      URL.revokeObjectURL(objectUrl);
+      return;
+    }
+    printWindow.addEventListener('load', () => {
+      printWindow.print();
+      URL.revokeObjectURL(objectUrl);
+    }, { once: true });
+  }, [serializePathwayDiagram]);
+
   return (
-    <div className="flex flex-col min-h-full bg-wpGray-200">
+    <div className="flex flex-col min-h-full bg-wpGray-200 font-inter text-sm">
 
       {/* ── Header bar ── */}
       <div className="flex items-center gap-3 px-6 py-3 bg-wpWhite-100 border-b border-gray-200 sticky top-0 z-10">
-        <h1 className="text-base font-semibold text-wpBlue font-inter flex-1 truncate">{title}</h1>
-        {onEdit && (
-          <button
-            onClick={() => onEdit(csId)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-600 border border-gray-300 rounded-lg bg-wpWhite-100 hover:bg-gray-100 transition-colors"
-          >
-            <Edit size={13} /> Metadata
-          </button>
-        )}
-        {onDelete && (
-          <button
-            onClick={() => onDelete({ id: csId, name: title })}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-red-500 rounded-lg hover:bg-red-600 transition-colors"
-          >
-            <Trash2 size={13} /> Delete
-          </button>
-        )}
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <h1 className="truncate text-base font-semibold text-wpBlue px-8 font-inter">{title}</h1>
+          {onEdit && (
+            <button
+              type="button"
+              onClick={() => onEdit(csId)}
+              aria-label="Edit case study metadata"
+              title="Edit case study metadata"
+              className="flex-shrink-0 p-1.5 text-gray-400 hover:text-wpBlue hover:bg-wpBlue/10 rounded-lg transition-colors"
+            >
+              <Edit size={17} />
+            </button>
+          )}
+          {onDelete && (
+            <button
+              type="button"
+              onClick={() => onDelete({ id: csId, name: title })}
+              aria-label="Delete case study"
+              title="Delete case study"
+              className="flex-shrink-0 p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+            >
+              <Trash2 size={17} />
+            </button>
+          )}
+        </div>
         {csSlug && (
           <button
             onClick={() => { onGoToScenarios?.(csId); navigate(paths.scenarios({ folder_name: csSlug })); }}
-            className="flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-wpGreen text-wpBlue hover:bg-wpGreen-600 transition-colors flex-shrink-0 my-1 mx-1 rounded-lg"
+            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-wpGreen rounded-lg hover:bg-wpGreen/80 transition-colors flex-shrink-0"
           >
-            <ChartColumn size={13} /> Scenarios
+            <ChartColumn size={15} /> Scenarios
           </button>
         )}
-        {onGoToAnalytics && (
-          <button
-            onClick={() => { onGoToAnalytics(csId); if (csSlug) navigate(paths.analytics({ folder_name: csSlug })); }}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold text-white bg-wpBlue rounded-lg hover:bg-wpBlue-600 transition-colors"
-          >
-            <TrendingUp size={13} /> Results
-          </button>
-        )}
+        
       </div>
 
       {/* ── Hero: map + metadata ── */}
@@ -630,18 +689,13 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
           {/* Badges */}
           <div className="flex flex-wrap items-center gap-2">
             {baseline?.pathogen && (
-              <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-wpBlue text-white">
+              <span className="px-2.5 py-1 rounded-lg text-sm font-bold bg-wpBlue text-white">
                 {baseline.pathogen.charAt(0).toUpperCase() + baseline.pathogen.slice(1)}
               </span>
             )}
-            {version && (
-              <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-wpGray-100 text-wpBlue border border-gray-200">
-                v{version}
-              </span>
-            )}
             {created && (
-              <span className="flex items-center gap-1 text-xs text-gray-400">
-                <Calendar size={12} /> {created}
+              <span className="flex items-center gap-1 text-sm text-wpBlue bg-wpGray-100 px-2.5 py-1 rounded-lg font-semibold">
+                <Calendar size={14} /> {created}
               </span>
             )}
           </div>
@@ -649,11 +703,11 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
           {/* Stats */}
           <div className="flex gap-8 mt-auto">
             <div>
-              <p className="text-xs text-gray-400 uppercase tracking-wide mb-0.5">Scenarios</p>
+              <p className="text-sm text-wpBlue-900 uppercase tracking-wide mb-0.5">Scenarios</p>
               <p className="text-2xl font-bold text-wpBlue">{scenarioCount}</p>
             </div>
             <div>
-              <p className="text-xs text-gray-400 uppercase tracking-wide mb-0.5">Completed runs</p>
+              <p className="text-sm text-wpBlue-900 uppercase tracking-wide mb-0.5">Completed runs</p>
               <p className="text-2xl font-bold text-wpBlue">{runCount}</p>
             </div>
           </div>
@@ -665,23 +719,45 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
 
         {/* Section header + legend */}
         <div className="flex items-start justify-between gap-4">
-          <div>
+          <div className="flex-1">
             <p className="text-md font-semibold text-wpBlue uppercase tracking-wide">Scenario Pathways</p>
-            <p className="text-xs text-gray-400 mt-0.5">
+            <p className="text-sm text-gray-400 mt-0.5">
               Click <span className="font-semibold">+</span> to add a scenario · Click <span className="font-semibold">▶</span> to run an unexecuted scenario
             </p>
           </div>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button
+              type="button"
+              onClick={handlePrintDiagram}
+              disabled={scenarios.length === 0}
+              className="p-2 text-gray-500 hover:text-wpBlue disabled:opacity-40 transition-colors"
+              title="Print Scenario Pathways"
+              aria-label="Print Scenario Pathways"
+            >
+              <Printer size={17} />
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadDiagram}
+              disabled={scenarios.length === 0}
+              className="p-2 text-gray-500 hover:text-wpBlue disabled:opacity-40 transition-colors"
+              title="Download Scenario Pathways as PNG"
+              aria-label="Download Scenario Pathways as PNG"
+            >
+              <Download size={17} />
+            </button>
+          </div>
           {/* Risk / emission color legend */}
-          <div className="flex items-center gap-2 text-xs text-gray-500 flex-shrink-0 pt-0.5">
-            <span className="text-[10px] text-gray-400">lower</span>
+          <div className="flex items-center gap-2 text-sm text-gray-500 flex-shrink-0 pt-0.5">
+            <span className="text-sm text-gray-400">lower</span>
             <div className="w-44 h-2.5 rounded" style={{ background: legendGradient }} />
-            <span className="text-[10px] text-gray-400">higher</span>
-            <span className="text-[10px] text-gray-300 ml-1">{useRisk ? 'total risk' : 'total emissions'}</span>
+            <span className="text-sm text-gray-400">higher</span>
+            <span className="text-sm text-gray-300 ml-1">{useRisk ? 'total risk' : 'total emissions'}</span>
           </div>
         </div>
 
         {/* Flow SVG card */}
-        <div className="bg-white rounded-xl border border-gray-200 px-4 py-4">
+        <div ref={pathwayDiagramRef} className="bg-white rounded-xl border border-gray-200 px-4 py-4">
           {scenarios.length > 0 ? (
             <ScenarioFlowDiagram
               scenarios={scenarios}

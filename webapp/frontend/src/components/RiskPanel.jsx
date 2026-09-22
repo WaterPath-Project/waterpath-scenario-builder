@@ -18,6 +18,7 @@ import OpenDrainIcon    from '../../assets/icons/open_drains.svg';
 import PlayingIcon      from '../../assets/icons/playing.svg';
 import WashingIcon      from '../../assets/icons/washing.svg';
 import OpenFreeMapLayer from './OpenFreeMapLayer';
+import { printMapContainer } from './printUtils';
 
 window.proj4 = proj4;
 
@@ -278,11 +279,11 @@ function RiskMapControls() {
   const btnCls = 'w-7 h-7 flex items-center justify-center rounded bg-white shadow border border-gray-200 text-gray-600 hover:text-gray-900 hover:bg-gray-50 transition-colors';
 
   return (
-    <div style={{ position: 'absolute', top: 10, right: 10, zIndex: 1000, display: 'flex', flexDirection: 'column', gap: 5 }}>
+    <div data-map-export-controls style={{ position: 'absolute', top: 10, right: 10, zIndex: 1000, display: 'flex', flexDirection: 'column', gap: 5 }}>
       <button className={btnCls} onClick={() => map.zoomIn()} title="Zoom in"><Plus size={13} /></button>
       <button className={btnCls} onClick={() => map.zoomOut()} title="Zoom out"><Minus size={13} /></button>
       <button className={btnCls} onClick={handleFullscreen} title={isFs ? 'Exit fullscreen' : 'Fullscreen'}>{isFs ? <Minimize2 size={13} /> : <Maximize2 size={13} />}</button>
-      <button className={btnCls} onClick={() => window.print()} title="Print"><Printer size={13} /></button>
+      <button className={btnCls} onClick={() => printMapContainer(map, 'Risk map')} title="Print"><Printer size={13} /></button>
     </div>
   );
 }

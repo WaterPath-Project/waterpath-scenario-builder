@@ -27,14 +27,14 @@ const ConfirmDialog = ({
 
   const confirmButtonClass = confirmVariant === "danger" 
     ? "bg-red-500 hover:bg-red-600 disabled:bg-red-300" 
-    : "bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300";
+    : confirmVariant === "primary" ? "bg-wpBlue hover:bg-wpBlue/80 disabled:bg-wpBlue/30 rounded" : "bg-gray-500 hover:bg-gray-600 disabled:bg-gray-300 rounded-lg";
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="max-w-md">
         <DialogHeader>
           <div className="flex items-center gap-3">
-            <AlertTriangle className={`h-6 w-6 ${confirmVariant === 'danger' ? 'text-red-500' : 'text-blue-500'}`} />
+            <AlertTriangle className={`h-6 w-6 ${confirmVariant === 'danger' ? 'text-red-500' : (confirmVariant === 'primary' ? 'text-wpBlue' : 'text-gray-500')}`} />
             <DialogTitle className="text-lg font-semibold text-gray-900">
               {title}
             </DialogTitle>
@@ -48,14 +48,14 @@ const ConfirmDialog = ({
           <button
             onClick={handleCancel}
             disabled={isLoading}
-            className="px-4 py-2 text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-md transition-colors disabled:opacity-50"
+            className="px-4 py-2 text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors disabled:opacity-50"
           >
             {cancelText}
           </button>
           <button
             onClick={handleConfirm}
             disabled={isLoading}
-            className={`px-4 py-2 text-white rounded-md transition-colors disabled:opacity-50 ${confirmButtonClass}`}
+            className={`px-4 py-2 text-white rounded-lg transition-colors disabled:opacity-50 ${confirmButtonClass}`}
           >
             {isLoading ? 'Processing...' : confirmText}
           </button>

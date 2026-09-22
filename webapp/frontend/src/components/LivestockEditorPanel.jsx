@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
-import { RotateCcw, Save, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
+import { Loader2, ChevronDown, ChevronUp, TableProperties } from 'lucide-react';
 import AreaSelector from './AreaSelector';
 import AreaEditModeToggle from './AreaEditModeToggle';
+import DataGridView from './DataGridView';
+import DriverSaveActions from './DriverSaveActions';
 import { scaleProportional, scaleGroupProportional } from './areaEditUtils';
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle } from './Dialog';
 import useScenarioStore from '../store/scenarioStore';
@@ -234,28 +236,21 @@ function StepperInput({ value, onChange, step = 1, min, max, percent = false, de
 function RawDataView({ rows, fieldnames }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="border-t border-gray-200">
-      <button type="button" onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-2 px-4 py-2 bg-gray-50 text-xs text-gray-500 hover:bg-gray-100">
-        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-        Raw data ({rows.length} rows × {fieldnames.length} columns)
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-5 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <TableProperties size={16} className="text-gray-400" />
+          <span>Raw data ({fieldnames.length} columns, {rows.length} row{rows.length !== 1 ? 's' : ''})</span>
+        </div>
+        {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
       </button>
       {open && (
-        <div className="overflow-auto max-h-64">
-          <table className="w-full text-sm font-mono">
-            <thead className="bg-gray-50 sticky top-0">
-              <tr>{fieldnames.map((f) => (
-                <th key={f} className="px-2 py-1 text-left text-sm text-gray-500 whitespace-nowrap border-b border-gray-200">{f}</th>
-              ))}</tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {rows.map((row, i) => (
-                <tr key={i}>{fieldnames.map((f) => (
-                  <td key={f} className="px-2 py-1 whitespace-nowrap text-sm text-gray-600">{asText(row[f])}</td>
-                ))}</tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="border-t border-gray-100 p-2 overflow-auto max-h-96">
+          <DataGridView data={rows} fieldnames={fieldnames} readOnly />
         </div>
       )}
     </div>
@@ -265,7 +260,7 @@ function RawDataView({ rows, fieldnames }) {
 // ---------------------------------------------------------------------------
 // SaveResetBar
 // ---------------------------------------------------------------------------
-function SaveResetBar({ title, hint, isDirty, isSaving, onSave, onReset, validationErrors = [], rightSlot }) {
+function SaveResetBar({ title, hint, isDirty, isSaving, onSave, onReset, validationErrors = [], rightSlot, actionsTarget }) {
   return (
     <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2 flex-wrap">
       <p className="text-sm font-semibold text-wpBlue">{title}</p>
@@ -275,18 +270,15 @@ function SaveResetBar({ title, hint, isDirty, isSaving, onSave, onReset, validat
       )}
       <div className="ml-auto flex items-center gap-2">
         {rightSlot}
-        {isDirty && (
-          <>
-            <button onClick={onReset}
-              className="flex items-center gap-1 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 rounded">
-              <RotateCcw size={12} /> Reset
-            </button>
-            <button onClick={onSave} disabled={isSaving || validationErrors.length > 0}
-              className="flex items-center gap-1 px-2 py-1 text-xs text-white bg-wpGreen hover:bg-wpGreen-600 rounded disabled:opacity-50">
-              <Save size={12} /> {isSaving ? 'Saving…' : 'Save'}
-            </button>
-          </>
-        )}
+        <DriverSaveActions
+          target={actionsTarget}
+          isDirty={isDirty}
+          isSaving={isSaving}
+          onReset={onReset}
+          onSave={onSave}
+          canSave={validationErrors.length === 0}
+          disabledTitle="Fix validation errors before saving"
+        />
       </div>
     </div>
   );
@@ -576,7 +568,7 @@ function HeadsSummaryDialogContent({ activeScenario }) {
 // LivestockPopulationEditor
 // Rows = animals, columns = isodata fields (frac_young, prev_*, excr_*, mass_*, manure_per_mass)
 // ---------------------------------------------------------------------------
-function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved, onHeadCountsChange }) {
+function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved, onHeadCountsChange, actionsTarget }) {
   const clonePopulationRows = useCallback((arr) => (
     (arr || []).map((r) => ({
       ...r,
@@ -831,7 +823,8 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved, onHeadCou
   }
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+    <div className="space-y-4">
+      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
       <SaveResetBar
         title="Livestock Population"
         hint="Source: Vermeulen 2017 / GloWPa isodata"
@@ -840,6 +833,7 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved, onHeadCou
         onSave={handleSave}
         onReset={handleReset}
         validationErrors={validationErrors}
+        actionsTarget={actionsTarget}
         rightSlot={
           <>
             {headsSummary.status === 'done' && (headsSummary.areas?.length || 0) > 0 && (
@@ -941,6 +935,7 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved, onHeadCou
           </tbody>
         </table>
       </div>
+      </div>
       <RawDataView rows={rows} fieldnames={rawFieldnames} />
     </div>
   );
@@ -951,7 +946,7 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved, onHeadCou
 // CSV column format: SYSTEM_animal  (last _ token = animal)
 // Layout: columns = animals, rows = management systems, area name = group header
 // ---------------------------------------------------------------------------
-function ManureManagementEditor({ scenario, onDirtyChange, onSaved, animalsWithHeads }) {
+function ManureManagementEditor({ scenario, onDirtyChange, onSaved, animalsWithHeads, actionsTarget }) {
   const filename = 'manure_management.csv';
   const [status, setStatus] = useState('loading');
   const [error, setError] = useState('');
@@ -1143,7 +1138,8 @@ function ManureManagementEditor({ scenario, onDirtyChange, onSaved, animalsWithH
   if (status === 'error') return <ErrorState label={filename} error={error} />;
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+    <div className="space-y-4">
+      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
       <SaveResetBar
         title="Animal shares per system"
         hint="Shares per system per animal (%)"
@@ -1152,6 +1148,7 @@ function ManureManagementEditor({ scenario, onDirtyChange, onSaved, animalsWithH
         onSave={handleSave}
         onReset={handleReset}
         validationErrors={validationErrors}
+        actionsTarget={actionsTarget}
         rightSlot={rows.length > 1 ? <AreaEditModeToggle mode={editMode} onChange={handleModeChange} /> : null}
       />
       {rows.length > 1 && editMode === 'individual' && (
@@ -1250,6 +1247,7 @@ function ManureManagementEditor({ scenario, onDirtyChange, onSaved, animalsWithH
           </tbody>
         </table>
       </div>
+      </div>
       <RawDataView rows={rows} fieldnames={rawFieldnames} />
     </div>
   );
@@ -1260,7 +1258,7 @@ function ManureManagementEditor({ scenario, onDirtyChange, onSaved, animalsWithH
 // Used for manure_fractions.csv (fgi/fge/foi/foe)
 // Layout: columns = animals, rows = suffix types, area name = group header
 // ---------------------------------------------------------------------------
-function GroupedCsvEditor({ scenario, filename, title, hint, suffixLabels, checkSum, onDirtyChange, onSaved, animalsWithHeads }) {
+function GroupedCsvEditor({ scenario, filename, title, hint, suffixLabels, checkSum, onDirtyChange, onSaved, animalsWithHeads, actionsTarget }) {
   const [status, setStatus] = useState('loading');
   const [error, setError] = useState('');
   const [rows, setRows] = useState([]);
@@ -1439,7 +1437,8 @@ function GroupedCsvEditor({ scenario, filename, title, hint, suffixLabels, check
   if (status === 'error') return <ErrorState label={filename} error={error} />;
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+    <div className="space-y-4">
+      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
       <SaveResetBar
         title={title}
         hint={hint}
@@ -1448,6 +1447,7 @@ function GroupedCsvEditor({ scenario, filename, title, hint, suffixLabels, check
         onSave={handleSave}
         onReset={handleReset}
         validationErrors={validationErrors}
+        actionsTarget={actionsTarget}
         rightSlot={rows.length > 1 ? <AreaEditModeToggle mode={editMode} onChange={handleModeChange} /> : null}
       />
       {rows.length > 1 && editMode === 'individual' && (
@@ -1546,6 +1546,7 @@ function GroupedCsvEditor({ scenario, filename, title, hint, suffixLabels, check
           </tbody>
         </table>
       </div>
+      </div>
       <RawDataView rows={rows} fieldnames={rawFieldnames} />
     </div>
   );
@@ -1601,7 +1602,7 @@ function AnimalIntensiveSlider({ animal, intensiveFrac, onChange }) {
 // ---------------------------------------------------------------------------
 // ProductionSystemsEditor — slider-based intensive/extensive split editor
 // ---------------------------------------------------------------------------
-function ProductionSystemsEditor({ scenario, onDirtyChange, onSaved, animalsWithHeads }) {
+function ProductionSystemsEditor({ scenario, onDirtyChange, onSaved, animalsWithHeads, actionsTarget }) {
   const filename = 'production_systems.csv';
   const [status, setStatus] = useState('loading');
   const [error, setError] = useState('');
@@ -1759,7 +1760,8 @@ function ProductionSystemsEditor({ scenario, onDirtyChange, onSaved, animalsWith
   const visibleIndices = selectedIndices.size === 0 ? rows.map((_, i) => i) : [...selectedIndices];
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+    <div className="space-y-4">
+      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
       <SaveResetBar
         title="Production Systems"
         hint="Share of animals in intensive vs. extensive systems"
@@ -1768,6 +1770,7 @@ function ProductionSystemsEditor({ scenario, onDirtyChange, onSaved, animalsWith
         onSave={handleSave}
         onReset={handleReset}
         validationErrors={validationErrors}
+        actionsTarget={actionsTarget}
         rightSlot={rows.length > 1 ? <AreaEditModeToggle mode={editMode} onChange={handleModeChange} /> : null}
       />
       {rows.length > 1 && editMode === 'individual' && (
@@ -1835,6 +1838,7 @@ function ProductionSystemsEditor({ scenario, onDirtyChange, onSaved, animalsWith
           })
         )}
       </div>
+      </div>
       <RawDataView rows={rows} fieldnames={rawFieldnames} />
     </div>
   );
@@ -1843,7 +1847,7 @@ function ProductionSystemsEditor({ scenario, onDirtyChange, onSaved, animalsWith
 // ---------------------------------------------------------------------------
 // LivestockEditorPanel — main export
 // ---------------------------------------------------------------------------
-export default function LivestockEditorPanel({ scenario, subcategoryId, onDirtyChange, onSaved }) {
+export default function LivestockEditorPanel({ scenario, subcategoryId, onDirtyChange, onSaved, actionsTarget }) {
   // Fetch once to know which animals have heads > 0 (used by manure / production-systems tabs).
   const [animalsWithHeads, setAnimalsWithHeads] = useState(null);
   // Live head counts forwarded from LivestockPopulationEditor (includes unsaved edits).
@@ -1879,6 +1883,7 @@ export default function LivestockEditorPanel({ scenario, subcategoryId, onDirtyC
         onDirtyChange={onDirtyChange}
         onSaved={onSaved}
         onHeadCountsChange={setHeadCounts}
+        actionsTarget={actionsTarget}
       />
     );
   }
@@ -1891,6 +1896,7 @@ export default function LivestockEditorPanel({ scenario, subcategoryId, onDirtyC
           onDirtyChange={onDirtyChange}
           onSaved={onSaved}
           animalsWithHeads={effectiveAnimalsWithHeads}
+          actionsTarget={actionsTarget}
         />
         <GroupedCsvEditor
           scenario={scenario}
@@ -1902,6 +1908,7 @@ export default function LivestockEditorPanel({ scenario, subcategoryId, onDirtyC
           onDirtyChange={onDirtyChange}
           onSaved={onSaved}
           animalsWithHeads={effectiveAnimalsWithHeads}
+          actionsTarget={actionsTarget}
         />
       </div>
     );
@@ -1914,6 +1921,7 @@ export default function LivestockEditorPanel({ scenario, subcategoryId, onDirtyC
         onDirtyChange={onDirtyChange}
         onSaved={onSaved}
         animalsWithHeads={effectiveAnimalsWithHeads}
+        actionsTarget={actionsTarget}
       />
     );
   }

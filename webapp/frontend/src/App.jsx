@@ -36,7 +36,10 @@ import {
   Trash2,
   BarChart2,
   ChevronRight,
+  PanelLeftClose,
+  PanelLeftOpen,
   Table2,
+  CircleHelp,
 } from 'lucide-react';
 import MetadataDialog from './components/MetadataDialog';
 import ConfirmDialog from './components/ConfirmDialog';
@@ -194,6 +197,7 @@ function Dashboard() {
   const [caseStudyToDelete, setCaseStudyToDelete] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
+  const [caseStudySidebarCollapsed, setCaseStudySidebarCollapsed] = useState(false);
   const [isSSPDialogOpen, setIsSSPDialogOpen] = useState(false);
   const [pendingSSPData, setPendingSSPData] = useState(null);
 
@@ -685,33 +689,44 @@ function Dashboard() {
       id: 'scenarios', 
       label: 'Scenarios', 
       icon: ChartColumn, 
-      description: 'Manage and run scenarios' 
+      description: 'Manage and run scenarios',
+      color: 'wpBlue' 
     },
     { 
       id: 'analytics', 
       label: 'Results', 
       icon: TrendingUp, 
-      description: 'Explore model results' 
+      description: 'Explore model results' ,
+      color: 'wpGreen'
     },
     {
       id: 'summary',
       label: 'Summary',
       icon: Table2,
-      description: 'Summary of scenario changes'
+      description: 'Summary of scenario changes',
+      color: 'wpTeal' 
     },
     {
       id: 'narratives',
       label: 'Narratives',
       icon: FileText,
-      description: 'Build and export scenario reports'
+      description: 'Build and export scenario reports',
+      color: 'wpCypress'
     },
     { 
       id: 'settings', 
       label: 'Settings', 
       icon: Settings, 
-      description: 'System configuration' 
+      description: 'System configuration'
     }
   ];
+
+  const navigationActiveClasses = {
+    scenarios: 'border-wpBlue text-wpBlue',
+    analytics: 'border-wpGreen text-wpGreen-800',
+    summary: 'border-wpTeal text-wpTeal',
+    narratives: 'border-wpCypress text-wpCypress',
+  };
 
   const renderContent = () => {
     switch (activeSection) {
@@ -982,13 +997,13 @@ function Dashboard() {
         const detailCsId = matchedCs?.id || '';
 
         return (
-          <div className="flex h-full overflow-hidden">
+          <div className="relative flex h-full overflow-hidden">
 
             {/* ── Left panel: case study list (1/4) ── */}
-            <div className="w-1/4 flex-shrink-0 border-r border-gray-200 overflow-y-auto bg-white flex flex-col">
+            {!caseStudySidebarCollapsed && <div className="w-1/4 flex-shrink-0 border-r border-gray-200 overflow-y-auto bg-white flex flex-col font-inter text-sm">
               {/* Toolbar */}
               <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-100 flex-shrink-0">
-                <label className={`cursor-pointer text-white px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-xs font-medium transition-colors ${
+                <label className={`cursor-pointer text-white px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-sm font-medium transition-colors ${
                   uploadStatus === 'uploading'
                     ? 'bg-wpBlue/60 pointer-events-none'
                     : 'bg-wpBlue hover:bg-wpBlue-300'
@@ -1010,14 +1025,23 @@ function Dashboard() {
                 </label>
                 <button
                   onClick={reloadCaseStudies}
-                  className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-xs font-medium transition-colors"
+                  className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-sm font-medium transition-colors"
                 >
                   <RefreshCw size={14} /> Refresh
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCaseStudySidebarCollapsed(true)}
+                  className="ml-auto p-1.5 text-gray-500 hover:text-wpBlue hover:bg-gray-100 rounded-md transition-colors"
+                  title="Collapse case studies"
+                  aria-label="Collapse case studies sidebar"
+                >
+                  <PanelLeftClose size={17} />
                 </button>
               </div>
               {/* Upload status banner */}
               {uploadStatus && typeof uploadStatus === 'object' && (
-                <div className={`flex items-center gap-2 px-4 py-2 text-xs flex-shrink-0 ${
+                <div className={`flex items-center gap-2 px-4 py-2 text-sm flex-shrink-0 ${
                   uploadStatus.ok
                     ? 'bg-green-50 text-green-700 border-b border-green-100'
                     : 'bg-red-50 text-red-700 border-b border-red-100'
@@ -1057,10 +1081,10 @@ function Dashboard() {
                       <div className="flex-1 min-w-0">
                         <p className={`text-sm font-medium truncate ${isSelected ? 'text-wpBlue' : 'text-gray-800'}`}>{caseStudy.name}</p>
                         {caseStudy.folder_name && (
-                          <p className="text-xs text-gray-400 truncate">data/{caseStudy.folder_name}</p>
+                          <p className="text-sm text-gray-400 truncate">data/{caseStudy.folder_name}</p>
                         )}
                       </div>
-                      <div className="flex-shrink-0 text-xs text-gray-400 group-hover:text-wpBlue flex items-center gap-0.5">
+                      <div className="flex-shrink-0 text-sm text-gray-400 group-hover:text-wpBlue flex items-center gap-0.5">
                         <span>preview</span>
                         <ChevronRight size={12} />
                       </div>
@@ -1068,7 +1092,19 @@ function Dashboard() {
                   );
                 })}
               </div>
-            </div>
+            </div>}
+
+            {caseStudySidebarCollapsed && (
+              <button
+                type="button"
+                onClick={() => setCaseStudySidebarCollapsed(false)}
+                className="absolute left-3 top-3 z-20 p-2 bg-white border border-gray-200 text-gray-500 hover:text-wpBlue rounded-md shadow-sm transition-colors"
+                title="Show case studies"
+                aria-label="Show case studies sidebar"
+              >
+                <PanelLeftOpen size={18} />
+              </button>
+            )}
 
             {/* ── Right panel: case study detail (3/4) ── */}
             <div className="flex-1 overflow-y-auto">
@@ -1157,7 +1193,7 @@ function Dashboard() {
             <div className="flex-1 overflow-auto">
               <DashboardCard>
             {selectedCaseStudy && (
-              <div className="mb-12 px-4 py-3 rounded-xl bg-wpBrown/40 text-xs text-wpBlue space-y-1.5">
+              <div className="mb-12 px-4 py-3 rounded-xl bg-wpBrown/40 text-sm text-wpBlue space-y-1.5">
                 <p><span className="font-semibold">Scenarios</span> represent a specific combination of population, sanitation, and livestock assumptions for a given year. Each scenario produces its own model output that can be compared in Analytics.</p>
                 <p><span className="font-semibold">Baseline</span> is the reference scenario that reflects current conditions. All other scenarios (e.g., SSP projections) are compared against it.</p>
                 <p><span className="font-semibold">Pathogen</span> must be set on every scenario before running the model. It determines which excretion and survival parameters are used (e.g., Rotavirus, Cryptosporidium).</p>
@@ -1246,9 +1282,9 @@ function Dashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-wpGray-100 flex flex-col">
+    <div className="h-screen overflow-hidden bg-wpGray-100 flex flex-col">
       {/* Combined header block */}
-      <div className="flex flex-row bg-wpWhite-100 shadow-sm flex-shrink-0 border-b border-gray-200">
+      <div id="app-header" className="flex flex-row bg-wpWhite-100 shadow-sm flex-shrink-0 border-b border-gray-200">
 
         {/* Logo column — spans both rows */}
         <div id="app-logo" className="flex flex-row items-center px-5 py-2 border-r border-gray-200 flex-shrink-0 gap-3 w-72">
@@ -1307,6 +1343,36 @@ function Dashboard() {
                 </button>
               );
             })}
+            <div className="group relative">
+              <button
+                type="button"
+                aria-haspopup="true"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium text-gray-500 hover:text-wpBlue hover:bg-gray-100 transition-colors duration-200"
+              >
+                <CircleHelp size={13} />
+                Help
+              </button>
+              <div className="invisible absolute right-0 top-full z-50 w-44 translate-y-1 pt-1 opacity-0 transition-all group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100">
+                <div className="rounded-lg border border-gray-200 bg-white p-2 shadow-lg">
+                  <a
+                    href="https://waterpath-toolkit.org/contact/"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center justify-between gap-2 rounded-md px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-100 hover:text-wpBlue"
+                  >
+                    Contact us <ExternalLink size={12} />
+                  </a>
+                  <a
+                    href="https://github.com/WaterPath-Project/waterpath-scenario-builder/issues"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center justify-between gap-2 rounded-md px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-100 hover:text-wpBlue"
+                  >
+                    Submit an issue <ExternalLink size={12} />
+                  </a>
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* Primary tab strip: workflow tabs + last-updated + refresh */}
@@ -1358,7 +1424,7 @@ function Dashboard() {
                     onClick={() => handleNavigation(item.id)}
                     className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors duration-200 whitespace-nowrap ${
                       isActive
-                        ? 'border-wpBlue text-wpBlue'
+                        ? navigationActiveClasses[item.id]
                         : 'border-transparent text-gray-500 hover:text-wpBlue hover:border-gray-300'
                     }`}
                   >

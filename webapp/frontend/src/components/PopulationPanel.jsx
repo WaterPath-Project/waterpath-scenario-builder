@@ -1,9 +1,10 @@
 ﻿import React, { useMemo, useState, useCallback, useRef, useEffect } from 'react';
-import { Users, ChevronDown, ChevronUp, TableProperties, Info, Plus, Minus, RotateCcw, Save } from 'lucide-react';
+import { Users, ChevronDown, ChevronUp, TableProperties, Info, Plus, Minus } from 'lucide-react';
 import axios from 'axios';
 import DataGridView from './DataGridView';
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle } from './Dialog';
 import { PopulationMap } from './LivestockEditorPanel';
+import DriverSaveActions from './DriverSaveActions';
 
 // helpers
 const fmt = (n, decimals = 0) =>
@@ -90,7 +91,7 @@ const Stepper = ({ value, onChange, step, min, max, format }) => {
 const RAW_COLS = ['subarea', 'population', 'fraction_urban_pop', 'fraction_pop_under5', 'hdi'];
 
 // ─── Inner panel: receives already-parsed rows, manages editing state ────────
-const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange, onSaved, assumptions }) => {
+const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange, onSaved, assumptions, actionsTarget }) => {
   const [showFullData, setShowFullData] = useState(false);
   const [showAssumptions, setShowAssumptions] = useState(true);
 
@@ -301,27 +302,13 @@ const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange
               <PopulationMap scenarioId={scenario.id} />
             </DialogContent>
           </Dialog>
-          {isDirty && (
-            <>
-              <button
-                onClick={handleReset}
-                className="flex items-center gap-1 px-2 py-1 text-xs text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded transition-colors"
-                title="Reset to last saved values"
-              >
-                <RotateCcw size={12} />
-                Reset
-              </button>
-              <button
-                onClick={handleSave}
-                disabled={isSaving}
-                className="flex items-center gap-1 px-2 py-1 text-xs text-white bg-wpGreen hover:bg-wpGreen-600 rounded transition-colors disabled:opacity-50"
-                title="Save to isodata.csv"
-              >
-                <Save size={12} />
-                {isSaving ? 'Saving…' : 'Save'}
-              </button>
-            </>
-          )}
+          <DriverSaveActions
+            target={actionsTarget}
+            isDirty={isDirty}
+            isSaving={isSaving}
+            onReset={handleReset}
+            onSave={handleSave}
+          />
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -423,7 +410,7 @@ const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange
 // ─── Outer wrapper: fetches isodata from backend, then renders inner panel ───
 // Note: this component is always mounted with key={scenario.id} by its parent,
 // so it reliably remounts (and re-fetches) when the selected scenario changes.
-const PopulationPanel = ({ scenario, onDirtyChange, onSaved, assumptions }) => {
+const PopulationPanel = ({ scenario, onDirtyChange, onSaved, assumptions, actionsTarget }) => {
   const [fetchState, setFetchState] = useState({ status: 'loading', rows: [], fieldnames: [] });
 
   useEffect(() => {
@@ -490,6 +477,7 @@ const PopulationPanel = ({ scenario, onDirtyChange, onSaved, assumptions }) => {
       onDirtyChange={onDirtyChange}
       onSaved={onSaved}
       assumptions={assumptions}
+      actionsTarget={actionsTarget}
     />
   );
 };

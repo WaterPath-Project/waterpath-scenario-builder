@@ -1,6 +1,29 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { BarChart3, Edit, Save, X, Trash2, Play, CheckCircle, AlertTriangle, Clock } from 'lucide-react';
+import { BarChart3, Edit, Save, X, Trash2 } from 'lucide-react';
 import useScenarioStore from '../store/scenarioStore';
+
+const SCENARIO_STATUS = {
+  error: {
+    label: 'Error during model run',
+    iconClass: 'text-red-500',
+    badgeClass: 'bg-red-500',
+  },
+  needsRerun: {
+    label: 'Changed scenario (needs re-run)',
+    iconClass: 'text-orange-500',
+    badgeClass: 'bg-orange-500',
+  },
+  results: {
+    label: 'Results available',
+    iconClass: 'text-wpGreen',
+    badgeClass: 'bg-wpGreen',
+  },
+  noResults: {
+    label: 'No results',
+    iconClass: 'text-wpBlue',
+    badgeClass: 'bg-wpBlue',
+  },
+};
 
 const ScenarioCard = ({ scenario, selectedCaseStudy, analyticsInfo }) => {
   const [isEditing, setIsEditing] = useState(scenario.isEditing || false);
@@ -16,8 +39,18 @@ const ScenarioCard = ({ scenario, selectedCaseStudy, analyticsInfo }) => {
     saveScenario, 
     deleteScenario,
     setEditingScenario,
-    setActiveTab 
+    setActiveTab,
+    needsRerunIds,
+    scenarioRunStatuses,
   } = useScenarioStore();
+
+  const status = scenarioRunStatuses?.[scenario.id] === 'error'
+    ? SCENARIO_STATUS.error
+    : needsRerunIds?.[scenario.id]
+      ? SCENARIO_STATUS.needsRerun
+      : analyticsInfo?.has_outputs
+        ? SCENARIO_STATUS.results
+        : SCENARIO_STATUS.noResults;
 
   useEffect(() => {
     if (isEditing && nameInputRef.current) {
@@ -175,7 +208,7 @@ const ScenarioCard = ({ scenario, selectedCaseStudy, analyticsInfo }) => {
               </button>
             </>
           ) : (
-            <BarChart3 className="text-wpBlue-400" size={24} />
+            <BarChart3 className={status.iconClass} size={24} />
           )}
         </div>
       </div>
@@ -193,22 +226,22 @@ const ScenarioCard = ({ scenario, selectedCaseStudy, analyticsInfo }) => {
         {(scenario.ssp || scenario.year || scenario.pathogen || isBaseline) && (
           <div className="flex flex-wrap items-center gap-2 text-sm text-gray-500">
             {isBaseline && (
-              <span className="bg-gray-100 text-gray-700 px-2 py-1 rounded text-xs font-medium">
+              <span className="bg-wpBlue/10 text-wpBlue  px-2 py-1 rounded text-xs font-semibold">
                 Baseline
               </span>
             )}
             {scenario.ssp && (
-              <span className="bg-wpBlue/10 text-wpBlue-900 px-2 py-1 rounded text-xs">
+              <span className="bg-wpBlue/10 text-wpBlue font-semibold px-2 py-1 rounded text-xs">
                 {scenario.ssp}
               </span>
             )}
             {scenario.pathogen && (
-              <span className="bg-wpTeal/20 text-wpTeal px-2 py-1 rounded text-xs">
+              <span className="bg-wpBlue/10 text-wpBlue font-semibold px-2 py-1 rounded text-xs">
                 {scenario.pathogen.charAt(0).toUpperCase()  + scenario.pathogen.slice(1)}
               </span>
             )}
             {scenario.year && (
-              <span className="bg-wpCypress/30 text-wpCypress px-2 py-1 rounded text-xs">
+              <span className="bg-wpBlue/10 text-wpBlue font-semibold px-2 py-1 rounded text-xs">
                 {scenario.year}
               </span>
             )}
@@ -217,14 +250,12 @@ const ScenarioCard = ({ scenario, selectedCaseStudy, analyticsInfo }) => {
         
         
         <div className="flex gap-2 justify-between items-center pt-4">
-        {/* Model run synopsis — only for persisted scenarios with analytics data */}
-        {analyticsInfo && !scenario.isTemp && (
+        {/* Model run synopsis — only for persisted scenarios */}
+        {!scenario.isTemp && (
           <div className="flex items-start gap-2 flex-wrap mt-1">
-            {analyticsInfo.has_outputs && (
-              <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-wpGreen/20 text-wpBlue font-medium">
-                <CheckCircle size={11} /> Results available
-              </span>
-            ) }
+            <span className={`text-xs px-2 py-0.5 rounded-full text-white font-medium ${status.badgeClass}`}>
+              {status.label}
+            </span>
           </div>
         )}
 
