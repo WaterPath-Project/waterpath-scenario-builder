@@ -1422,7 +1422,7 @@ function Dashboard() {
                   <button
                     key={item.id}
                     onClick={() => handleNavigation(item.id)}
-                    className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors duration-200 whitespace-nowrap ${
+                    className={`flex items-center gap-2 px-4 py-3 font-outfit text-md font-medium border-b-2 transition-colors duration-200 whitespace-nowrap ${
                       isActive
                         ? navigationActiveClasses[item.id]
                         : 'border-transparent text-gray-500 hover:text-wpBlue hover:border-gray-300'
@@ -1467,7 +1467,11 @@ function Dashboard() {
         />}
 
         {/* Main Content */}
-        <div className={(activeSection === 'scenarios' || activeSection === 'analytics' || activeSection === 'case-studies' || activeSection === 'summary') ? 'flex-1 overflow-hidden' : 'flex-1 p-6'}>
+        <div className={activeSection === 'narratives'
+          ? 'flex-1 min-h-0 overflow-y-auto'
+          : (activeSection === 'scenarios' || activeSection === 'analytics' || activeSection === 'case-studies' || activeSection === 'summary')
+            ? 'flex-1 overflow-hidden'
+            : 'flex-1 p-6'}>
           {renderContent()}
         </div>
       </div>

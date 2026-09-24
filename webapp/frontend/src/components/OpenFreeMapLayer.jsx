@@ -20,6 +20,20 @@ export const BASEMAP_STYLES = [
 const STYLE_BASE_URL = 'https://tiles.openfreemap.org/styles';
 const CONTEXT_PANE = 'basemapContextPane';
 
+function loadBasemapStyle(styleId, signal) {
+  if (styleId === 'minimal') {
+    return Promise.resolve(createMinimalStyle());
+  }
+
+  return fetch(`${STYLE_BASE_URL}/${styleId}`, { signal }).then(response => {
+    if (!response.ok) {
+      throw new Error(`Unable to load basemap style (${response.status})`);
+    }
+
+    return response.json();
+  });
+}
+
 function contextStyle(style) {
   return {
     ...style,
@@ -36,15 +50,10 @@ export default function OpenFreeMapLayer() {
   const basemapStyle = useSettingsStore(state => state.basemapStyle);
 
   useEffect(() => {
-    const isMinimal = basemapStyle === 'minimal';
-    const styleUrl = isMinimal ? null : `${STYLE_BASE_URL}/${basemapStyle}`;
     const controller = new AbortController();
-    const baseLayer = maplibreGL({
-      style: isMinimal ? createMinimalStyle() : styleUrl,
-      attribution: '&copy; <a href="https://openfreemap.org/">OpenFreeMap</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-    }).addTo(map);
 
     let active = true;
+    let baseLayer = null;
     let foregroundLayer = null;
     if (!map.getPane(CONTEXT_PANE)) {
       const pane = map.createPane(CONTEXT_PANE);
@@ -52,17 +61,14 @@ export default function OpenFreeMapLayer() {
       pane.style.pointerEvents = 'none';
     }
 
-    const stylePromise = isMinimal
-      ? Promise.resolve(createMinimalStyle())
-      : fetch(styleUrl, { signal: controller.signal })
-      .then(response => {
-        if (!response.ok) throw new Error(`Unable to load basemap style (${response.status})`);
-        return response.json();
-      });
-
-    stylePromise
+    loadBasemapStyle(basemapStyle, controller.signal)
       .then(style => {
         if (!active) return;
+        baseLayer = maplibreGL({
+          style,
+          attribution: '&copy; <a href="https://openfreemap.org/">OpenFreeMap</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+        }).addTo(map);
+
         foregroundLayer = maplibreGL({
           style: contextStyle(style),
           pane: CONTEXT_PANE,
@@ -78,7 +84,7 @@ export default function OpenFreeMapLayer() {
       active = false;
       controller.abort();
       if (foregroundLayer) map.removeLayer(foregroundLayer);
-      map.removeLayer(baseLayer);
+      if (baseLayer) map.removeLayer(baseLayer);
     };
   }, [map, basemapStyle]);
 

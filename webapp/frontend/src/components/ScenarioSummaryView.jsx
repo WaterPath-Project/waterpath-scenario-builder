@@ -299,14 +299,14 @@ export default function ScenarioSummaryView({ caseStudyId }) {
       {/* Header */}
       <div className="px-6 py-4 border-b border-gray-200 bg-white flex-shrink-0 flex items-center justify-between gap-4">
         <div>
-          <h2 className="text-base font-semibold text-wpBlue font-inter">Summary of changes</h2>
+          <h2 className="text-md font-semibold text-wpBlue font-outfit">Summary of changes</h2>
         
         </div>
         <div className="flex items-center gap-3">
           <button
             type="button"
             onClick={handlePrintTable}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-wpGreen px-3 py-1.5 text-sm font-semibold text-wpBlue shadow-sm hover:bg-gray-50"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-wpTeal px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-gray-50"
             title="Print summary table"
           >
             <Printer size={14} /> Print table
@@ -432,12 +432,12 @@ export default function ScenarioSummaryView({ caseStudyId }) {
                   ));
                 })}
               </tbody>
-              <tbody className="summary-outcomes border-t-4 border-wpGreen bg-wpGreen/5">
+              <tbody className="summary-outcomes border-t-4 border-wpTeal bg-wpTeal/5">
                 {outcomeRows.map((outcome, index) => (
-                  <tr key={outcome.key} className="border-b border-wpGreen/10 last:border-b-0">
+                  <tr key={outcome.key} className="border-b border-wpTeal/10 last:border-b-0">
                     {index === 0 && (
-                      <td rowSpan={outcomeRows.length} className="border-r border-wpGreen/20 bg-wpGreen px-3 py-3 align-top text-white">
-                        <div className="pt-1 text-sm text-wpBlue font-bold uppercase tracking-wide">Model results</div>
+                      <td rowSpan={outcomeRows.length} className="border-r border-wpTeal/20 bg-wpTeal px-3 py-3 align-top text-white">
+                        <div className="pt-1 text-sm text-white font-bold uppercase tracking-wide">Model results</div>
                       </td>
                     )}
                     <td className="px-3 py-2 font-semibold text-wpBlue font-inter">{outcome.label}</td>

@@ -17,7 +17,7 @@ module.exports = {
       colors: {
         wpGray: {
           100: "#EEF2F5",
-          200: "#F6F9FB",
+          200: "#DCE3EA",
           300: "#F1F4FA",
         },
         wpBlue: {

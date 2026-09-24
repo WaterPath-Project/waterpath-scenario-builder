@@ -1,5 +1,5 @@
 import React from 'react';
-import { Grid3x3, X, ChartColumn, Plus } from 'lucide-react';
+import { ChevronRight, ChevronDown, X, ChartColumn, Plus } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import useScenarioStore from '../store/scenarioStore';
 import { paths } from '../routes';
@@ -65,7 +65,7 @@ const ScenarioTabBar = ({ onCreateScenario, caseStudySlug = '', onBeforeTabChang
   };
 
   return (
-    <div className="flex-shrink-0 bg-white border-b border-gray-200 px-2">
+    <div className="flex-shrink-0 bg-wpGray-100 border-b border-gray-200 px-2">
       <div className="flex items-stretch overflow-x-auto">
         {tabs.map((tab) => (
           <React.Fragment key={tab.id}>
@@ -73,8 +73,8 @@ const ScenarioTabBar = ({ onCreateScenario, caseStudySlug = '', onBeforeTabChang
               onClick={() => handleTabClick(tab.id)}
               onDoubleClick={() => handleTabDoubleClick(tab.id, tab.type)}
               className={`
-                ${tab.id=='main' && 'rounded-tl-xl'} flex font-outfit items-center gap-2 px-4 py-2 text-sm font-semibold 
-                whitespace-nowrap flex-shrink-0 relative group mr-2 bg-wpGray-200
+                ${tab.id=='main' ? 'bg-wpWhite-100' : ''} flex font-outfit items-center gap-2 px-4 py-2 text-md font-semibold 
+                whitespace-nowrap flex-shrink-0 relative group mr-2 bg-wpGray-100 hover:bg-white/50
                 ${activeTab === tab.id 
                   ? 'bg-wpWhite-100 text-wpBlue-600 -mb-px' 
                   : 'text-wpBlue hover:bg-gray-100 hover:text-gray-800'
@@ -84,10 +84,20 @@ const ScenarioTabBar = ({ onCreateScenario, caseStudySlug = '', onBeforeTabChang
             >
               {/* Tab icon */}
               {tab.type === 'main' ? (
-                <Grid3x3 size={16} />
+                <h2 className="text-base font-semibold text-wpBlue font-outfit py-3 w-[120px] flex items-center justify-between">
+                  <span>Scenarios</span>
+                  {activeTab === tab.id ? (
+                    <ChevronDown size={16} />
+                  ) : (
+                    <>
+                      <ChevronRight size={16} className="group-hover:hidden" />
+                      <ChevronDown size={16} className="hidden group-hover:block" />
+                    </>
+                  )}
+                </h2>
               ) : (
                 <ChartColumn
-                  size={16}
+                  size={20}
                   className={activeTab === tab.id
                     ? 'text-wpBlue-600'
                     : scenarioRunStatuses?.[tab.id] === 'error'
@@ -102,7 +112,7 @@ const ScenarioTabBar = ({ onCreateScenario, caseStudySlug = '', onBeforeTabChang
               
               {/* Tab name */}
               {tab.type !== 'main' && (
-              <span className="max-w-[120px] truncate">
+              <span className="max-w-[120px] truncate text-md">
                 {tab.name}
                 {tab.isBaseline && <span className="ml-0.5 text-wpGreen" title="Baseline scenario">*</span>}
               </span>

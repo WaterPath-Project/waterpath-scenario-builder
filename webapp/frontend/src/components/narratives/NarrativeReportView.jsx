@@ -109,25 +109,23 @@ const NarrativeReportView = ({ caseStudyId }) => {
   }
 
   return (
-    <Card>
-      <div className="flex items-center justify-between mb-6">
+    <div className="flex h-full flex-col overflow-hidden font-inter">
+      <div className="flex flex-shrink-0 items-center justify-between gap-4 border-b border-gray-200 bg-white px-6 py-4">
         <div>
-          <h2 className="text-xl font-outfit font-semibold text-wpBlue">Narrative reports</h2>
-          <p className="text-sm text-wpGray-500">
-            Generate a written report from the scenarios of this case study, edit the text, and export it as PDF.
-          </p>
+          <h2 className="text-md font-outfit font-semibold text-wpBlue">Narrative reports</h2>
+          
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={loadReports}
-            className="p-2 text-wpGray-500 hover:text-wpBlue rounded-lg hover:bg-wpGray-100"
+            className="p-2 text-wpBlue-900 hover:text-wpBlue rounded-lg hover:bg-wpGray-100"
             title="Refresh"
           >
             <RefreshCw size={16} />
           </button>
           <button
             onClick={() => setCreating(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-wpBlue text-white text-sm font-medium rounded-lg hover:opacity-90"
+            className="flex items-center gap-2 px-4 py-2 bg-wpCypress text-white text-sm font-medium rounded-lg hover:opacity-90"
           >
             <Plus size={16} />
             New report
@@ -135,21 +133,22 @@ const NarrativeReportView = ({ caseStudyId }) => {
         </div>
       </div>
 
+      <div className="flex-1 overflow-auto">
+        <Card>
       {error && (
         <div className="mb-4 px-4 py-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg">
           {error}
         </div>
       )}
-
       {loading && <div className="text-sm text-wpGray-500">Loading…</div>}
 
       {!loading && reports.length === 0 && (
         <div className="border border-dashed border-wpGray-300 rounded-xl p-10 text-center">
-          <FileText size={32} className="mx-auto text-wpGray-300 mb-3" />
+          <FileText size={32} className="mx-auto text-wpBlue-900 mb-3" />
           <p className="text-sm text-wpGray-500 mb-4">No reports yet for this case study.</p>
           <button
             onClick={() => setCreating(true)}
-            className="px-4 py-2 bg-wpBlue text-white text-sm font-medium rounded-lg hover:opacity-90"
+            className="px-4 py-2 bg-wpCypress text-white text-sm font-medium rounded-lg hover:opacity-90"
           >
             Create the first report
           </button>
@@ -190,7 +189,9 @@ const NarrativeReportView = ({ caseStudyId }) => {
           </div>
         ))}
       </div>
-    </Card>
+        </Card>
+      </div>
+    </div>
   );
 };
 

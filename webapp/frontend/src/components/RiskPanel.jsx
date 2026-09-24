@@ -535,7 +535,7 @@ function RiskLegend({ isComparison, hlCtx, hlNorm, onHlChange }) {
           );
         })}
       </div>
-      <p className="text-xs text-gray-400 mt-1">Per-cell annual probability of infection</p>
+      <p className="text-sm text-wpBlue-900 mt-1">Per-cell annual probability of infection</p>
     </div>
   );
 }
@@ -945,7 +945,7 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
                   {combinedRiskSelQ ? fmtRisk(combinedRiskSelQ.mean) : EM}
                 </span>
               )}
-              <div className="text-xs text-gray-500 mt-0.5">
+              <div className="text-sm text-wpBlue-900 mt-0.5">
                 {viewMode === 'monthly' && selectedMonthLabel ? `Risk per person in ${selectedMonthLabel}` : 'Risk per person per year'}
               </div>
             </div>
@@ -959,14 +959,14 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
                   type="button"
                   onClick={() => setQuantile(value)}
                   title={title}
-                  className={`px-1.5 py-0.5 text-[10px] font-semibold transition-colors ${
+                  className={`px-1.5 py-0.5 text-xs font-semibold transition-colors ${
                     quantile === value ? 'bg-wpBlue text-white' : 'text-gray-500 bg-gray-50 hover:bg-gray-100'
                   }`}
                 >{label}</button>
               ))}
             </div>
             {selectedQuantileInfo && (
-              <p className="text-[10px] text-gray-400 mt-0.5 text-right leading-tight">
+              <p className="text-xs text-wpBlue-900 mt-0.5 text-right leading-tight">
                 {selectedQuantileInfo.title}
               </p>
             )}
@@ -981,7 +981,7 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
       </div>
 
       {/* ── Risk by Exposure Pathway (3 rows × 2 columns) */}
-      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1 flex-shrink-0">Risk by Exposure Pathway</p>
+      <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-1 flex-shrink-0">Risk by Exposure Pathway</p>
       <div className="grid grid-cols-2 gap-2 flex-1 content-start overflow-y-auto pr-1">
         {availableRoutes.map(rk => {
           const conf  = ROUTE_CONFIG[rk] || { label: rk };
@@ -1116,7 +1116,7 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
           <div className="grid grid-cols-2 gap-6">
             {/* Risk by area */}
             <div>
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Risk by area</p>
+              <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Risk by area</p>
               <div className="space-y-1 max-h-56 overflow-y-auto pr-1">
                 {rankedRiskAreas.length > 0 ? rankedRiskAreas.map(({ iso, risk, secRisk }) => {
                   const name = areaNames?.[iso] || `Area ${iso}`;
@@ -1177,7 +1177,7 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
                 />
               ) : (
                 <>
-                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Expected annual infections</p>
+                  <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Expected annual infections</p>
                   {loading || statsLoading ? <Skeleton w="w-24" h="h-8" /> : combinedCases ? (
                     isComparison ? (
                       <div>
@@ -1198,7 +1198,7 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
                   ) : (
                     <NoDash title="No infection estimate available." />
                   )}
-                  <p className="text-[11px] text-gray-400 mt-1">Annual risk (q{quantile}) &times; population, across all pathways.</p>
+                  <p className="text-sm text-gray-400 mt-1">Annual risk (q{quantile}) &times; population, across all pathways.</p>
                   {rankedCaseAreas.length > 0 && (
                     <div className="mt-3 space-y-1 max-h-40 overflow-y-auto pr-1">
                       {rankedCaseAreas.map(({ iso, cases, secCases }) => {

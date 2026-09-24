@@ -42,6 +42,8 @@ delete L.Icon.Default.prototype._getIconUrl;
 
 const LOG_MIN = 0;
 const LOG_MAX = 17;
+const CONCENTRATION_M3_TO_L = 1000;
+const CONCENTRATION_SCALE_OUTLIER_GAP_DECADES = 6;
 const LIVESTOCK_ICONS = {
   asses:     AssesIcon,
   camels:    CamelsIcon,
@@ -137,6 +139,21 @@ function hydroAbsColor(value, logMin, logMax) {
   }
   const last = HYDRO_ABS_STOPS[HYDRO_ABS_STOPS.length - 1][1];
   return `rgb(${last[0]},${last[1]},${last[2]})`;
+}
+
+function concentrationLogBounds(valuesPerL) {
+  if (!valuesPerL.length) return { logMin: LOG_MIN, logMax: LOG_MAX };
+  const sorted = [...valuesPerL].sort((a, b) => a - b);
+  const lowTailLimit = Math.max(1, Math.floor(sorted.length * 0.001));
+  let lowIndex = 0;
+  for (let i = 0; i < Math.min(lowTailLimit, sorted.length - 1); i++) {
+    if (Math.log10(sorted[i + 1]) - Math.log10(sorted[i]) > CONCENTRATION_SCALE_OUTLIER_GAP_DECADES) {
+      lowIndex = i + 1;
+    }
+  }
+  const logMin = Math.floor(Math.log10(sorted[lowIndex]));
+  const logMax = Math.max(logMin + 1, Math.ceil(Math.log10(sorted[sorted.length - 1])));
+  return { logMin, logMax };
 }
 
 // ─── Temperature colour scale ────────────────────────────────────────────────────────────────────
@@ -298,14 +315,14 @@ function BandOverlay({ norm, halfWidth = 0.07 }) {
 }
 
 // Floating tooltip inside MapContainer showing the hovered legend value.
-function LegendMapTooltip({ hlNorm, scaleType, effectiveLogMax, isDiff, diffScale: ds = 100 }) {
+function LegendMapTooltip({ hlNorm, scaleType, effectiveLogMin = 0, effectiveLogMax, isDiff, diffScale: ds = 100 }) {
   if (hlNorm === null || hlNorm === undefined) return null;
   let label;
   if (isDiff) {
     const pct = Math.round((hlNorm * 2 * ds) - ds);
     label = `${pct >= 0 ? '+' : ''}${pct}%`;
   } else {
-    const logVal = hlNorm * effectiveLogMax;
+    const logVal = effectiveLogMin + hlNorm * (effectiveLogMax - effectiveLogMin);
     label = `10^${logVal.toFixed(1)}`;
   }
   return (
@@ -414,7 +431,7 @@ function Legend({ hlCtx, hlNorm, onHlChange }) {
         {/* Open-ended indicator only shown when fixed scale */}
         {fixedColorScale && <span className="text-gray-400 text-xs font-bold flex-shrink-0">+</span>}
       </div>
-      <p className="text-xs text-gray-400 mt-1">Log₁₀ scale · pathogen particles / grid cell / year</p>
+      <p className="text-sm text-wpBlue-900 mt-4">Log₁₀ scale · pathogen particles / grid cell / year</p>
     </div>
   );
 }
@@ -967,7 +984,7 @@ function EmissionMapPanel({
               ) : (
                 <p className="text-5xl font-bold font-outfit tabular-nums text-wpBlue">{formatScientific(priTotal)}</p>
               )}
-              <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">Combined pathogen particle emissions across all areas, sanitation technologies, and emission pathways (pathogen particles / year).</p>
+              <p className="text-sm text-gray-400 mt-1.5 leading-relaxed">Combined pathogen particle emissions across all areas, sanitation technologies, and emission pathways (pathogen particles / year).</p>
             </div>
 
             {/* Emissions by area */}
@@ -1225,7 +1242,7 @@ function StatsSection({ primaryData, secondaryData, isComparison, selectedAreas,
           </div>
         )}
       </div>
-      <p className="text-xs text-gray-400 -mt-2">Emissions from livestock manure deposited on land and transported to water, broken down by animal species.</p>
+      <p className="text-sm text-gray-400 -mt-2">Emissions from livestock manure deposited on land and transported to water, broken down by animal species.</p>
       <div className="flex gap-4 min-h-0">
         <div className="w-px self-stretch bg-gray-100 flex-shrink-0" />
         {/* Per-animal breakdown */}
@@ -1278,7 +1295,7 @@ function StatsSection({ primaryData, secondaryData, isComparison, selectedAreas,
   const wwtpCol = emissionType === 'water' && (priWwtp > 0 || secWwtp > 0) && (
     <div className="space-y-4">
       <p className="text-md font-semibold text-wpBlue uppercase font-outfit tracking-wide">WWTP</p>
-      <p className="text-xs text-gray-400 -mt-2">Pathogens remaining in wastewater treatment plant effluent discharged to surface water.</p>
+      <p className="text-sm text-gray-400 -mt-2">Pathogens remaining in wastewater treatment plant effluent discharged to surface water.</p>
       <div className="flex gap-4 min-h-0">
         <div className="w-px self-stretch bg-gray-100 flex-shrink-0" />
         <div className="flex-1 min-w-0">
@@ -1369,7 +1386,7 @@ function StatsSection({ primaryData, secondaryData, isComparison, selectedAreas,
                   )}
                 </div>
               </div>
-              <p className="text-xs text-gray-400 -mt-2">Emissions originating from human sanitation systems, broken down by technology and toilet category.</p>
+              <p className="text-sm text-gray-400 -mt-2">Emissions originating from human sanitation systems, broken down by technology and toilet category.</p>
             </>
           )}
           <div className="flex gap-4 min-h-0">
@@ -1412,7 +1429,7 @@ function StatsSection({ primaryData, secondaryData, isComparison, selectedAreas,
               )}
             </div>
           </div>
-          <p className="text-xs text-gray-400 -mt-2">Emissions originating from human sanitation systems, broken down by technology and toilet category.</p>
+          <p className="text-sm text-gray-400 -mt-2">Emissions originating from human sanitation systems, broken down by technology and toilet category.</p>
           <div className="flex gap-4 min-h-0">
             <div className="w-px self-stretch bg-gray-100 flex-shrink-0" />
             {toiletCategoryCol}
@@ -1444,7 +1461,7 @@ function StatsSection({ primaryData, secondaryData, isComparison, selectedAreas,
               )}
             </div>
           </div>
-          <p className="text-xs text-gray-400 -mt-2">Emissions originating from human sanitation systems, broken down by technology and toilet category.</p>
+          <p className="text-sm text-gray-400 -mt-2">Emissions originating from human sanitation systems, broken down by technology and toilet category.</p>
         </>
       )}
       <div className="flex gap-4 min-h-0">
@@ -1482,7 +1499,15 @@ function HydrologyGeoTiffLayer({ url, hlCtx }) {
         if (cancelled) return;
 
         const nd = gr.noDataValue;
-        const logMax = (gr.maxs?.[0] > 0) ? Math.log10(gr.maxs[0]) : LOG_MAX;
+        const valuesPerL = [];
+        for (const row of gr.values[0]) {
+          for (const rawValue of row) {
+            if (rawValue != null && isFinite(rawValue) && rawValue > 0 && rawValue !== nd) {
+              valuesPerL.push(rawValue / CONCENTRATION_M3_TO_L);
+            }
+          }
+        }
+        const { logMin, logMax } = concentrationLogBounds(valuesPerL);
 
         layer = new GeoRasterLayer({
           georaster: gr,
@@ -1490,12 +1515,13 @@ function HydrologyGeoTiffLayer({ url, hlCtx }) {
           resolution: 256,
           caching: false,
           pixelValuesToColorFn: (values) => {
-            const v = values[0];
-            if (v == null || !isFinite(v) || v <= 0 || v === nd) return null;
-            const color = hydroAbsColor(v, LOG_MIN, logMax);
+            const rawValue = values[0];
+            if (rawValue == null || !isFinite(rawValue) || rawValue <= 0 || rawValue === nd) return null;
+            const value = rawValue / CONCENTRATION_M3_TO_L;
+            const color = hydroAbsColor(value, logMin, logMax);
             const band = hlCtx?.current?.band;
             if (band && color) {
-              const norm = Math.max(0, Math.min(1, (Math.log10(v) - LOG_MIN) / (logMax - LOG_MIN)));
+              const norm = Math.max(0, Math.min(1, (Math.log10(value) - logMin) / (logMax - logMin)));
               if (norm < band[0] || norm > band[1]) return 'rgba(200,200,200,0.15)';
             }
             return color;
@@ -2071,9 +2097,8 @@ function MapWithSidePanel({
 // Shown when a polygon on the Concentrations map is clicked. Displays the annual-average
 // concentration for that area alongside the calendar month with the highest concentration.
 
-function ConcentrationAreaDialog({ area, avgAreaStats, onClose }) {
+function ConcentrationAreaDialog({ area, avgAreaStats, onClose, areaStatsLoading, secondaryAreaStatsLoading }) {
   if (!area) return null;
-  const M3_TO_L = 1000;
   const stats = avgAreaStats?.[area.iso];
 
   const peakMonth = stats?.peak_month ?? null;
@@ -2094,15 +2119,15 @@ function ConcentrationAreaDialog({ area, avgAreaStats, onClose }) {
             <>
               <div>
                 <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Monthly average</p>
-                <p className="text-2xl font-bold font-outfit tabular-nums text-wpBlue">{formatScientific((stats.mean ?? 0) / M3_TO_L)}</p>
+                <p className="text-2xl font-bold font-outfit tabular-nums text-wpBlue">{formatScientific((stats.mean ?? 0) / CONCENTRATION_M3_TO_L)}</p>
               </div>
               <div className="pt-2 border-t border-gray-100">
                 <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Highest month</p>
                 {peakMonth != null ? (
                   <div className="flex items-baseline gap-2">
-                    <p className="text-2xl font-bold font-outfit tabular-nums text-wpTeal">{MONTH_LABELS[peakMonth - 1]}</p>
+                    <p className="text-2xl font-bold font-outfit tabular-nums text-wpGreen">{MONTH_LABELS[peakMonth - 1]}</p>
                     {peakVal != null && (
-                      <span className="text-sm font-mono text-gray-500">{formatScientific(peakVal / M3_TO_L)}</span>
+                      <span className="text-sm font-mono text-gray-500">{formatScientific(peakVal / CONCENTRATION_M3_TO_L)}</span>
                     )}
                   </div>
                 ) : (
@@ -2110,9 +2135,11 @@ function ConcentrationAreaDialog({ area, avgAreaStats, onClose }) {
                 )}
               </div>
             </>
+          ) : (areaStatsLoading || secondaryAreaStatsLoading ? (
+            <p className="text-xs text-gray-400 italic">Loading data for this area...</p>
           ) : (
             <p className="text-xs text-gray-400 italic">No data available for this area</p>
-          )}
+          ))}
         </div>
       </div>
     </div>
@@ -2275,16 +2302,18 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
         if (cancelled) return;
         const nd = gr.noDataValue;
         let sum = 0, max = -Infinity, count = 0;
+        const valuesPerL = [];
         for (const row of gr.values[0]) {
           for (const v of row) {
             if (v != null && isFinite(v) && v > 0 && v !== nd) {
               sum += v; count++;
               if (v > max) max = v;
+              valuesPerL.push(v / CONCENTRATION_M3_TO_L);
             }
           }
         }
         if (!cancelled) {
-          setRasterStats(isFinite(max) ? { sum, max, count } : null);
+          setRasterStats(isFinite(max) ? { sum, max, count, ...concentrationLogBounds(valuesPerL) } : null);
           setStatsLoading(false);
         }
       } catch (_) {
@@ -2417,13 +2446,11 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
   if (!hydrologyFiles) return null;
   if (!hasConc) return null;
 
-  const M3_TO_L = 1000;
-
   // Compute global mean/peak from rasterStats (whole-map)
-  const globalMean = rasterStats ? rasterStats.sum / M3_TO_L / rasterStats.count : null;
-  const globalPeak = rasterStats ? rasterStats.max / M3_TO_L : null;
-  const secondaryGlobalMean = secondaryRasterStats ? secondaryRasterStats.sum / M3_TO_L / secondaryRasterStats.count : null;
-  const secondaryGlobalPeak = secondaryRasterStats ? secondaryRasterStats.max / M3_TO_L : null;
+  const globalMean = rasterStats ? rasterStats.sum / CONCENTRATION_M3_TO_L / rasterStats.count : null;
+  const globalPeak = rasterStats ? rasterStats.max / CONCENTRATION_M3_TO_L : null;
+  const secondaryGlobalMean = secondaryRasterStats ? secondaryRasterStats.sum / CONCENTRATION_M3_TO_L / secondaryRasterStats.count : null;
+  const secondaryGlobalPeak = secondaryRasterStats ? secondaryRasterStats.max / CONCENTRATION_M3_TO_L : null;
   const primaryGlobalValue = areaStatMode === 'mean' ? globalMean : globalPeak;
   const secondaryGlobalValue = areaStatMode === 'mean' ? secondaryGlobalMean : secondaryGlobalPeak;
   const globalDiffPct = isComparison && primaryGlobalValue > 0 && secondaryGlobalValue != null
@@ -2436,10 +2463,10 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
     return Object.entries(areaStats)
       .map(([iso, s]) => ({
         iso,
-        mean: (s.mean ?? 0) / M3_TO_L,
-        max: (s.max ?? 0) / M3_TO_L,
-        secondaryMean: secondaryAreaStats?.[iso]?.mean != null ? secondaryAreaStats[iso].mean / M3_TO_L : null,
-        secondaryMax: secondaryAreaStats?.[iso]?.max != null ? secondaryAreaStats[iso].max / M3_TO_L : null,
+        mean: (s.mean ?? 0) / CONCENTRATION_M3_TO_L,
+        max: (s.max ?? 0) / CONCENTRATION_M3_TO_L,
+        secondaryMean: secondaryAreaStats?.[iso]?.mean != null ? secondaryAreaStats[iso].mean / CONCENTRATION_M3_TO_L : null,
+        secondaryMax: secondaryAreaStats?.[iso]?.max != null ? secondaryAreaStats[iso].max / CONCENTRATION_M3_TO_L : null,
       }))
       .sort((a, b) => (b[areaStatMode] ?? 0) - (a[areaStatMode] ?? 0));
   }, [areaStats, secondaryAreaStats, areaStatMode]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -2547,13 +2574,15 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
               </div>
               <div className="relative" style={{ height: 14 }}>
                 {(() => {
-                  const lmax = rasterStats ? Math.log10(Math.max(rasterStats.max, 1)) : LOG_MAX;
+                  const lmin = rasterStats?.logMin ?? LOG_MIN;
+                  const lmax = rasterStats?.logMax ?? LOG_MAX;
                   const sups = '⁰¹²³⁴⁵⁶⁷⁸⁹';
-                  const fmtPow = v => v === 0 ? '1' : '10' + String(v).split('').map(c => sups[+c] ?? c).join('');
+                  const fmtPow = v => v === 0 ? '1' : '10' + String(v).split('').map(c => c === '-' ? '⁻' : (sups[+c] ?? c)).join('');
                   const ticks = [];
-                  for (let v = 0; v <= Math.ceil(lmax); v += 3) ticks.push(v);
+                  const step = lmax - lmin <= 6 ? 1 : 3;
+                  for (let v = Math.ceil(lmin); v <= Math.floor(lmax); v += step) ticks.push(v);
                   return ticks.map((v, i) => {
-                    const pct = lmax > 0 ? (v / lmax * 100) : 0;
+                    const pct = lmax > lmin ? ((v - lmin) / (lmax - lmin) * 100) : 0;
                     return (
                       <span key={v}
                         className={`absolute text-xs text-gray-400 font-inter leading-none ${i === ticks.length - 1 ? '-translate-x-full' : ''}`}
@@ -2567,7 +2596,7 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
               </div>
             </div>
           </div>
-          <p className="text-xs text-gray-400 mt-0.5">Log₁₀ · pathogen particles / L</p>
+          <p className="text-sm text-wpBlue-900 mt-0.5">Log₁₀ · pathogen particles / L</p>
         </div>
       )}
     </div>
@@ -2598,16 +2627,16 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
             <RefreshCw size={11} className="animate-spin" /> Computing…
           </div>
         ) : null}
-        <p className="text-xs text-gray-400 mt-1">pathogen particles / L</p>
+        <p className="text-sm text-gray-400 mt-1">pathogen particles / L</p>
       </div>
 
       {/* ── Area breakdown header */}
-      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide flex-shrink-0 mb-1">Concentrations by area</p>
+      <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide flex-shrink-0 mb-1">Concentrations by area</p>
 
       {/* ── Area bar list */}
       <div className="overflow-y-auto flex-1 space-y-0.5 pr-1">
         {areaStatsLoading || secondaryAreaStatsLoading ? (
-          <div className="text-xs text-gray-400 text-center py-3 flex items-center justify-center gap-1.5">
+          <div className="text-sm text-wpBlue-900 text-center py-3 flex items-center justify-center gap-1.5">
             <RefreshCw size={11} className="animate-spin" /> Loading area data…
           </div>
         ) : rankedAreas.length > 0 ? rankedAreas.map(({ iso, mean: meanVal, max: maxVal, secondaryMean, secondaryMax }) => {
@@ -2649,15 +2678,15 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
           <div className="flex items-center gap-1.5 mb-1 flex-wrap">
             <button
               onClick={() => { setMonth('avg'); setShowDiff(true); }}
-              className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
+              className={`px-2 py-0.5 rounded-lg text-sm font-medium transition-colors ${
                 month === 'avg' ? 'bg-wpBlue text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
               }`}
             >Monthly average</button>
-            <div className={`flex rounded-xl overflow-hidden border border-gray-200 text-xs flex-shrink-0 ${month === 'avg' ? 'opacity-45' : ''}`}>
+            <div className={`flex rounded-lg overflow-hidden border border-gray-200 text-sm flex-shrink-0 ${month === 'avg' ? 'opacity-45' : ''}`}>
               <button
                 disabled={month === 'avg'}
                 onClick={() => setShowDiff(true)}
-                className={`px-2 py-0.5 font-medium transition-colors disabled:cursor-not-allowed ${
+                className={`px-2 py-0.5 text-sm font-medium transition-colors disabled:cursor-not-allowed ${
                   showDiff ? 'bg-wpBlue text-white' : 'text-wpBlue/60 bg-gray-100 hover:bg-gray-200'
                 }`}
               >{isComparison ? 'Difference between scenarios' : 'Difference from average'}</button>
@@ -2684,8 +2713,8 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
               const sel = month === m;
               const statA = monthlyStats?.months?.[String(m)];
               const statB = secondaryMonthlyStats?.months?.[String(m)];
-              const meanA = statA?.mean != null ? statA.mean / M3_TO_L : null;
-              const meanB = statB?.mean != null ? statB.mean / M3_TO_L : null;
+              const meanA = statA?.mean != null ? statA.mean / CONCENTRATION_M3_TO_L : null;
+              const meanB = statB?.mean != null ? statB.mean / CONCENTRATION_M3_TO_L : null;
               let pct = null;
               if (isComparison) {
                 const meanA = statA?.mean ?? statA?.sum;
@@ -2756,7 +2785,13 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
           <FitBounds geojson={geojson} />
           <MapExportControls title={'Concentrations'} />
           {!isComparison && showFlow && <FlowArrowLayer key={`flow-${scenarioId}-${month}-${minAccPct}`} scenarioId={scenarioId} month={month} minAccPct={minAccPct} onLegendData={setFlowLegend} />}
-          <LegendMapTooltip hlNorm={hlNorm} effectiveLogMax={LOG_MAX} isDiff={!!diffUrl} diffScale={hydroScale ?? diffStats?.scale ?? 100} />
+          <LegendMapTooltip
+            hlNorm={hlNorm}
+            effectiveLogMin={rasterStats?.logMin ?? LOG_MIN}
+            effectiveLogMax={rasterStats?.logMax ?? LOG_MAX}
+            isDiff={!!diffUrl}
+            diffScale={hydroScale ?? diffStats?.scale ?? 100}
+          />
           {!isComparison && (
             <HydroMapControls
               activeOverlay={activeOverlay} setActiveOverlay={setActiveOverlay}
@@ -2770,7 +2805,7 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
       }
       sidePanelChildren={sidePanelContent}
     />
-    <ConcentrationAreaDialog area={clickedArea} avgAreaStats={avgAreaStats} onClose={() => setClickedArea(null)} />
+    <ConcentrationAreaDialog area={clickedArea} avgAreaStats={avgAreaStats} areaStatsLoading={areaStatsLoading} secondaryAreaStatsLoading={secondaryAreaStatsLoading} onClose={() => setClickedArea(null)} />
     </>
   );
 }
@@ -3092,7 +3127,7 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
   const secondaryScenario = availableScenarios.find(s => s.id === secondaryScId);
 
   return (
-    <div className="analytics-page flex flex-col h-full overflow-auto p-6 pt-0">
+    <div className="analytics-page flex h-full flex-col overflow-hidden">
 
       <div className="analytics-print-header hidden items-center justify-between border-b-2 border-wpBlue pb-4 mb-5">
         <div className="flex items-center gap-3">
@@ -3111,11 +3146,11 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
       </div>
 
       {/* Selector bar + Tab bar */}
-      <div className="analytics-selector my-2 flex-shrink-0 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+      <div className="analytics-selector flex-shrink-0 overflow-hidden border-b border-gray-200 bg-white shadow-sm">
         {/* Tab selector — Emissions / Concentrations / Risk */}
         <div className="flex items-center gap-4 px-5 py-3">
           <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">Compare:</span>
-          <div className="flex gap-1 rounded-xl bg-wpGray-200 p-1">
+          <div className="flex gap-1 rounded-xl bg-wpGray-100 p-1">
             {[
               { id: 'emissions',      label: 'Emissions',      icon: EmissionsTabIcon,      disabled: false },
               { id: 'concentrations', label: 'Concentrations', icon: ConcentrationsTabIcon, disabled: !primaryData?.hydrologyFiles },
@@ -3124,15 +3159,15 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
               <button key={tab.id}
                 onClick={() => !tab.disabled && setActiveTab(tab.id)}
                 disabled={tab.disabled}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                className={`flex items-center gap-2 px-3 pr-6 py-3 font-outfit rounded-lg text-md font-semibold transition-colors ${
                   tab.disabled
-                    ? 'text-gray-300 cursor-not-allowed'
+                    ? 'text-wpGray-300 cursor-not-allowed'
                     : activeTab === tab.id
-                      ? 'bg-white text-wpBlue font-semibold shadow-sm'
-                      : 'text-gray-500 hover:bg-white/60 hover:text-wpBlue'
+                      ? 'bg-white text-wpBlue shadow-sm'
+                      : 'text-wpBlue hover:bg-white/60 hover:text-wpBlue'
                 }`}>
-                <img src={tab.icon} alt="" className={`w-7 h-7 flex-shrink-0 ${
-                  tab.disabled ? 'opacity-30' : activeTab === tab.id ? 'opacity-100' : 'opacity-50'
+                <img src={tab.icon} alt="" className={`w-8 h-8 flex-shrink-0 ${
+                  tab.disabled ? 'opacity-30' : activeTab === tab.id ? 'opacity-100' : 'opacity-100'
                 }`}/>
                 {tab.label}
               </button>
@@ -3141,10 +3176,10 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
           <button
             type="button"
             onClick={printAnalyticsPage}
-            className="ml-auto flex items-center gap-1.5 rounded-lg bg-wpGreen px-3 py-2 text-xs font-semibold text-wpBlue shadow-sm transition-colors hover:bg-gray-50"
+            className="ml-auto flex items-center gap-1.5 rounded-lg bg-wpGreen px-3 py-2 text-sm font-semibold text-wpBlue shadow-sm transition-colors hover:bg-gray-50"
             title="Print analytics page"
           >
-            <Printer size={14} /> Print report
+            <Printer size={14} /> Print page
           </button>
         </div>
 
@@ -3168,12 +3203,12 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
                     onClick={() => hasOutputs ? handleScenarioPillClick(s.id) : undefined}
                     disabled={!hasOutputs}
                     title={!hasOutputs ? 'Model has not been run for this scenario' : undefined}
-                    className={`relative flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm font-medium transition-colors ${
+                    className={`relative flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm font-medium font-outfit transition-colors ${
                       !hasOutputs
-                        ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed opacity-60'
+                        ? 'bg-gray-100 text-gray-400 cursor-not-allowed opacity-60'
                         : isPrimary   ? 'bg-wpBlue text-white border-wpBlue' :
                           isSecondary ? 'bg-wpCypress text-white border-wpCypress' :
-                                        'bg-white text-wpBlue border-gray-300 hover:border-wpBlue hover:bg-wpGray-100'
+                                        'bg-wpGray-100 text-wpBlue hover:bg-wpGray-100'
                     }`}>
                     {active ? (
                       <span className={`w-4 h-4 rounded-full text-xs font-bold flex items-center justify-center flex-shrink-0 ${
@@ -3198,6 +3233,7 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
         </div>
       </div>
 
+      <div className="flex-1 overflow-auto px-6">
       {/* Empty state */}
       {!primaryScId && (
         <div className="flex-1 flex items-center justify-center py-24">
@@ -3306,6 +3342,7 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
           )}
         </div>
       )}
+      </div>
 
       {/* Area click modal */}
       {clickedArea && (
