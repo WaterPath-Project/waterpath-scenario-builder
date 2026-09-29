@@ -7,17 +7,26 @@
 -#}
 {%- macro render_figure(figure) -%}
 <figure class="figure">
-  <img src="{{ figure.src }}" alt="">
+  <div class="figure-map">
+    <img src="{{ figure.src }}" alt="" style="opacity: {{ figure.opacity }}">
+    {% if figure.outline and figure.outline.paths %}
+    <svg viewBox="{{ figure.outline.view_box }}" preserveAspectRatio="none" aria-hidden="true">
+      {% for path in figure.outline.paths %}
+      <path d="{{ path }}" fill="none" stroke="#1e293b" stroke-width="1.25" vector-effect="non-scaling-stroke"></path>
+      {% endfor %}
+    </svg>
+    {% endif %}
+  </div>
   {% if figure.legend %}
   <div class="figure-legend">
     {# The gradient is built server-side from the app's own colour stops. #}
     <div class="legend-bar" style="background: {{ figure.legend.gradient }}"></div>
     <div class="legend-ticks">
       {% for tick in figure.legend.ticks %}
-      <span class="legend-tick" style="left: {{ (tick.pos * 100) | round(2) }}%">{{ tick.mantissa }}{% if tick.exponent is not none %}&times;10<sup>{{ tick.exponent }}</sup>{% endif %}</span>
+      <span class="legend-tick" style="left: {{ (tick.pos * 100) | round(2) }}%">{% if tick.power is defined %}{% if tick.power == 0 %}1{% else %}10<sup>{{ tick.power }}</sup>{% endif %}{% else %}{{ tick.mantissa }}{% if tick.exponent is not none %}&times;10<sup>{{ tick.exponent }}</sup>{% endif %}{% endif %}</span>
       {% endfor %}
     </div>
-    <div class="legend-unit">{{ figure.legend.unit }}{% if figure.legend.log_scale %}, logarithmic colour scale{% endif %}</div>
+    <div class="legend-unit">{{ figure.legend.label or figure.legend.unit }}{% if not figure.legend.label and figure.legend.log_scale %}, logarithmic colour scale{% endif %}</div>
   </div>
   {% endif %}
   <figcaption><span class="figure-number">Figure {{ figure.number }}.</span> {{ figure.caption }}</figcaption>

@@ -242,6 +242,8 @@ def render_report_html(cs, report, markdown_to_html, for_pdf=True):
                 'number': figure_number,
                 'caption': figure.get('caption') or '',
                 'legend': figure.get('legend'),
+                'outline': figure.get('outline'),
+                'opacity': figure.get('opacity', 1.0),
                 'src': _figure_src(figure, for_pdf),
             })
         rendered.append({
@@ -350,6 +352,9 @@ def _font_faces():
 def _group_chapters(report, sections):
     """One chapter per scenario, in the order the report stores them."""
     names = {s.get('id'): s for s in report.get('scenarios') or []}
+    baseline = report.get('baseline') or {}
+    if baseline.get('id'):
+        names[baseline['id']] = baseline
     chapters, index = [], {}
     for section in sections:
         scenario_id = section['scenario_id']

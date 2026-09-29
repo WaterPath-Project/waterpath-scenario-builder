@@ -26,6 +26,9 @@ from fs_utils import area_label, find_geodata_shapefile
 MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
                'July', 'August', 'September', 'October', 'November', 'December']
 
+_CONCENTRATION_M3_TO_L = 1000.0
+_CONCENTRATION_SCALE_OUTLIER_GAP_DECADES = 6
+
 # Column name -> display label for the per-technology human emission outputs.
 SANITATION_LABELS = {
     'flushSewer': 'flush to sewer',
@@ -57,11 +60,9 @@ EMISSION_SOURCE_LABELS = {
 }
 EMISSION_SOURCE_ORDER = ('humans', 'wwtp', 'land')
 
-# Colour used for reporting areas that carry no data, and for their outlines.
-# The outline mirrors the app's polygon style (`color: '#1e293b'` at ~0.2
-# opacity in ResultsView.jsx), so it stays a hairline rather than a border.
+# Colour used for reporting areas that carry no data. Shapefile outlines are
+# carried separately as SVG paths so they are never rasterised into TIFF cells.
 _MAP_BACKGROUND = (233, 238, 242, 255)
-_MAP_OUTLINE = (30, 41, 59, 70)
 
 # ─── Colour ramps ────────────────────────────────────────────────────────────
 # Copied verbatim from the app so a map in the report looks like the same map
@@ -227,10 +228,13 @@ def compute_emissions_stats(cs_path, folder, top_areas=5):
     livestock = _ranked_shares(
         _column_totals(_iso_rows(_first_match(out, r'^livestock_sources_water_.*\.csv$'))),
         ANIMAL_LABELS, limit=4)
+    land_totals = _column_totals(_iso_rows(_first_match(out, r'^land_emissions_.*\.csv$')))
+    land_total = sum(land_totals.values()) if land_totals else None
 
     top = per_area[:top_areas]
     return {
         'total': grand,
+        'land_total': land_total,
         'unit': 'pathogens per year',
         'sources': sources,
         'sources_ranked': sources_ranked,
@@ -239,6 +243,7 @@ def compute_emissions_stats(cs_path, folder, top_areas=5):
         'wwtp_pct': totals.get('wwtp', 0.0) / grand * 100.0,
         'land_pct': totals.get('land', 0.0) / grand * 100.0,
         'area_count': len(per_area),
+        'areas': per_area,
         'top_areas': top,
         'top_areas_pct': sum(a['pct'] for a in top),
         'sanitation': sanitation,
@@ -292,23 +297,17 @@ def _monthly_conc_paths(cs_path, folder):
     return found
 
 
-def _zone_raster(cs_path, folder, out_shape, transform, raster_crs):
-    """Rasterise the study-area boundaries onto the given grid.
-
-    Returns (zones, labels) where `zones` is an int array (0 = outside every
-    reporting area) and `labels` maps zone id -> area name.  Returns
-    (None, {}) when the case study ships no geodata.
-    """
+def _area_shapes(cs_path, folder, raster_crs):
+    """Load the original reporting-area geometries in the raster's CRS."""
     try:
         import fiona
-        from rasterio.features import rasterize
         from rasterio.warp import transform_geom
     except ImportError:
-        return None, {}
+        return [], {}
 
     shp_path = find_geodata_shapefile(cs_path, folder)
     if not shp_path:
-        return None, {}
+        return [], {}
 
     dst_crs = raster_crs.to_wkt() if raster_crs is not None else 'EPSG:4326'
     shapes, labels = [], {}
@@ -322,10 +321,26 @@ def _zone_raster(cs_path, folder, out_shape, transform, raster_crs):
                     geom = transform_geom(src_crs, dst_crs, geom)
                 except Exception:
                     pass
+                if not geom:
+                    continue
                 shapes.append((geom, zone_id))
                 labels[zone_id] = area_label(dict(feat['properties'] or {}), f'area {zone_id}')
-        if not shapes:
-            return None, {}
+    except Exception:
+        return [], {}
+    return shapes, labels
+
+
+def _zone_raster(cs_path, folder, out_shape, transform, raster_crs, area_data=None):
+    """Rasterise study areas for zonal statistics and no-data fills."""
+    try:
+        from rasterio.features import rasterize
+    except ImportError:
+        return None, {}
+
+    shapes, labels = area_data or _area_shapes(cs_path, folder, raster_crs)
+    if not shapes:
+        return None, {}
+    try:
         zones = rasterize(shapes, out_shape=out_shape, transform=transform,
                           fill=0, dtype='int32', all_touched=True)
     except Exception:
@@ -357,7 +372,7 @@ def _zonal_means(values, zones, labels, limit=5):
             'cells': int(counts[zone_id]),
         })
     ranked.sort(key=lambda a: a['value'], reverse=True)
-    return ranked[:limit]
+    return ranked[:limit] if limit is not None else ranked
 
 
 # ─── Concentration statistics ────────────────────────────────────────────────
@@ -388,6 +403,7 @@ def compute_concentration_stats(cs_path, folder, top_areas=5):
         monthly.append({
             'month': MONTH_NAMES[month - 1] if 1 <= month <= 12 else str(month),
             'value': float(np.mean(finite)) if finite.size else None,
+            'sum': float(np.sum(finite)) if finite.size else None,
         })
     if not arrays:
         return None
@@ -405,9 +421,11 @@ def compute_concentration_stats(cs_path, folder, top_areas=5):
     if peak and trough and trough['value'] and trough['value'] > 0:
         seasonal_ratio = peak['value'] / trough['value']
 
+    areas = _zonal_means(annual, zones, labels, limit=None)
     return {
         'unit': 'pathogens per litre',
         'mean': float(np.mean(finite)),
+        'avg_sum': float(np.mean([m['sum'] for m in monthly if m['sum'] is not None])),
         'median': float(np.median(finite)),
         'max': float(np.max(finite)),
         'min': float(np.min(finite)),
@@ -418,7 +436,8 @@ def compute_concentration_stats(cs_path, folder, top_areas=5):
         'trough_month': trough['month'] if trough else None,
         'trough_value': trough['value'] if trough else None,
         'seasonal_ratio': seasonal_ratio,
-        'top_areas': _zonal_means(annual, zones, labels, limit=top_areas),
+        'areas': areas,
+        'top_areas': areas[:top_areas],
     }
 
 
@@ -456,6 +475,34 @@ def _scale_ticks(vmin, vmax, log_scale, count=5):
     return [{'pos': (e - lo) / span, **_sci_parts(10.0 ** e)} for e in exponents]
 
 
+def _concentration_log_bounds(values_per_l):
+    """Mirror ResultsView.concentrationLogBounds exactly."""
+    import numpy as np
+    sorted_values = np.sort(values_per_l)
+    if not sorted_values.size:
+        return _EMISSION_LOG_MIN, _EMISSION_LOG_MAX
+    low_tail_limit = max(1, int(math.floor(sorted_values.size * 0.001)))
+    low_index = 0
+    for index in range(min(low_tail_limit, sorted_values.size - 1)):
+        gap = math.log10(sorted_values[index + 1]) - math.log10(sorted_values[index])
+        if gap > _CONCENTRATION_SCALE_OUTLIER_GAP_DECADES:
+            low_index = index + 1
+    log_min = math.floor(math.log10(sorted_values[low_index]))
+    log_max = max(log_min + 1, math.ceil(math.log10(sorted_values[-1])))
+    return log_min, log_max
+
+
+def _concentration_ticks(log_min, log_max):
+    """Mirror ResultsView's one- or three-decade concentration ticks."""
+    step = 1 if log_max - log_min <= 6 else 3
+    span = log_max - log_min or 1
+    return [
+        {'pos': (exponent - log_min) / span, 'power': exponent,
+         **_sci_parts(10.0 ** exponent)}
+        for exponent in range(math.ceil(log_min), math.floor(log_max) + 1, step)
+    ]
+
+
 def _sci_parts(value):
     """Split a number into a mantissa string and a base-10 exponent."""
     if value is None or not math.isfinite(value) or value == 0:
@@ -480,23 +527,62 @@ def _rescale(rgba, target_width=1000, max_width=1500):
         step = int(math.ceil(width / max_width))
         rgba = rgba[::step, ::step]
         height, width = rgba.shape[:2]
-    factor = int(max(1, min(8, round(target_width / width))))
+    factor = int(max(1, min(32, round(target_width / width))))
     if factor > 1:
         rgba = np.repeat(np.repeat(rgba, factor, axis=0), factor, axis=1)
     return rgba
 
 
-def _boundary_mask(zones):
-    """One-cell-wide outline of the reporting areas.
+def _polygon_svg_overlay(shape, geometries, transform, source_shape):
+    """Convert every original polygon ring to an image-aligned SVG path."""
+    if not geometries or transform is None:
+        return None
+    inverse = ~transform
+    source_height, source_width = source_shape
+    scale_x = shape[1] / source_width
+    scale_y = shape[0] / source_height
 
-    Only the cell on one side of each edge is marked, so the outline stays a
-    hairline instead of doubling up into a two-cell border.
-    """
+    def rings(geometry):
+        coordinates = geometry.get('coordinates') or []
+        if geometry.get('type') == 'Polygon':
+            return coordinates
+        if geometry.get('type') == 'MultiPolygon':
+            return [ring for polygon in coordinates for ring in polygon]
+        return []
+
+    paths = []
+    for geometry in geometries:
+        for ring in rings(geometry):
+            if len(ring) < 2:
+                continue
+            points = []
+            for x_coord, y_coord, *_ in ring:
+                col, row = inverse * (x_coord, y_coord)
+                points.append((col * scale_x, row * scale_y))
+            command = 'M ' + ' L '.join(f'{x:.2f} {y:.2f}' for x, y in points) + ' Z'
+            paths.append(command)
+    return {'view_box': f'0 0 {shape[1]} {shape[0]}', 'paths': paths}
+
+
+def _polygon_fill_mask(shape, geometries, transform, source_shape):
+    """Rasterise original polygons at final image resolution for exact clipping."""
     import numpy as np
-    edges = np.zeros(zones.shape, dtype=bool)
-    edges[:-1, :] |= zones[:-1, :] != zones[1:, :]
-    edges[:, :-1] |= zones[:, :-1] != zones[:, 1:]
-    return edges & (zones > 0)
+    from affine import Affine
+    from rasterio.features import rasterize
+
+    if not geometries or transform is None:
+        return np.ones(shape, dtype=bool)
+    source_height, source_width = source_shape
+    output_transform = transform * Affine.scale(
+        source_width / shape[1], source_height / shape[0])
+    return rasterize(
+        [(geometry, 1) for geometry in geometries],
+        out_shape=shape,
+        transform=output_transform,
+        fill=0,
+        dtype='uint8',
+        all_touched=False,
+    ).astype(bool)
 
 
 def _apply_ramp(norm, stops):
@@ -520,7 +606,8 @@ def _gradient_css(stops):
 
 
 def render_map_png(values, zones=None, stops=None, log_scale=True, unit='',
-                   vmin=None, vmax=None):
+                   vmin=None, vmax=None, outlines=None, transform=None,
+                   fill_nodata_inside=True, opacity=1.0):
     """Colour a 2D float array (NaN = no data) into a PNG map.
 
     Returns (png_bytes, legend) or None when the array holds no usable data.
@@ -555,15 +642,20 @@ def render_map_png(values, zones=None, stops=None, log_scale=True, unit='',
     norm = np.where(np.isfinite(values), np.clip(norm, 0.0, 1.0), np.nan)
 
     rgba = _apply_ramp(norm, stops)
-    if zones is not None:
+    if zones is not None and fill_nodata_inside:
         empty = (~np.isfinite(values)) & (zones > 0)
         rgba[empty] = _MAP_BACKGROUND
 
+    source_shape = rgba.shape[:2]
     rgba = _rescale(rgba)
-    if zones is not None:
-        # Outline after upscaling so it keeps its hairline width.
-        outline = _boundary_mask(_rescale(zones[..., None])[..., 0])
-        rgba[outline] = _MAP_OUTLINE
+    overlay = None
+    if outlines:
+        polygon_fill = _polygon_fill_mask(rgba.shape[:2], outlines, transform, source_shape)
+        if fill_nodata_inside:
+            empty_inside = polygon_fill & (rgba[..., 3] == 0)
+            rgba[empty_inside] = _MAP_BACKGROUND
+        rgba[~polygon_fill] = 0
+        overlay = _polygon_svg_overlay(rgba.shape[:2], outlines, transform, source_shape)
 
     legend = {
         'unit': unit,
@@ -572,8 +664,9 @@ def render_map_png(values, zones=None, stops=None, log_scale=True, unit='',
         'min': _sci_parts(lo),
         'max': _sci_parts(hi),
         'ticks': _scale_ticks(lo, hi, log_scale),
+        'opacity': float(opacity),
     }
-    return _png_from_rgba(np.ascontiguousarray(rgba)), legend
+    return _png_from_rgba(np.ascontiguousarray(rgba)), legend, overlay
 
 
 def _emissions_map(cs_path, folder):
@@ -581,10 +674,12 @@ def _emissions_map(cs_path, folder):
     if not path:
         return None
     values, transform, crs = _read_masked(path)
-    zones, _ = _zone_raster(cs_path, folder, values.shape, transform, crs)
+    area_data = _area_shapes(cs_path, folder, crs)
+    zones, _ = _zone_raster(cs_path, folder, values.shape, transform, crs, area_data)
     return render_map_png(values, zones, stops=_EMISSION_STOPS, log_scale=True,
                           vmin=10 ** _EMISSION_LOG_MIN, vmax=10 ** _EMISSION_LOG_MAX,
-                          unit='pathogens emitted to surface water per year')
+                          unit='pathogens emitted to surface water per year',
+                          outlines=[geometry for geometry, _ in area_data[0]], transform=transform)
 
 
 def _concentration_map(cs_path, folder):
@@ -605,15 +700,22 @@ def _concentration_map(cs_path, folder):
         arrays.append(arr)
     if not arrays:
         return None
-    annual = _annual_mean(arrays)
-    zones, _ = _zone_raster(cs_path, folder, annual.shape, transform, crs)
+    annual = _annual_mean(arrays) / _CONCENTRATION_M3_TO_L
+    area_data = _area_shapes(cs_path, folder, crs)
+    zones, _ = _zone_raster(cs_path, folder, annual.shape, transform, crs, area_data)
     finite = annual[np.isfinite(annual)]
     if not finite.size:
         return None
-    # The app ranges the concentration layer from 10^0 up to the raster maximum.
-    return render_map_png(annual, zones, stops=_CONCENTRATION_STOPS, log_scale=True,
-                          vmin=1.0, vmax=float(np.max(finite)),
-                          unit='mean annual concentration, pathogens per litre')
+    log_min, log_max = _concentration_log_bounds(finite)
+    png, legend, outline = render_map_png(
+        annual, zones, stops=_CONCENTRATION_STOPS, log_scale=True,
+        vmin=10.0 ** log_min, vmax=10.0 ** log_max,
+        unit='pathogen particles / L',
+        outlines=[geometry for geometry, _ in area_data[0]], transform=transform,
+        fill_nodata_inside=False, opacity=0.85)
+    legend['ticks'] = _concentration_ticks(log_min, log_max)
+    legend['label'] = 'Log₁₀ · pathogen particles / L'
+    return png, legend, outline
 
 
 def _risk_map(cs_path, folder, quantile=0.5):
@@ -627,11 +729,13 @@ def _risk_map(cs_path, folder, quantile=0.5):
         descriptions = list(src.descriptions or [])
     band = _select_band_index(descriptions, 'combined', quantile) or 1
     values, transform, crs = _read_masked(path, band=band)
-    zones, _ = _zone_raster(cs_path, folder, values.shape, transform, crs)
+    area_data = _area_shapes(cs_path, folder, crs)
+    zones, _ = _zone_raster(cs_path, folder, values.shape, transform, crs, area_data)
     # A probability is already 0..1, which is exactly how the app colours it.
     return render_map_png(values, zones, stops=_RISK_STOPS, log_scale=False,
                           vmin=0.0, vmax=1.0,
-                          unit='annual probability of infection')
+                          unit='annual probability of infection',
+                          outlines=[geometry for geometry, _ in area_data[0]], transform=transform)
 
 
 MAP_KINDS = ('emissions', 'concentration', 'risk')
@@ -670,6 +774,6 @@ def render_scenario_maps(cs_path, folder, quantile=0.5, kinds=MAP_KINDS):
         except Exception:
             result = None
         if result:
-            png, legend = result
-            maps[kind] = {'png': png, 'legend': legend}
+            png, legend, outline = result
+            maps[kind] = {'png': png, 'legend': legend, 'outline': outline}
     return maps

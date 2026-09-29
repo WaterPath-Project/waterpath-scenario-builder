@@ -40,7 +40,7 @@ const RegenerateDialog = ({ sections, quantile: initialQuantile, onCancel, onCon
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="bg-white rounded-xl shadow-xl w-full max-w-lg max-h-[85vh] flex flex-col font-inter">
-        <div className="flex items-center justify-between px-5 py-3 border-b border-wpGray-200">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-wpGray-200 bg-wpGray-100 rounded-t-xl">
           <h3 className="font-outfit font-semibold text-wpBlue">Regenerate sections</h3>
           <button onClick={onCancel} className="p-1 text-wpGray-500 hover:text-wpBlue rounded">
             <X size={18} />

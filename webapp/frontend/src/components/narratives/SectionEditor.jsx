@@ -15,6 +15,7 @@ import { Pencil, Undo2, Check, X } from 'lucide-react';
 const KIND_BADGES = {
   intro: 'Introduction',
   driver_table: 'Reference table',
+  model_results: 'Model results',
   driver: 'Driver',
   map: 'Result map',
   risk: 'Risk',
@@ -56,7 +57,7 @@ const SectionEditor = ({ section, onChange }) => {
         section.include === false ? 'border-wpGray-200 bg-wpGray-50 opacity-60' : 'border-wpGray-200'
       }`}
     >
-      <div className="flex items-center gap-3 px-4 py-2 border-b border-wpGray-200 bg-wpGray-50 rounded-t-lg">
+      <div className="flex items-center gap-3 px-4 py-2 border-b border-wpGray-200 bg-wpGray-100 rounded-t-lg">
         <input
           type="checkbox"
           checked={section.include !== false}

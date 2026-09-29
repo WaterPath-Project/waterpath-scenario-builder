@@ -19,6 +19,7 @@ export const BASEMAP_STYLES = [
 
 const STYLE_BASE_URL = 'https://tiles.openfreemap.org/styles';
 const CONTEXT_PANE = 'basemapContextPane';
+const WATER_BODY_COLOR = '#DCE3EA'; // wpGray-200
 
 function loadBasemapStyle(styleId, signal) {
   if (styleId === 'minimal') {
@@ -45,6 +46,23 @@ function contextStyle(style) {
   };
 }
 
+function withWaterBodyColor(style) {
+  return {
+    ...style,
+    layers: style.layers.map(layer => {
+      if (layer.type !== 'fill' || layer['source-layer'] !== 'water') return layer;
+
+      return {
+        ...layer,
+        paint: {
+          ...layer.paint,
+          'fill-color': WATER_BODY_COLOR,
+        },
+      };
+    }),
+  };
+}
+
 export default function OpenFreeMapLayer() {
   const map = useMap();
   const basemapStyle = useSettingsStore(state => state.basemapStyle);
@@ -64,13 +82,14 @@ export default function OpenFreeMapLayer() {
     loadBasemapStyle(basemapStyle, controller.signal)
       .then(style => {
         if (!active) return;
+        const styledMap = withWaterBodyColor(style);
         baseLayer = maplibreGL({
-          style,
+          style: styledMap,
           attribution: '&copy; <a href="https://openfreemap.org/">OpenFreeMap</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
         }).addTo(map);
 
         foregroundLayer = maplibreGL({
-          style: contextStyle(style),
+          style: contextStyle(styledMap),
           pane: CONTEXT_PANE,
           attribution: '',
           interactive: false,

@@ -610,7 +610,7 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
   }, [serializePathwayDiagram]);
 
   return (
-    <div className="flex flex-col min-h-full bg-wpGray-200 font-inter text-sm">
+    <div className="flex flex-col min-h-full bg-wpGray-100 font-inter text-sm">
 
       {/* ── Header bar ── */}
       <div className="flex items-center gap-3 px-6 py-3 bg-wpWhite-100 border-b border-gray-200 sticky top-0 z-10">
@@ -651,7 +651,7 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
       </div>
 
       {/* ── Hero: map + metadata ── */}
-      <div className="grid grid-cols-2 gap-6 px-6 pt-6 pb-4">
+      <div className="mx-6 mt-6 mb-4 grid grid-cols-2 gap-6 rounded-xl border border-gray-200 bg-wpWhite-100 p-4">
 
         {/* Map panel */}
         <div className="rounded-xl overflow-hidden border border-gray-200 bg-white" style={{ height: 280 }}>
@@ -715,49 +715,45 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
       </div>
 
       {/* ── Pathway section ── */}
-      <div className="px-6 pb-8 flex flex-col gap-5">
+      <div className="px-6 pb-8">
+        <div ref={pathwayDiagramRef} className="flex flex-col gap-5 rounded-xl border border-gray-200 bg-wpWhite-100 p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1">
+              <p className="text-md font-semibold text-wpBlue uppercase tracking-wide">Scenario Pathways</p>
+              <p className="text-sm text-gray-400 mt-0.5">
+                Click <span className="font-semibold">+</span> to add a scenario · Click <span className="font-semibold">▶</span> to run an unexecuted scenario
+              </p>
+            </div>
+            <div className="flex items-center gap-1 flex-shrink-0">
+              <button
+                type="button"
+                onClick={handlePrintDiagram}
+                disabled={scenarios.length === 0}
+                className="p-2 text-gray-500 hover:text-wpBlue disabled:opacity-40 transition-colors"
+                title="Print Scenario Pathways"
+                aria-label="Print Scenario Pathways"
+              >
+                <Printer size={17} />
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadDiagram}
+                disabled={scenarios.length === 0}
+                className="p-2 text-gray-500 hover:text-wpBlue disabled:opacity-40 transition-colors"
+                title="Download Scenario Pathways as PNG"
+                aria-label="Download Scenario Pathways as PNG"
+              >
+                <Download size={17} />
+              </button>
+            </div>
+            <div className="flex items-center gap-2 text-sm text-gray-500 flex-shrink-0 pt-0.5">
+              <span className="text-sm text-gray-400">lower</span>
+              <div className="w-44 h-2.5 rounded" style={{ background: legendGradient }} />
+              <span className="text-sm text-gray-400">higher</span>
+              <span className="text-sm text-gray-300 ml-1">{useRisk ? 'total risk' : 'total emissions'}</span>
+            </div>
+          </div>
 
-        {/* Section header + legend */}
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex-1">
-            <p className="text-md font-semibold text-wpBlue uppercase tracking-wide">Scenario Pathways</p>
-            <p className="text-sm text-gray-400 mt-0.5">
-              Click <span className="font-semibold">+</span> to add a scenario · Click <span className="font-semibold">▶</span> to run an unexecuted scenario
-            </p>
-          </div>
-          <div className="flex items-center gap-1 flex-shrink-0">
-            <button
-              type="button"
-              onClick={handlePrintDiagram}
-              disabled={scenarios.length === 0}
-              className="p-2 text-gray-500 hover:text-wpBlue disabled:opacity-40 transition-colors"
-              title="Print Scenario Pathways"
-              aria-label="Print Scenario Pathways"
-            >
-              <Printer size={17} />
-            </button>
-            <button
-              type="button"
-              onClick={handleDownloadDiagram}
-              disabled={scenarios.length === 0}
-              className="p-2 text-gray-500 hover:text-wpBlue disabled:opacity-40 transition-colors"
-              title="Download Scenario Pathways as PNG"
-              aria-label="Download Scenario Pathways as PNG"
-            >
-              <Download size={17} />
-            </button>
-          </div>
-          {/* Risk / emission color legend */}
-          <div className="flex items-center gap-2 text-sm text-gray-500 flex-shrink-0 pt-0.5">
-            <span className="text-sm text-gray-400">lower</span>
-            <div className="w-44 h-2.5 rounded" style={{ background: legendGradient }} />
-            <span className="text-sm text-gray-400">higher</span>
-            <span className="text-sm text-gray-300 ml-1">{useRisk ? 'total risk' : 'total emissions'}</span>
-          </div>
-        </div>
-
-        {/* Flow SVG card */}
-        <div ref={pathwayDiagramRef} className="bg-white rounded-xl border border-gray-200 px-4 py-4">
           {scenarios.length > 0 ? (
             <ScenarioFlowDiagram
               scenarios={scenarios}
@@ -774,8 +770,6 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
             <p className="text-sm text-gray-400 italic py-6 text-center">Loading scenarios…</p>
           )}
         </div>
-
-
       </div>
 
       {/* SSP Scenario creation dialog */}

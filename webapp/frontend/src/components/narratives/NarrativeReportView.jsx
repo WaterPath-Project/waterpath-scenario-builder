@@ -8,7 +8,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
-import { FileText, Plus, Trash2, RefreshCw, Database } from 'lucide-react';
+import { FileText, Plus, Trash2, RefreshCw } from 'lucide-react';
 
 import ReportSetupPanel from './ReportSetupPanel';
 import ReportEditor from './ReportEditor';
@@ -16,7 +16,7 @@ import ReportEditor from './ReportEditor';
 /** Every state of this view sits on the same white sheet. */
 const Card = ({ children }) => (
   <div className="p-6 font-inter">
-    <div className="max-w-5xl mx-auto bg-wpWhite-100 border border-wpBlue-100 rounded-lg shadow-sm p-6">
+    <div className="w-full max-w-[1600px] mx-auto bg-wpWhite-100 border border-wpBlue-100 rounded-lg shadow-sm p-6">
       {children}
     </div>
   </div>
@@ -83,53 +83,52 @@ const NarrativeReportView = ({ caseStudyId }) => {
     );
   }
 
-  if (activeReport) {
-    return (
-      <Card>
-        <ReportEditor
-          caseStudyId={caseStudyId}
-          report={activeReport}
-          onReportChange={setActiveReport}
-          onClose={() => { setActiveReport(null); loadReports(); }}
-        />
-      </Card>
-    );
-  }
-
-  if (creating) {
-    return (
-      <Card>
-        <ReportSetupPanel
-          caseStudyId={caseStudyId}
-          onCancel={() => setCreating(false)}
-          onCreated={(report) => { setCreating(false); setActiveReport(report); }}
-        />
-      </Card>
-    );
-  }
-
   return (
     <div className="flex h-full flex-col overflow-hidden font-inter">
-      <div className="flex flex-shrink-0 items-center justify-between gap-4 border-b border-gray-200 bg-white px-6 py-4">
+      <div className="flex flex-shrink-0 items-center justify-between gap-4 border-b border-wpWhite-200 bg-wpWhite px-6 py-4">
         <div>
           <h2 className="text-md font-outfit font-semibold text-wpBlue">Narrative reports</h2>
-          
         </div>
         <div className="flex items-center gap-2">
+          <select
+            value={activeReport?.report_id || ''}
+            onChange={(event) => {
+              setCreating(false);
+              if (event.target.value) openReport(event.target.value);
+              else setActiveReport(null);
+            }}
+            disabled={loading || reports.length === 0}
+            className="min-w-56 max-w-80 rounded-lg border border-wpGray-300 bg-wpGray-200 px-3 py-2 text-sm text-wpBlue focus:border-wpBlue focus:outline-none focus:ring-2 focus:ring-wpBlue/20 disabled:bg-wpGray-50 disabled:text-wpGray-400 font-semibold"
+            aria-label="Select report"
+          >
+            <option value="">{reports.length ? 'Select a report' : 'No reports yet'}</option>
+            {reports.map((report) => (
+              <option key={report.report_id} value={report.report_id}>{report.title}</option>
+            ))}
+          </select>
           <button
             onClick={loadReports}
-            className="p-2 text-wpBlue-900 hover:text-wpBlue rounded-lg hover:bg-wpGray-100"
+            className="p-2 text-wpGray-500 hover:text-wpBlue rounded-lg hover:bg-wpGray-100"
             title="Refresh"
           >
             <RefreshCw size={16} />
           </button>
           <button
-            onClick={() => setCreating(true)}
+            onClick={() => { setActiveReport(null); setCreating(true); }}
             className="flex items-center gap-2 px-4 py-2 bg-wpCypress text-white text-sm font-medium rounded-lg hover:opacity-90"
           >
             <Plus size={16} />
             New report
           </button>
+          {activeReport && (
+            <button
+              onClick={() => deleteReport(activeReport.report_id)}
+              className="p-2 text-wpGray-400 hover:text-red-600 rounded-lg hover:bg-red-50"
+              title="Delete selected report"
+            >
+              <Trash2 size={16} />
+            </button>
+          )}
         </div>
       </div>
 
@@ -140,11 +139,12 @@ const NarrativeReportView = ({ caseStudyId }) => {
           {error}
         </div>
       )}
+
       {loading && <div className="text-sm text-wpGray-500">Loading…</div>}
 
-      {!loading && reports.length === 0 && (
+      {!loading && !activeReport && !creating && reports.length === 0 && (
         <div className="border border-dashed border-wpGray-300 rounded-xl p-10 text-center">
-          <FileText size={32} className="mx-auto text-wpBlue-900 mb-3" />
+          <FileText size={32} className="mx-auto text-wpGray-300 mb-3" />
           <p className="text-sm text-wpGray-500 mb-4">No reports yet for this case study.</p>
           <button
             onClick={() => setCreating(true)}
@@ -155,40 +155,28 @@ const NarrativeReportView = ({ caseStudyId }) => {
         </div>
       )}
 
-      <div className="space-y-2">
-        {reports.map((report) => (
-          <div
-            key={report.report_id}
-            className="flex items-center justify-between border border-wpGray-200 rounded-lg px-4 py-3 hover:border-wpBlue transition-colors"
-          >
-            <button className="text-left flex-1" onClick={() => openReport(report.report_id)}>
-              <div className="text-sm font-medium text-wpBlue">{report.title}</div>
-              <div className="text-xs text-wpGray-500">
-                {report.scenario_ids.length} scenario{report.scenario_ids.length === 1 ? '' : 's'}
-                {' · '}{report.section_count} sections
-                {report.updated_at ? ` · updated ${report.updated_at.slice(0, 10)}` : ''}
-              </div>
-            </button>
-            <button
-              onClick={() => window.open(
-                `/api/case-studies/${caseStudyId}/reports/${report.report_id}/appendix.pdf`,
-                '_blank', 'noopener',
-              )}
-              className="p-2 text-wpGray-400 hover:text-wpBlue rounded-lg hover:bg-wpGray-100"
-              title="Download model input data (appendix PDF)"
-            >
-              <Database size={16} />
-            </button>
-            <button
-              onClick={() => deleteReport(report.report_id)}
-              className="p-2 text-wpGray-400 hover:text-red-600 rounded-lg hover:bg-red-50"
-              title="Delete report"
-            >
-              <Trash2 size={16} />
-            </button>
-          </div>
-        ))}
-      </div>
+      {creating && (
+        <ReportSetupPanel
+          caseStudyId={caseStudyId}
+          onCancel={() => setCreating(false)}
+          onCreated={(report) => { setCreating(false); setActiveReport(report); loadReports(); }}
+        />
+      )}
+
+      {activeReport && !creating && (
+        <ReportEditor
+          caseStudyId={caseStudyId}
+          report={activeReport}
+          onReportChange={setActiveReport}
+          onClose={() => { setActiveReport(null); loadReports(); }}
+        />
+      )}
+
+      {!loading && !activeReport && !creating && reports.length > 0 && (
+        <div className="py-16 text-center text-sm text-wpGray-500">
+          Select a report above or create a new one.
+        </div>
+      )}
         </Card>
       </div>
     </div>

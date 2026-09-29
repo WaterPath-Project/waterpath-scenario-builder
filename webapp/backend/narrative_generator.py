@@ -168,6 +168,18 @@ def _metrics(scenario: dict) -> dict:
     return (scenario or {}).get('metrics') or {}
 
 
+def _area_delta_rows(current, baseline, value_key: str, is_baseline: bool) -> list:
+    baseline_by_iso = {str(row.get('iso')): row for row in (baseline or [])}
+    rows = []
+    for item in current or []:
+        row = dict(item)
+        base = baseline_by_iso.get(str(row.get('iso')))
+        row['baseline_difference_pct'] = None if is_baseline or not base else _delta(
+            base.get(value_key), row.get(value_key), 'relative_pct')
+        rows.append(row)
+    return rows
+
+
 def _mc(base_val, scen_val, mode: str, thresholds: tuple, fmt_fn=None) -> dict:
     """Return a standardised metric context dict for use in templates.
 
@@ -681,11 +693,18 @@ def _build_map_emissions_ctx(baseline: dict, scenario: dict) -> dict:
         return {'available': False}
     base = _outputs(baseline, 'emissions')
     change = _delta((base or {}).get('total'), stats.get('total'), 'relative_pct')
+    is_baseline = bool(scenario.get('is_baseline'))
+    stats = {
+        **stats,
+        'top_areas': _area_delta_rows(
+            stats.get('top_areas'), (base or {}).get('areas') or (base or {}).get('top_areas'),
+            'value', is_baseline),
+    }
     return {
         'available': True,
         'e': stats,
-        'is_baseline': bool(scenario.get('is_baseline')),
-        'has_change': change is not None and not scenario.get('is_baseline'),
+        'is_baseline': is_baseline,
+        'has_change': change is not None and not is_baseline,
         'change_pct': abs(change) if change is not None else None,
         'increased': bool(change is not None and change > 0),
         'magnitude': _magnitude(change, _T_REL),
@@ -698,11 +717,18 @@ def _build_map_concentration_ctx(baseline: dict, scenario: dict) -> dict:
         return {'available': False}
     base = _outputs(baseline, 'concentration')
     change = _delta((base or {}).get('mean'), stats.get('mean'), 'relative_pct')
+    is_baseline = bool(scenario.get('is_baseline'))
+    stats = {
+        **stats,
+        'top_areas': _area_delta_rows(
+            stats.get('top_areas'), (base or {}).get('areas') or (base or {}).get('top_areas'),
+            'value', is_baseline),
+    }
     return {
         'available': True,
         'c': stats,
-        'is_baseline': bool(scenario.get('is_baseline')),
-        'has_change': change is not None and not scenario.get('is_baseline'),
+        'is_baseline': is_baseline,
+        'has_change': change is not None and not is_baseline,
         'change_pct': abs(change) if change is not None else None,
         'increased': bool(change is not None and change > 0),
         'magnitude': _magnitude(change, _T_REL),
@@ -714,7 +740,11 @@ def _build_map_risk_ctx(baseline: dict, scenario: dict) -> dict:
     risk = (scenario or {}).get('qmra') or {}
     if risk.get('risk_annual_combined') is None:
         return {'available': False}
-    top = risk.get('risk_top_areas') or []
+    baseline_risk = (baseline or {}).get('qmra') or {}
+    top = _area_delta_rows(
+        risk.get('risk_top_areas'),
+        baseline_risk.get('risk_areas') or baseline_risk.get('risk_top_areas'), 'risk',
+        bool(scenario.get('is_baseline')))
     spread = None
     if len(top) > 1 and top[-1].get('risk'):
         spread = top[0]['risk'] / top[-1]['risk']
@@ -736,7 +766,7 @@ def _build_map_risk_ctx(baseline: dict, scenario: dict) -> dict:
 # can attach the right image to each section.
 _MAP_BUILDERS: list[tuple] = [
     ('emissions',     'Emissions to surface water',  'map_emissions.j2',     _build_map_emissions_ctx),
-    ('concentration', 'Concentrations in rivers',    'map_concentration.j2', _build_map_concentration_ctx),
+    ('concentration', 'Concentrations in surface water',    'map_concentration.j2', _build_map_concentration_ctx),
     ('risk',          'Spatial spread of the risk',  'map_risk.j2',          _build_map_risk_ctx),
 ]
 
@@ -862,6 +892,7 @@ def generate_report(context: dict, baseline: dict, scenarios: list,
         on-demand document (see report_render.render_appendix_html).
     """
     scenarios = scenarios or []
+    active_drivers = {metric.get('driver') for metric in (metric_defs or [])}
 
     sections = [{
         'id': 'introduction',
@@ -881,35 +912,40 @@ def generate_report(context: dict, baseline: dict, scenarios: list,
                             _build_driver_table_ctx(metric_defs or [], baseline, scenarios)) or '',
     }]
 
+    def emit_maps(scenario, kinds):
+        """Append the result-map sections whose narrative could be built."""
+        scenario_id = scenario.get('id') or _slug(scenario.get('name'))
+        for map_kind, title, template_file, ctx_builder in _MAP_BUILDERS:
+            if map_kind not in kinds:
+                continue
+            text = _render(template_file, ctx_builder(baseline, scenario))
+            if not text:
+                continue
+            sections.append({
+                'id': f'{scenario_id}--map-{map_kind}',
+                'kind': 'map',
+                'title': title,
+                'scenario_id': scenario_id,
+                'driver': None,
+                'map_kind': map_kind,
+                'markdown': text,
+            })
+
+    emit_maps(baseline, ('emissions', 'concentration', 'risk'))
+
     for scenario in scenarios:
         scenario_id = scenario.get('id') or _slug(scenario.get('name'))
         driver_texts: dict[str, Optional[str]] = {}
 
-        def emit_maps(kinds):
-            """Append the result-map sections whose narrative could be built."""
-            for map_kind, title, template_file, ctx_builder in _MAP_BUILDERS:
-                if map_kind not in kinds:
-                    continue
-                text = _render(template_file, ctx_builder(baseline, scenario))
-                if not text:
-                    continue
-                sections.append({
-                    'id': f'{scenario_id}--map-{map_kind}',
-                    'kind': 'map',
-                    'title': title,
-                    'scenario_id': scenario_id,
-                    'driver': None,
-                    'map_kind': map_kind,
-                    'markdown': text,
-                })
-
         for driver_name, template_file, ctx_builder in _DRIVER_BUILDERS:
+            if driver_name != 'Risk' and driver_name not in active_drivers:
+                continue
             text = _render(template_file, ctx_builder(baseline, scenario))
             driver_texts[driver_name] = text
             # Results follow the input drivers, so the maps sit between the
             # hydrology narrative and the risk narrative they explain.
             if driver_name == 'Risk':
-                emit_maps(('emissions', 'concentration'))
+                emit_maps(scenario, ('emissions', 'concentration'))
             if not text:
                 continue
             sections.append({
@@ -921,7 +957,7 @@ def generate_report(context: dict, baseline: dict, scenarios: list,
                 'markdown': text,
             })
             if driver_name == 'Risk':
-                emit_maps(('risk',))
+                emit_maps(scenario, ('risk',))
 
         sections.append({
             'id': f'{scenario_id}--summary',

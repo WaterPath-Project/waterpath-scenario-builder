@@ -28,6 +28,7 @@ Security notes
   refused, which blocks both SSRF and local file disclosure through the PDF.
 """
 
+import csv
 import io
 import json
 import os
@@ -63,8 +64,8 @@ MAX_MARKDOWN_CHARS = 40_000
 _PNG_MAGIC = b'\x89PNG\r\n\x1a\n'
 _FIGURE_FILE_RE = re.compile(r'^[0-9a-f-]{36}\.png$')
 
-SECTION_KINDS = ('intro', 'driver_table', 'driver', 'map', 'risk', 'summary',
-                 'appendix', 'custom')
+SECTION_KINDS = ('intro', 'driver_table', 'model_results', 'driver', 'map', 'risk',
+                 'summary', 'appendix', 'custom')
 
 # HTML that may survive sanitising. Deliberately excludes every scripting and
 # embedding construct; images are added by the figure workflow, not by Markdown.
@@ -76,7 +77,6 @@ _ALLOWED_TAGS = [
     'table', 'thead', 'tbody', 'tr', 'th', 'td',
 ]
 _ALLOWED_ATTRS = {'th': ['align'], 'td': ['align'], 'span': []}
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Paths and identifiers
@@ -103,7 +103,6 @@ def _report_path(cs, report_id):
         raise ValueError('Invalid report id')
     return os.path.join(_reports_dir(cs), f'{report_id}.json')
 
-
 def _figures_dir(cs, report_id, create=False):
     if not _valid_id(report_id):
         raise ValueError('Invalid report id')
@@ -111,7 +110,6 @@ def _figures_dir(cs, report_id, create=False):
     if create:
         os.makedirs(path, exist_ok=True)
     return path
-
 
 def _now():
     return datetime.now(timezone.utc).isoformat()
@@ -222,6 +220,128 @@ def _output_stats(cs, folder):
         return {}
 
 
+def _active_metric_defs(baseline, scenarios):
+    all_scenarios = [baseline] + list(scenarios or [])
+    active_drivers = {
+        metric['driver']
+        for metric in analytics.DRIVER_METRIC_DEFS
+        if any((scenario.get('metrics') or {}).get(metric['key']) is not None
+               for scenario in all_scenarios)
+    }
+    return [metric for metric in analytics.DRIVER_METRIC_DEFS
+            if metric['driver'] in active_drivers]
+
+
+_RISK_ROUTE_ORDER = ('drinking', 'swimming', 'flooding', 'open_drain',
+                     'playing', 'washing_clothes')
+_RISK_ROUTE_LABELS = {
+    'drinking': 'Drinking water',
+    'swimming': 'Swimming',
+    'flooding': 'Floodwater',
+    'open_drain': 'Open drains',
+    'playing': 'Children playing',
+    'washing_clothes': 'Washing clothes',
+}
+
+
+def _model_results_snapshot(baseline, scenarios):
+    all_scenarios = [baseline] + list(scenarios or [])
+    route_keys = set()
+    for scenario in all_scenarios:
+        route_keys.update(((scenario.get('qmra') or {}).get('risk_routes') or {}).keys())
+    ordered_routes = [key for key in _RISK_ROUTE_ORDER if key in route_keys]
+    ordered_routes.extend(sorted(route_keys - set(_RISK_ROUTE_ORDER)))
+
+    metrics = [{
+        'key': 'risk_combined',
+        'label': 'Annual risk - Combined',
+        'value_format': 'risk',
+        'delta_mode': 'risk_pp',
+    }]
+    metrics.extend({
+        'key': f'risk_{route}',
+        'label': f'Annual risk - {_RISK_ROUTE_LABELS.get(route, route.replace("_", " "))}',
+        'value_format': 'risk',
+        'delta_mode': 'risk_pp',
+    } for route in ordered_routes)
+    metrics.extend([
+        {'key': 'concentration', 'label': 'Mean annual concentration (particles/L)',
+         'value_format': 'scientific', 'delta_mode': 'relative_pct'},
+        {'key': 'water_emissions', 'label': 'Surface-water emissions (particles/year)',
+         'value_format': 'scientific', 'delta_mode': 'relative_pct'},
+        {'key': 'land_emissions', 'label': 'Land emissions (particles/year)',
+         'value_format': 'scientific', 'delta_mode': 'relative_pct'},
+    ])
+
+    def column(scenario):
+        qmra = scenario.get('qmra') or {}
+        outputs = scenario.get('outputs') or {}
+        emissions = outputs.get('emissions') or {}
+        concentration = outputs.get('concentration') or {}
+        values = {
+            'risk_combined': qmra.get('risk_annual_combined'),
+            'concentration': concentration.get('avg_sum'),
+            'water_emissions': emissions.get('total'),
+            'land_emissions': emissions.get('land_total'),
+        }
+        values.update({f'risk_{key}': value
+                       for key, value in (qmra.get('risk_routes') or {}).items()})
+        return {
+            'id': scenario.get('id'),
+            'name': scenario.get('name'),
+            'year': scenario.get('year'),
+            'values': values,
+        }
+
+    return {
+        'metrics': metrics,
+        'baseline': column(baseline),
+        'scenarios': [column(scenario) for scenario in scenarios],
+    }
+
+
+def _format_model_value(value, value_format):
+    if value is None:
+        return 'n/a'
+    number = float(value)
+    if value_format == 'risk':
+        percentage = number * 100.0
+        return f'{percentage:.2e}%' if 0 < abs(percentage) < 0.01 else f'{percentage:.4f}%'
+    return f'{number:.2e}'.replace('e+', 'e')
+
+
+def _format_model_delta(baseline, value, delta_mode):
+    if baseline is None or value is None:
+        return None
+    baseline, value = float(baseline), float(value)
+    if delta_mode == 'risk_pp':
+        return f'{((value - baseline) * 100.0):+.2f} pp'
+    if baseline == 0:
+        return None
+    return f'{((value - baseline) / abs(baseline) * 100.0):+.1f}%'
+
+
+def _model_results_markdown(snapshot):
+    columns = [snapshot['baseline']] + snapshot['scenarios']
+    names = [str(column.get('name') or 'Scenario').replace('|', '\\|') for column in columns]
+    lines = [
+        '| Metric | ' + ' | '.join(names) + ' |',
+        '| --- | ' + ' | '.join('---:' for _ in columns) + ' |',
+    ]
+    baseline_values = snapshot['baseline']['values']
+    for metric in snapshot['metrics']:
+        key = metric['key']
+        cells = []
+        for index, column in enumerate(columns):
+            value = column['values'].get(key)
+            display = _format_model_value(value, metric['value_format'])
+            delta = None if index == 0 else _format_model_delta(
+                baseline_values.get(key), value, metric['delta_mode'])
+            cells.append(f'{display} ({delta})' if delta else display)
+        lines.append(f"| {metric['label']} | " + ' | '.join(cells) + ' |')
+    return '\n'.join(lines)
+
+
 def _table_snapshot(baseline, scenarios):
     """Freeze the driver-comparison table into the report.
 
@@ -229,7 +349,7 @@ def _table_snapshot(baseline, scenarios):
     when the underlying scenario data is edited later.
     """
     return {
-        'metrics': analytics.DRIVER_METRIC_DEFS,
+        'metrics': _active_metric_defs(baseline, scenarios),
         'baseline': {
             'id': baseline.get('id'),
             'name': baseline.get('name'),
@@ -248,12 +368,22 @@ def _table_snapshot(baseline, scenarios):
 
 
 def _build_sections(cs, baseline, scenarios):
+    metric_defs = _active_metric_defs(baseline, scenarios)
     generated = generate_report(
         case_study.derive_case_study_context(cs),
         baseline,
         scenarios,
-        analytics.DRIVER_METRIC_DEFS,
+        metric_defs,
     )
+    model_results = _model_results_snapshot(baseline, scenarios)
+    generated.insert(2, {
+        'id': 'model-results',
+        'kind': 'model_results',
+        'title': 'Model results',
+        'scenario_id': None,
+        'driver': None,
+        'markdown': _model_results_markdown(model_results),
+    })
     return [{
         'id': s['id'],
         'kind': s['kind'],
@@ -320,6 +450,8 @@ def _render_map_figures(cs, report_id, sections, scenarios, quantile):
                 'source': 'auto',
                 'map_kind': map_kind,
                 'legend': image['legend'],
+                'outline': image.get('outline'),
+                'opacity': image['legend'].get('opacity', 1.0),
             })
     return figures
 
@@ -432,8 +564,9 @@ def create_report(case_study_id):
         'created_at': _now(),
         'updated_at': _now(),
         'sections': sections,
-        'figures': _render_map_figures(cs, report_id, sections, scenarios, quantile),
+        'figures': _render_map_figures(cs, report_id, sections, [baseline] + scenarios, quantile),
         'table_snapshot': _table_snapshot(baseline, scenarios),
+        'model_results_snapshot': _model_results_snapshot(baseline, scenarios),
     }
     _write_report(cs, report)
     return jsonify(report), 201
@@ -605,12 +738,14 @@ def regenerate_report(case_study_id, report_id):
         merged.append({**section, 'order': len(merged) + offset})
 
     report['sections'] = merged
-    report['figures'] = _refresh_map_figures(cs, report, merged, scenarios, quantile, target_ids)
+    report['figures'] = _refresh_map_figures(
+        cs, report, merged, [baseline] + scenarios, quantile, target_ids)
     report['scenario_ids'] = [s.get('id') for s in scenarios]
     report['baseline'] = _baseline_heading(baseline)
     report['scenarios'] = _scenario_headings(baseline, scenarios)
     report['baseline_scenario_id'] = baseline.get('id')
     report['table_snapshot'] = _table_snapshot(baseline, scenarios)
+    report['model_results_snapshot'] = _model_results_snapshot(baseline, scenarios)
     _write_report(cs, report)
     return jsonify(report), 200
 
@@ -815,6 +950,77 @@ def download_report_pdf(case_study_id, report_id):
     )
 
 
+def _format_driver_metric(value, value_format):
+    if value is None:
+        return 'n/a'
+    number = float(value)
+    if value_format == 'percent':
+        return f'{number:.1f}%'
+    if value_format == 'hdi':
+        return f'{number:.3f}'
+    if value_format == 'integer':
+        return f'{round(number):,}'
+    if value_format == 'probability':
+        return f'{number:.2e}' if 0 < number < 0.001 else f'{number:.4f}'
+    return f'{number:.2f}'
+
+
+def _metric_applies(metric_key, column):
+    if not metric_key.startswith('wastewater_'):
+        return True
+    mode = column.get('wwtp_mode')
+    if mode == 'point' and metric_key.startswith('wastewater_share_'):
+        return False
+    if mode == 'area' and metric_key in ('wastewater_facility_count',
+                                         'wastewater_total_capacity'):
+        return False
+    return True
+
+
+def download_report_summary_csv(case_study_id, report_id):
+    cs = _find_case_study(case_study_id)
+    if not cs:
+        return jsonify({'error': 'Case study not found'}), 404
+    try:
+        report = _read_report(cs, report_id)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    if report is None:
+        return jsonify({'error': 'Report not found'}), 404
+
+    driver_snapshot = report.get('table_snapshot') or {}
+    result_snapshot = report.get('model_results_snapshot') or {}
+    columns = [driver_snapshot.get('baseline')] + list(driver_snapshot.get('scenarios') or [])
+    columns = [column for column in columns if column]
+    result_columns = [result_snapshot.get('baseline')] + list(result_snapshot.get('scenarios') or [])
+    result_columns = [column for column in result_columns if column]
+
+    output = io.StringIO(newline='')
+    writer = csv.writer(output)
+    writer.writerow(['Category', 'Metric'] + [column.get('name') or 'Scenario'
+                                               for column in columns])
+    for metric in driver_snapshot.get('metrics') or []:
+        values = []
+        for column in columns:
+            value = (column.get('metrics') or {}).get(metric.get('key'))
+            values.append(_format_driver_metric(value, metric.get('value_format'))
+                          if _metric_applies(metric.get('key') or '', column) else 'n/a')
+        writer.writerow([metric.get('driver'), metric.get('label')] + values)
+    for metric in result_snapshot.get('metrics') or []:
+        values = [_format_model_value((column.get('values') or {}).get(metric.get('key')),
+                                      metric.get('value_format'))
+                  for column in result_columns]
+        writer.writerow(['Model results', metric.get('label')] + values)
+
+    safe_title = re.sub(r'[^A-Za-z0-9._-]+', '_', report.get('title') or 'report').strip('_')
+    return send_file(
+        io.BytesIO(output.getvalue().encode('utf-8-sig')),
+        mimetype='text/csv',
+        as_attachment=True,
+        download_name=f'{safe_title or "report"}_summary.csv',
+    )
+
+
 def _data_uri_only_fetcher():
     """The appendix has no figures, so only the inlined webfonts may resolve."""
     from weasyprint.urls import URLFetchingError, default_url_fetcher
@@ -881,6 +1087,7 @@ def register_routes(app, frontend_app):
         ('/api/case-studies/<case_study_id>/reports/<report_id>/figures/<figure_id>', ['DELETE'], delete_figure),
         ('/api/case-studies/<case_study_id>/reports/<report_id>/preview',          ['GET'],    preview_report),
         ('/api/case-studies/<case_study_id>/reports/<report_id>/pdf',              ['GET'],    download_report_pdf),
+        ('/api/case-studies/<case_study_id>/reports/<report_id>/summary.csv',      ['GET'],    download_report_summary_csv),
         ('/api/case-studies/<case_study_id>/reports/<report_id>/appendix.pdf',     ['GET'],    download_report_appendix_pdf),
     ]
     for rule, methods, view in routes:

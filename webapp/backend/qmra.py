@@ -1702,6 +1702,7 @@ def compute_qmra_report_metrics(cs, folder, quantile=0.5, top_areas=5):
          for iso, v in areas.items() if v.get('risk') is not None),
         key=lambda a: a['risk'], reverse=True,
     )
+    metrics['risk_areas'] = ranked
     metrics['risk_top_areas'] = ranked[:top_areas]
     metrics['risk_area_count'] = len(ranked)
 

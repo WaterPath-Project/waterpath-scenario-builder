@@ -31,7 +31,7 @@ The land compartment is dominated by livestock manure, with {{ e.dominant_livest
 Emissions are spatially concentrated. The {{ e.top_areas | length }} highest-emitting areas together release {{ e.top_areas_pct | num }}% of the study-area total, spread over {{ e.area_count }} reporting areas in all:
 
 {% for row in e.top_areas %}
-- **{{ row.name }}**: {{ row.pct | num }}% of total emissions ({{ row.value | sci }})
+- **{{ row.name }}**: {{ row.pct | num }}% of total emissions ({{ row.value | sci }}){% if row.baseline_difference_pct is not none %}{% if row.baseline_difference_pct | abs < 0.05 %}, 0% difference from baseline{% else %}, {{ row.baseline_difference_pct | abs | num }}% {{ "higher" if row.baseline_difference_pct > 0 else "lower" }} than baseline{% endif %}{% endif %}{{ '\n' }}
 {% endfor %}
 {% endif %}
 {% endif %}

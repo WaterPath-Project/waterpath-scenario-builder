@@ -13,7 +13,7 @@
 #}
 {% if discharge.is_significant %}
 Mean river discharge {{ "increases" if discharge.increased else "decreases" }} {{ discharge.magnitude }} by {{ discharge.abs_delta | num }}%,
-{{ "providing greater dilution of pathogen loads and faster downstream transport through the river network" if discharge.increased else "reducing dilution capacity, which can raise pathogen concentrations in rivers for a given emission load" }}.
+{{ "providing greater dilution of pathogen loads and faster downstream transport through the river network" if discharge.increased else "reducing dilution capacity, which can raise pathogen concentrations in surface water for a given emission load" }}.
 {% endif %}
 {% if runoff.is_significant %}
 Surface runoff {{ "increases" if runoff.increased else "decreases" }} {{ runoff.magnitude }} by {{ runoff.abs_delta | num }}%,

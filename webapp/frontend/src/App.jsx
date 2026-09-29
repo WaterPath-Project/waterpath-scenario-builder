@@ -99,7 +99,7 @@ const MetricCard = ({ title, value, subtitle, IconComponent, trend }) => (
 );
 
 const DashboardCard = ({ title, children, className = "" }) => (
-  <div className={`bg-wpWhite-100 rounded-b-xl p-6 mt-0 ${className}`}>
+  <div className={`bg-wpWhite-100 rounded-lg p-6 mt-0 ${className}`}>
     <h3 className="text-lg font-semibold text-wpBlue mb-4">{title}</h3>
     {children}
   </div>
@@ -1370,6 +1370,14 @@ function Dashboard() {
                   >
                     Submit an issue <ExternalLink size={12} />
                   </a>
+                  <a
+                    href="https://github.com/WaterPath-Project/waterpath-scenario-builder"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-1 flex items-center justify-between gap-2 border-t border-gray-100 px-3 py-2 text-xs font-medium text-gray-500 hover:bg-gray-100 hover:text-wpBlue"
+                  >
+                    Version v{import.meta.env.VITE_APP_VERSION} <ExternalLink size={12} />
+                  </a>
                 </div>
               </div>
             </div>
@@ -1422,7 +1430,7 @@ function Dashboard() {
                   <button
                     key={item.id}
                     onClick={() => handleNavigation(item.id)}
-                    className={`flex items-center gap-2 px-4 py-3 font-outfit text-md font-medium border-b-2 transition-colors duration-200 whitespace-nowrap ${
+                    className={`flex items-center font-outfit gap-2 px-4 py-3 text-md font-medium border-b-2 transition-colors duration-200 whitespace-nowrap ${
                       isActive
                         ? navigationActiveClasses[item.id]
                         : 'border-transparent text-gray-500 hover:text-wpBlue hover:border-gray-300'

@@ -22,7 +22,7 @@ Risk is highest in {{ r.risk_peak_month }} and lowest in {{ r.risk_trough_month 
 Risk is unevenly spread across the {{ area_count }} reporting areas{% if spread %}: the most affected area carries a probability of infection {{ spread | num }} times higher than the lowest-ranked area listed here{% endif %}. The most affected areas are:
 
 {% for row in top_areas %}
-- **{{ row.name }}**: annual probability of infection {{ row.risk | sci }}{% if row.cases %}, around {{ row.cases | sci }} expected infections per year{% endif %}{{ "" }}
+- **{{ row.name }}**: annual probability of infection {{ row.risk | sci }}{% if row.cases %}, around {{ row.cases | sci }} expected infections per year{% endif %}{% if row.baseline_difference_pct is not none %}{% if row.baseline_difference_pct | abs < 0.05 %}, 0% difference from baseline{% else %}, {{ row.baseline_difference_pct | abs | num }}% {{ "higher" if row.baseline_difference_pct > 0 else "lower" }} than baseline{% endif %}{% endif %}{{ '\n' }}
 {% endfor %}
 {% endif %}
 {% endif %}

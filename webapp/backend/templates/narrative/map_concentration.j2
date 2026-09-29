@@ -22,7 +22,7 @@ Concentrations vary through the year: they peak in {{ c.peak_month }} at {{ c.pe
 The reporting areas whose rivers carry the highest mean concentrations are:
 
 {% for row in c.top_areas %}
-- **{{ row.name }}**: {{ row.value | sci }} {{ c.unit }}
+- **{{ row.name }}**: {{ row.value | sci }} {{ c.unit }}{% if row.baseline_difference_pct is not none %}{% if row.baseline_difference_pct | abs < 0.05 %}, 0% difference from baseline{% else %}, {{ row.baseline_difference_pct | abs | num }}% {{ "higher" if row.baseline_difference_pct > 0 else "lower" }} than baseline{% endif %}{% endif %}{{ '\n' }}
 {% endfor %}
 {% endif %}
 {% endif %}
