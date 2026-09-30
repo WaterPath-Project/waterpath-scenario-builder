@@ -553,7 +553,9 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
     : null;
 
   const serializePathwayDiagram = useCallback(() => {
-    const svg = pathwayDiagramRef.current?.querySelector('svg');
+    const svg = pathwayDiagramRef.current?.querySelector(
+      'svg[aria-label="Scenario pathway flow diagram"]',
+    );
     if (!svg) return null;
     const clone = svg.cloneNode(true);
     clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');

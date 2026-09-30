@@ -153,6 +153,8 @@ strong { color: #0B4159; }
 
 .section { margin-bottom: 6mm; break-inside: avoid-page; }
 
+.section-map { break-inside: auto; }
+
 .section > h3 {
   border-left: 3px solid #CAD8E3;
   padding-left: 3mm;
@@ -193,7 +195,11 @@ strong { color: #0B4159; }
 
 .figure-map svg {
   position: absolute;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: block;
   width: 100%;
   height: 100%;
   pointer-events: none;
