@@ -21,6 +21,9 @@ const useSettingsStore = create(
        */
       heatmapView: true,
 
+      /** Presentation-only sampling for concentration and risk rasters. */
+      rasterInterpolation: 'none',
+
       /** OpenFreeMap vector style used by every map in the app. */
       basemapStyle: 'bright',
 
@@ -55,6 +58,7 @@ const useSettingsStore = create(
       // ── Actions ──────────────────────────────────────────────────────────────
 
       setHeatmapView:                (value) => set({ heatmapView: value }),
+      setRasterInterpolation:        (value) => set({ rasterInterpolation: value === 'bilinear' ? 'bilinear' : 'none' }),
       setBasemapStyle:               (value) => set({ basemapStyle: value }),
       setFixedColorScale:            (value) => set({ fixedColorScale: value }),
       setDynamicLogMax:              (value) => set({ dynamicLogMax: value }),
@@ -66,10 +70,16 @@ const useSettingsStore = create(
       // Exclude runtime state (dynamicLogMax) from persistence
       partialize: (state) => ({
         heatmapView:               state.heatmapView,
+        rasterInterpolation:       state.rasterInterpolation,
         basemapStyle:              state.basemapStyle,
         fixedColorScale:           state.fixedColorScale,
         choroplethPixelThreshold:  state.choroplethPixelThreshold,
         debugMode:                 state.debugMode,
+      }),
+      merge: (persistedState, currentState) => ({
+        ...currentState,
+        ...persistedState,
+        rasterInterpolation: persistedState?.rasterInterpolation === 'bilinear' ? 'bilinear' : 'none',
       }),
     }
   )

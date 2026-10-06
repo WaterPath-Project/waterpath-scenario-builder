@@ -10,6 +10,7 @@ import {
   isMetricApplicableForScenario,
   DRIVER_META,
 } from './driverMetricUtils';
+import { LoadingState } from './loading/Spinner';
 
 // ── Model outcome helpers ────────────────────────────────────────────────────
 
@@ -347,7 +348,7 @@ export default function ScenarioSummaryView({ caseStudyId }) {
           <p className="text-sm text-gray-500 italic">Select a case study to view the summary.</p>
         )}
         {caseStudyId && loading && (
-          <p className="text-sm text-gray-500 italic">Loading driver comparison…</p>
+          <LoadingState label="Loading driver comparison…" className="py-4" />
         )}
         {caseStudyId && !loading && error && (
           <p className="text-sm text-red-500">{error}</p>

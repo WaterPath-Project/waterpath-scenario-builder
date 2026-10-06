@@ -8,11 +8,12 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
-import { ArrowLeft, ChevronLeft, ChevronRight, Download, Eye, Loader2, RefreshCw, Save } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, Download, Eye, RefreshCw, Save } from 'lucide-react';
 
 import { formatMetricValue, isMetricApplicableForScenario } from '../driverMetricUtils';
 import RegenerateDialog from './RegenerateDialog';
 import SectionEditor from './SectionEditor';
+import Spinner from '../loading/Spinner';
 
 const ReportEditor = ({ caseStudyId, report, onReportChange, onClose }) => {
   const [dirty, setDirty] = useState(false);
@@ -176,7 +177,7 @@ const ReportEditor = ({ caseStudyId, report, onReportChange, onClose }) => {
             className="flex items-center gap-2 px-3 py-2 text-sm text-wpGray-600 border border-wpGray-300 rounded-lg hover:border-wpBlue hover:text-wpBlue disabled:opacity-40"
             title="Rebuild the text from the current scenario data"
           >
-            {regenerating ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
+            {regenerating ? <Spinner size={15} /> : <RefreshCw size={15} />}
             Regenerate
           </button>
           <button
@@ -203,7 +204,7 @@ const ReportEditor = ({ caseStudyId, report, onReportChange, onClose }) => {
             disabled={saving}
             className="flex items-center gap-2 px-4 py-2 bg-wpBlue text-white text-sm font-medium rounded-lg hover:opacity-90 disabled:opacity-40"
           >
-            {saving ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
+            {saving ? <Spinner size={15} /> : <Save size={15} />}
             Save
           </button>
         </div>

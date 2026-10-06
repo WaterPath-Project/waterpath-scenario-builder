@@ -52,6 +52,7 @@ import NarrativeReportView from './components/narratives/NarrativeReportView';
 import NotFound from './components/NotFound';
 import { csSlug as toCsSlug, scenSlug as toScenSlug, paths, parseScenariosParam } from './routes';
 import './index.css';
+import Spinner, { LoadingState } from './components/loading/Spinner';
 
 // Bootstrap global config (pathogens, etc.) as early as possible.
 useConfigStore.getState().fetchConfig();
@@ -232,7 +233,7 @@ function Dashboard() {
     setScenarioDirty,
   } = useScenarioStore();
 
-  const { heatmapView, setHeatmapView, basemapStyle, setBasemapStyle, fixedColorScale, setFixedColorScale, choroplethPixelThreshold, setChoroplethPixelThreshold, debugMode, setDebugMode } = useSettingsStore();
+  const { heatmapView, setHeatmapView, rasterInterpolation, setRasterInterpolation, basemapStyle, setBasemapStyle, fixedColorScale, setFixedColorScale, choroplethPixelThreshold, setChoroplethPixelThreshold, debugMode, setDebugMode } = useSettingsStore();
 
   // Effect to sync activeSection with URL changes
   useEffect(() => {
@@ -790,7 +791,7 @@ function Dashboard() {
                           title="Start GloWPa"
                         >
                           {glowpaOperationLoading && glowpaStatus === 'checking' && !isGlowpaRunning ? (
-                            <RefreshCw size={16} className="animate-spin" />
+                            <Spinner size={16} />
                           ) : (
                             <Play size={16} />
                           )}
@@ -802,7 +803,7 @@ function Dashboard() {
                           title="Stop GloWPa"
                         >
                           {glowpaOperationLoading && glowpaStatus === 'checking' && isGlowpaRunning ? (
-                            <RefreshCw size={16} className="animate-spin" />
+                            <Spinner size={16} />
                           ) : (
                             <Square size={16} />
                           )}
@@ -917,6 +918,23 @@ function Dashboard() {
                   </div>
                   <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
                     <div className="flex-1">
+                      <label htmlFor="raster-interpolation" className="text-sm font-medium text-gray-800">Concentration and risk interpolation</label>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Controls map display only. The boundary blend uses a five-cell neighbourhood on the case-study grid while preserving the original study-area boundary. Model outputs, area statistics and downloads remain unchanged.
+                      </p>
+                    </div>
+                    <select
+                      id="raster-interpolation"
+                      value={rasterInterpolation}
+                      onChange={event => setRasterInterpolation(event.target.value)}
+                      className="ml-6 w-48 px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-wpBlue"
+                    >
+                      <option value="none">None (original)</option>
+                      <option value="bilinear">Bilinear boundary blend</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
+                    <div className="flex-1">
                       <p className="text-sm font-medium text-gray-800">Choropleth threshold</p>
                       <p className="text-xs text-gray-500 mt-0.5">
                         # of valid raster pixels that determine whether maps should be projected in choropleth mode (filled polygons) or raster mode. Increase to prefer choropleth for coarser grids. Set to 0 to always use raster mode.
@@ -1009,7 +1027,7 @@ function Dashboard() {
                     : 'bg-wpBlue hover:bg-wpBlue-300'
                 }`}>
                   {uploadStatus === 'uploading'
-                    ? <RefreshCw size={14} className="animate-spin" />
+                    ? <Spinner size={14} />
                     : <Upload size={14} />}
                   {uploadStatus === 'uploading' ? 'Importing…' : 'Upload .zip'}
                   <input
@@ -1212,10 +1230,7 @@ function Dashboard() {
                     <p>Select a case study from the top bar to view its scenarios</p>
                   </div>
                 ) : loading ? (
-                  <div className="flex items-center justify-center py-12">
-                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-wpBlue"></div>
-                    <span className="ml-3 text-gray-600">Loading scenarios…</span>
-                  </div>
+                  <LoadingState label="Loading scenarios…" size={28} className="py-12" />
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     {(() => {
@@ -1456,7 +1471,7 @@ function Dashboard() {
               onClick={refreshAll}
               disabled={loading}
             >
-              <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
+              {loading ? <Spinner size={13} /> : <RefreshCw size={13} />}
               {loading ? 'Refreshing…' : 'Refresh'}
             </button>
           </div>

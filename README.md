@@ -15,6 +15,12 @@ A multi-container Docker application that runs two essential services:
 #### Windows
 Simply double-click `start.bat` to start all containers and launch the web application.
 
+If you have pulled a new version or changed the code and want a completely fresh run, use:
+```bash
+docker compose down --remove-orphans
+docker compose up --build --force-recreate --renew-anon-volumes
+```
+
 #### macOS/Linux
 1. Make the script executable (one-time setup):
    ```bash
@@ -129,7 +135,7 @@ If ports 3000, 5000, or 8080 are in use:
 ### Container Build Issues
 Force rebuild with:
 ```bash
-docker-compose up --build --force-recreate
+docker compose up --build --force-recreate --renew-anon-volumes
 ```
 
 ### View Logs

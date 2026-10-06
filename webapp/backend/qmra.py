@@ -1147,6 +1147,7 @@ def qmra_get_config(scenario_id):
     cfg = resolve_qmra_config(cs_path, folder)
     cfg['treatment_available'] = bool(_treatment_tif(cs_path, folder))
     cfg['pathogen'] = _scenario_pathogen(scenario_id) or 'cryptosporidium'
+    cfg['model_defaults'] = copy.deepcopy(DEFAULT_QMRA_CONFIG)
     return jsonify(cfg), 200
 
 
@@ -1161,7 +1162,7 @@ def qmra_put_config(scenario_id):
     if not body:
         return jsonify({'error': 'No config provided'}), 400
 
-    for key in ('treatment_available', 'pathogen', 'qmra_available', 'run_groups'):
+    for key in ('treatment_available', 'pathogen', 'qmra_available', 'run_groups', 'model_defaults'):
         body.pop(key, None)
 
     previous_cfg = resolve_qmra_config(cs['folder_path'], folder)
@@ -1210,7 +1211,7 @@ def qmra_areas(scenario_id):
     return jsonify({'areas': areas}), 200
 
 
-def _trigger_qmra_run(scenario_id, cs, folder):
+def _trigger_qmra_run_unlocked(scenario_id, cs, folder):
     """Internal helper: build and launch a QMRA background run.
     Returns run_id or None on error.
     """
@@ -1312,6 +1313,16 @@ def _trigger_qmra_run(scenario_id, cs, folder):
         daemon=True,
     ).start()
     return run_id
+
+
+def _trigger_qmra_run(scenario_id, cs, folder):
+    """Start QMRA only when no other model job is active."""
+    with state.model_run_lock:
+        active_run_id, active_run = state.active_model_run()
+        if active_run:
+            print(f'[QMRA] Run blocked by active model job {active_run_id}')
+            return None
+        return _trigger_qmra_run_unlocked(scenario_id, cs, folder)
 
 
 def qmra_run(scenario_id):

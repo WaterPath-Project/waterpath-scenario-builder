@@ -9,6 +9,7 @@ import {
 } from './Dialog';
 import useConfigStore from '../store/configStore';
 import { validateScenarioName } from '../routes';
+import Spinner from './loading/Spinner';
 
 const SSPScenarioDialog = ({ isOpen, onClose, onSubmit, defaultPathogen = '', prefillData = null }) => {
   const { pathogenOptions } = useConfigStore();
@@ -468,7 +469,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit, defaultPathogen = '', pr
           {isLoadingISIMIP && (
             <div className="bg-blue-50 border border-blue-200 rounded-md p-4">
               <div className="flex items-center gap-3">
-                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
+                <Spinner size={20} className="text-blue-600" />
                 <span className="text-sm font-medium text-blue-900">
                   Auto-calculating assumptions (this may take a few minutes)...
                 </span>

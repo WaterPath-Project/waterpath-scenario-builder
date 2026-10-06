@@ -6,6 +6,7 @@ import AreaSelector from './AreaSelector';
 import AreaEditModeToggle from './AreaEditModeToggle';
 import { scaleGroupProportional } from './areaEditUtils';
 import DriverSaveActions from './DriverSaveActions';
+import { LoadingState } from './loading/Spinner';
 
 // ─── Color palette ────────────────────────────────────────────────────────────
 
@@ -750,32 +751,36 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, isFractionsM
                   {initialRows.length > 1 && (
                     <AreaEditModeToggle mode={editMode} onChange={handleModeChange} />
                   )}
-                  <button
-                    onClick={() => setShowJMPLadder((v) => !v)}
-                    title="Toggle sanitation ladder view"
-                    className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
-                      showJMPLadder
-                        ? 'bg-wpBlue text-white border-wpBlue'
-                        : 'text-gray-500 border-gray-300 hover:bg-gray-100'
-                    }`}
-                  >
-                    <ChartBarStacked size={11} />
-                    <span>Estimate Sanitation Ladder</span>
-                  </button>
-                  <div className="flex gap-0.5 p-0.5 bg-gray-200 rounded-lg">
+                  <div className="flex gap-1 rounded-xl bg-wpGray-100 p-1 font-inter text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setShowJMPLadder((v) => !v)}
+                      title="Toggle sanitation ladder view"
+                      aria-pressed={showJMPLadder}
+                      className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-wpBlue bg-white hover:bg-gray-50 transition-colors ${
+                        showJMPLadder ? 'bg-white text-wpBlue' : 'bg-wpGray-100 hover:bg-wpGray-300'
+                      }`}
+                    >
+                      <ChartBarStacked size={13} />
+                      <span>Estimate sanitation ladder</span>
+                    </button>
+                  </div>
+                  <div className="flex gap-1 rounded-xl bg-wpGray-100 p-1 font-inter text-xs" aria-label="Population setting">
                     {SUFFIXES.map((s) => {
                       const isDisabled = !activeSfx.includes(s);
                       return (
                         <button
                           key={s}
+                          type="button"
                           onClick={() => !isDisabled && setActiveSfxTab(s)}
                           disabled={isDisabled}
-                          className={`relative flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                          aria-pressed={s === resolvedTab}
+                          className={`relative flex items-center rounded-xl gap-1.5 px-3 py-1.5 font-medium transition-colors ${
                             isDisabled
-                              ? 'text-gray-300 cursor-not-allowed'
+                              ? 'bg-wpGray-100 text-gray-300 cursor-not-allowed'
                               : s === resolvedTab
-                                ? 'bg-white shadow-sm text-wpBlue'
-                                : 'text-gray-500 hover:text-gray-700'
+                                ? 'bg-white text-wpBlue'
+                                : 'bg-wpGray-100 hover:bg-wpGray-300'
                           }`}
                         >
                           {SUFFIX_LABELS[s]}
@@ -1133,10 +1138,7 @@ const SanitationLadderPanel = ({ scenario, onDirtyChange, onSaved, actionsTarget
 
   if (fetchState.status === 'loading') {
     return (
-      <div className="flex items-center justify-center py-16 text-gray-400 gap-3">
-        <div className="animate-spin rounded-full h-6 w-6 border-b-2" style={{ borderColor: COLORS.safelyManaged }} />
-        <span className="text-sm">Loading sanitation data…</span>
-      </div>
+      <LoadingState label="Loading sanitation data…" className="py-16" />
     );
   }
 

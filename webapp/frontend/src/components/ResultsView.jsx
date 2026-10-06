@@ -7,7 +7,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import axios from 'axios';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { RefreshCw, BarChart2, AlertTriangle, ArrowRight, X, Droplets, Trees, ArrowUpRight, ArrowDownRight, Minus, Plus, Maximize2, Minimize2, Download, Printer, Waves } from 'lucide-react';
+import { BarChart2, AlertTriangle, ArrowRight, X, Droplets, Trees, ArrowUpRight, ArrowDownRight, Minus, Plus, Maximize2, Minimize2, Download, Printer, Waves } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './Dialog';
 import { paths } from '../routes';
 
@@ -31,6 +31,9 @@ import BuffaloesIcon      from '../../assets/icons/buffaloes.svg';
 import useSettingsStore      from '../store/settingsStore';
 import OpenFreeMapLayer from './OpenFreeMapLayer';
 import { printAnalyticsPage, printMapContainer } from './printUtils';
+import { blendRasterForDisplay } from './rasterInterpolation';
+import Spinner, { LoadingState } from './loading/Spinner';
+import { MapLoadingFrame, MapLoadingPlaceholder, useMapLoadingTracker, addLayerTracked } from './loading/MapLoading';
 
 // Make proj4 available globally so georaster-layer-for-leaflet can reproject
 // TIFs that are not in WGS84 / Web Mercator.
@@ -574,12 +577,14 @@ function AreaDialog({ area, waterStats, landStats, onClose }) {
 function GeoTiffLayer({ url, hlCtx }) {
   const map = useMap();
   const { heatmapView: smoothing, fixedColorScale, setDynamicLogMax } = useSettingsStore();
+  const loadingTracker = useMapLoadingTracker();
 
   useEffect(() => {
     if (!url) return;
     let layer = null;
     let cancelled = false;
     let rafId = null;
+    const endLoading = loadingTracker.begin();
 
     (async () => {
       try {
@@ -628,7 +633,7 @@ function GeoTiffLayer({ url, hlCtx }) {
           e.tile.style.imageRendering = 'pixelated';
         });
 
-        map.addLayer(layer);
+        addLayerTracked(map, layer, endLoading);
         if (hlCtx) {
           hlCtx.current.redraw = () => {
             cancelAnimationFrame(rafId);
@@ -637,11 +642,13 @@ function GeoTiffLayer({ url, hlCtx }) {
         }
       } catch (e) {
         console.error('GeoTIFF render error:', e);
+        endLoading();
       }
     })();
 
     return () => {
       cancelled = true;
+      endLoading();
       cancelAnimationFrame(rafId);
       if (layer) map.removeLayer(layer);
       if (hlCtx) hlCtx.current.redraw = null;
@@ -913,28 +920,29 @@ function EmissionMapPanel({
           {isComparison && <span className="ml-1 text-xs font-normal text-wpTeal bg-wpTeal/10 px-1.5 py-0.5 rounded">comparison</span>}
         </h3>
         {onChangeEmissionType && (
-          <div className="flex rounded-xl overflow-hidden border border-gray-200 text-sm flex-shrink-0">
+          <div className="flex gap-1 rounded-xl bg-wpGray-100 p-1 font-outfit text-sm">
             <button onClick={() => onChangeEmissionType('water')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 font-medium transition-colors ${emissionType==='water' ? 'bg-white text-wpBlue' : 'text-wpBlue-100 bg-wpGray-100 hover:bg-wpGray-300'}`}>
-              <img src={SurfaceWaterIcon} alt="" className="w-8 h-8" style={emissionType !== 'water' ? {opacity:'0.5'} : {}}/> Surface Water
+              className={`flex items-center rounded-xl gap-1.5 px-3 py-1.5 font-medium transition-colors ${emissionType==='water' ? 'bg-white text-wpBlue' : 'bg-wpGray-100 hover:bg-wpGray-300'}`}>
+              <img src={SurfaceWaterIcon} alt="" className="w-8 h-8" style={emissionType !== 'water' ? {opacity:'1'} : {}}/> Surface Water
             </button>
             <button onClick={() => onChangeEmissionType('land')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 font-medium transition-colors ${emissionType==='land' ? 'bg-white text-wpBlue' : 'text-wpBlue-100 bg-wpGray-100 hover:bg-wpGray-300'}`}>
-              <img src={LandIcon} alt="" className="w-8 h-8" style={emissionType !== 'land' ? {opacity:'0.5'} : {}}/> Land
+              className={`flex items-center rounded-xl gap-1.5 px-3 py-1.5 font-medium transition-colors ${emissionType==='land' ? 'bg-white text-wpBlue' : 'bg-wpGray-100 hover:bg-wpGray-300'}`}>
+              <img src={LandIcon} alt="" className="w-8 h-8" style={emissionType !== 'land' ? {opacity:'1'} : {}}/> Land
             </button>
           </div>
         )}
       </div>
 
-      {loading ? (
-        <div className="flex items-center justify-center h-72">
-          <RefreshCw size={20} className="animate-spin text-gray-400 mr-2"/>
-          <span className="text-sm text-gray-400">Loading…</span>
-        </div>
+      {loading && !geojson ? (
+        <MapLoadingPlaceholder height={480} message={isComparison ? 'Loading comparison…' : 'Loading scenario data…'} />
       ) : geojson ? (
         <div className="flex gap-3" style={{ height: 480 }}>
           <div className="flex flex-col min-w-0" style={{ flex: 2 }}>
-            <div className="rounded overflow-hidden border border-gray-100 flex-1">
+            <MapLoadingFrame
+              className="rounded overflow-hidden border border-gray-100 flex-1"
+              loading={loading}
+              message={loading && isComparison ? 'Loading comparison…' : isComparison ? 'Computing comparison…' : 'Loading map layers…'}
+            >
               <MapContainer center={[0,0]} zoom={2} style={{ height:'100%', width:'100%' }} scrollWheelZoom>
                 <OpenFreeMapLayer />
                 <CreateBlendPane/>
@@ -960,7 +968,7 @@ function EmissionMapPanel({
                 <MapExportControls title={title}/>
                 <LegendMapTooltip hlNorm={hlNorm} effectiveLogMax={effectiveLogMax} isDiff={isComparison} diffScale={emScale} />
               </MapContainer>
-            </div>
+            </MapLoadingFrame>
             {isComparison ? <DiffLegend hlCtx={hlCtx} hlNorm={hlNorm} onHlChange={setHlNorm} scale={emScale}/> : <Legend hlCtx={hlCtx} hlNorm={hlNorm} onHlChange={setHlNorm}/>}
           </div>
 
@@ -1484,13 +1492,15 @@ const MONTH_LABELS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct
 
 function HydrologyGeoTiffLayer({ url, hlCtx }) {
   const map = useMap();
-  const { heatmapView: smoothing } = useSettingsStore();
+  const rasterInterpolation = useSettingsStore(state => state.rasterInterpolation);
+  const loadingTracker = useMapLoadingTracker();
 
   useEffect(() => {
     if (!url) return;
     let layer = null;
     let cancelled = false;
     let rafId = null;
+    const endLoading = loadingTracker.begin();
 
     (async () => {
       try {
@@ -1508,9 +1518,12 @@ function HydrologyGeoTiffLayer({ url, hlCtx }) {
           }
         }
         const { logMin, logMax } = concentrationLogBounds(valuesPerL);
+        const displayRaster = rasterInterpolation === 'bilinear'
+          ? blendRasterForDisplay(gr, { logarithmic: true })
+          : gr;
 
         layer = new GeoRasterLayer({
-          georaster: gr,
+          georaster: displayRaster,
           opacity: 0.85,
           resolution: 256,
           caching: false,
@@ -1529,10 +1542,10 @@ function HydrologyGeoTiffLayer({ url, hlCtx }) {
         });
 
         layer.on('tileload', (e) => {
-          if (e.tile) e.tile.style.imageRendering = 'pixelated';
+          if (e.tile) e.tile.style.imageRendering = rasterInterpolation === 'bilinear' ? 'auto' : 'pixelated';
         });
 
-        map.addLayer(layer);
+        addLayerTracked(map, layer, endLoading);
         if (hlCtx) {
           hlCtx.current.redraw = () => {
             cancelAnimationFrame(rafId);
@@ -1541,16 +1554,18 @@ function HydrologyGeoTiffLayer({ url, hlCtx }) {
         }
       } catch (e) {
         console.error('Hydrology GeoTIFF render error:', e);
+        endLoading();
       }
     })();
 
     return () => {
       cancelled = true;
+      endLoading();
       cancelAnimationFrame(rafId);
       if (layer) map.removeLayer(layer);
       if (hlCtx) hlCtx.current.redraw = null;
     };
-  }, [url, map, smoothing]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [url, map, rasterInterpolation]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return null;
 }
@@ -1576,17 +1591,20 @@ function hydroDiffColor(pct, scale = 100) {
 
 function HydrologyDiffGeoTiffLayer({ url, hlCtx, onError, onStats, scale: scaleProp, colorFn }) {
   const map = useMap();
+  const rasterInterpolation = useSettingsStore(state => state.rasterInterpolation);
+  const loadingTracker = useMapLoadingTracker();
 
   useEffect(() => {
     if (!url) return;
     let layer = null;
     let cancelled = false;
     let rafId = null;
+    const endLoading = loadingTracker.begin();
 
     (async () => {
       try {
         const res = await fetch(url, { cache: 'no-store' });
-        if (!res.ok) { if (!cancelled) onError?.(); return; }
+        if (!res.ok) { endLoading(); if (!cancelled) onError?.(); return; }
         const ab = await res.arrayBuffer();
         const gr = await parseGeoraster(ab);
         if (cancelled) return;
@@ -1603,14 +1621,17 @@ function HydrologyDiffGeoTiffLayer({ url, hlCtx, onError, onStats, scale: scaleP
             }
           }
         }
-        if (!isFinite(vmin)) { if (!cancelled) onError?.(); return; }
+        if (!isFinite(vmin)) { endLoading(); if (!cancelled) onError?.(); return; }
         const absMax = Math.max(Math.abs(vmin), Math.abs(vmax)) || 1;
         // Use passed scale if provided (e.g. from annual total change); else auto-range from pixels.
         const scale = (scaleProp != null) ? scaleProp : diffScale(absMax);
         if (!cancelled) onStats?.({ min: vmin, max: vmax, absMax, scale });
+        const displayRaster = rasterInterpolation === 'bilinear'
+          ? blendRasterForDisplay(gr)
+          : gr;
 
         layer = new GeoRasterLayer({
-          georaster: gr,
+          georaster: displayRaster,
           opacity: 0.85,
           resolution: 256,
           caching: false,
@@ -1628,10 +1649,10 @@ function HydrologyDiffGeoTiffLayer({ url, hlCtx, onError, onStats, scale: scaleP
         });
 
         layer.on('tileload', (e) => {
-          if (e.tile) e.tile.style.imageRendering = 'pixelated';
+          if (e.tile) e.tile.style.imageRendering = rasterInterpolation === 'bilinear' ? 'auto' : 'pixelated';
         });
 
-        map.addLayer(layer);
+        addLayerTracked(map, layer, endLoading);
         if (hlCtx) {
           hlCtx.current.redraw = () => {
             cancelAnimationFrame(rafId);
@@ -1640,17 +1661,19 @@ function HydrologyDiffGeoTiffLayer({ url, hlCtx, onError, onStats, scale: scaleP
         }
       } catch (e) {
         console.error('Hydrology diff GeoTIFF render error:', e);
+        endLoading();
         if (!cancelled) onError?.();
       }
     })();
 
     return () => {
       cancelled = true;
+      endLoading();
       cancelAnimationFrame(rafId);
       if (layer) map.removeLayer(layer);
       if (hlCtx) hlCtx.current.redraw = null;
     };
-  }, [url, map]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [url, map, rasterInterpolation]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return null;
 }
@@ -1661,11 +1684,13 @@ function HydrologyDiffGeoTiffLayer({ url, hlCtx, onError, onStats, scale: scaleP
 
 function HydroInputRasterLayer({ url, colorFn, opacity = 0.75, onStats }) {
   const map = useMap();
+  const loadingTracker = useMapLoadingTracker();
 
   useEffect(() => {
     if (!url || !colorFn) return;
     let layer = null;
     let cancelled = false;
+    const endLoading = loadingTracker.begin();
 
     (async () => {
       try {
@@ -1682,7 +1707,7 @@ function HydroInputRasterLayer({ url, colorFn, opacity = 0.75, onStats }) {
             if (v > vmax) vmax = v;
           }
         }
-        if (!isFinite(vmin)) return;
+        if (!isFinite(vmin)) { endLoading(); return; }
         if (onStats) onStats({ min: vmin, max: vmax });
         const range = vmax - vmin || 1;
         layer = new GeoRasterLayer({
@@ -1698,14 +1723,16 @@ function HydroInputRasterLayer({ url, colorFn, opacity = 0.75, onStats }) {
           },
         });
         layer.on('tileload', (e) => { if (e.tile) e.tile.style.imageRendering = 'pixelated'; });
-        map.addLayer(layer);
+        addLayerTracked(map, layer, endLoading);
       } catch (e) {
         console.error('HydroInputRasterLayer error:', e);
+        endLoading();
       }
     })();
 
     return () => {
       cancelled = true;
+      endLoading();
       if (layer) map.removeLayer(layer);
     };
   }, [url, colorFn, opacity, map]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1720,9 +1747,11 @@ function HydroInputRasterLayer({ url, colorFn, opacity = 0.75, onStats }) {
 
 function FlowArrowLayer({ scenarioId, month, minAccPct = 0, onLegendData }) {
   const map = useMap();
+  const loadingTracker = useMapLoadingTracker();
 
   useEffect(() => {
     if (!scenarioId) return;
+    const endLoading = loadingTracker.begin();
     let cancelled = false;
     let rafId = null;
     let features = [];
@@ -1862,10 +1891,12 @@ function FlowArrowLayer({ scenarioId, month, minAccPct = 0, onLegendData }) {
         });
         scheduleRedraw();
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(endLoading);
 
     return () => {
       cancelled = true;
+      endLoading();
       cancelAnimationFrame(rafId);
       map.off('move moveend zoomend', onMove);
       map.off('resize', onResize);
@@ -2057,7 +2088,7 @@ function HydroMapControls({ activeOverlay, setActiveOverlay, minAccPct, setMinAc
 function MapWithSidePanel({
   title, titleControls, isComparison, hasGeodata = true,
   mapChildren, legendChildren, sidePanelChildren,
-  height = 480,
+  height = 480, mapLoading = false, mapLoadingMessage,
 }) {
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
@@ -2075,9 +2106,13 @@ function MapWithSidePanel({
       {hasGeodata ? (
         <div className="flex gap-3" style={{ height }}>
           <div className="flex flex-col min-w-0" style={{ flex: 2 }}>
-            <div className="rounded overflow-hidden border border-gray-100 flex-1">
+            <MapLoadingFrame
+              className="rounded overflow-hidden border border-gray-100 flex-1"
+              loading={mapLoading}
+              message={mapLoadingMessage || (isComparison ? 'Computing comparison…' : 'Loading map layers…')}
+            >
               {mapChildren}
-            </div>
+            </MapLoadingFrame>
             {legendChildren}
           </div>
           <div className="flex flex-col border-l border-gray-100 pl-3 overflow-hidden" style={{ flex: 1 }}>
@@ -2136,7 +2171,7 @@ function ConcentrationAreaDialog({ area, avgAreaStats, onClose, areaStatsLoading
               </div>
             </>
           ) : (areaStatsLoading || secondaryAreaStatsLoading ? (
-            <p className="text-xs text-gray-400 italic">Loading data for this area...</p>
+            <LoadingState label="Loading data for this area…" size={16} className="py-2" />
           ) : (
             <p className="text-xs text-gray-400 italic">No data available for this area</p>
           ))}
@@ -2146,7 +2181,7 @@ function ConcentrationAreaDialog({ area, avgAreaStats, onClose, areaStatsLoading
   );
 }
 
-function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondaryScenarioId, secondaryHydrologyFiles, areaNames, pathogen }) {
+function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondaryScenarioId, secondaryHydrologyFiles, areaNames, pathogen, loading = false }) {
   // 'avg' = averaged view (default); 1–12 = specific month
   const [month,        setMonth]        = useState('avg');
   const [showDiff,     setShowDiff]     = useState(true);  // false = absolute concentration values
@@ -2624,7 +2659,7 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
           <p className="text-5xl font-bold font-outfit tabular-nums text-wpBlue">{formatScientific(primaryGlobalValue)}</p>
         ) : statsLoading || (isComparison && secondaryStatsLoading) ? (
           <div className="flex items-center gap-1.5 text-xs text-gray-400">
-            <RefreshCw size={11} className="animate-spin" /> Computing…
+            <Spinner size={12} className="text-wpBlue" /> Computing…
           </div>
         ) : null}
         <p className="text-sm text-gray-400 mt-1">pathogen particles / L</p>
@@ -2636,9 +2671,7 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
       {/* ── Area bar list */}
       <div className="overflow-y-auto flex-1 space-y-0.5 pr-1">
         {areaStatsLoading || secondaryAreaStatsLoading ? (
-          <div className="text-sm text-wpBlue-900 text-center py-3 flex items-center justify-center gap-1.5">
-            <RefreshCw size={11} className="animate-spin" /> Loading area data…
-          </div>
+          <LoadingState label="Loading area data…" size={16} className="py-3" />
         ) : rankedAreas.length > 0 ? rankedAreas.map(({ iso, mean: meanVal, max: maxVal, secondaryMean, secondaryMax }) => {
           const val     = areaStatMode === 'mean' ? meanVal : maxVal;
           const secVal  = areaStatMode === 'mean' ? secondaryMean : secondaryMax;
@@ -2679,7 +2712,7 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
             <button
               onClick={() => { setMonth('avg'); setShowDiff(true); }}
               className={`px-2 py-0.5 rounded-lg text-sm font-medium transition-colors ${
-                month === 'avg' ? 'bg-wpBlue text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                month === 'avg' ? 'bg-wpBlue text-white' : 'bg-wpGray-100 text-wpBlue hover:bg-wpGray-200'
               }`}
             >Monthly average</button>
             <div className={`flex rounded-lg overflow-hidden border border-gray-200 text-sm flex-shrink-0 ${month === 'avg' ? 'opacity-45' : ''}`}>
@@ -2687,14 +2720,14 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
                 disabled={month === 'avg'}
                 onClick={() => setShowDiff(true)}
                 className={`px-2 py-0.5 text-sm font-medium transition-colors disabled:cursor-not-allowed ${
-                  showDiff ? 'bg-wpBlue text-white' : 'text-wpBlue/60 bg-gray-100 hover:bg-gray-200'
+                  showDiff ? 'bg-wpBlue text-white' : 'text-wpBlue/60 bg-wpGray-100 hover:bg-wpGray-200'
                 }`}
               >{isComparison ? 'Difference between scenarios' : 'Difference from average'}</button>
               <button
                 disabled={month === 'avg'}
                 onClick={() => setShowDiff(false)}
                 className={`px-2 py-0.5 font-medium transition-colors disabled:cursor-not-allowed ${
-                  !showDiff ? 'bg-wpBlue text-white' : 'text-wpBlue/60 bg-gray-100 hover:bg-gray-200'
+                  !showDiff ? 'bg-wpBlue text-white' : 'text-wpBlue/60 bg-wpGray-100 hover:bg-wpGray-200'
                 }`}
               >Absolute values</button>
             </div>
@@ -2727,8 +2760,8 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
                 <button
                   key={m}
                   onClick={() => setMonth(m)}
-                  className={`flex flex-col items-center px-0.5 py-1 rounded text-sm transition-colors ${
-                    sel ? 'bg-wpBlue/10 text-wpBlue ring-1 ring-inset ring-wpBlue' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
+                  className={`flex flex-col items-center px-0.5 py-1 rounded-lg text-sm transition-colors ${
+                    sel ? 'bg-wpBlue/10 text-wpBlue ring-1 ring-inset ring-wpBlue' : 'bg-wpGray-100 text-wpBlue-900 hover:bg-wpGray-200'
                   }`}
                 >
                   <span className="font-medium leading-none mb-0.5">{MONTH_LABELS[m - 1]}</span>
@@ -2766,6 +2799,8 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
       isComparison={isComparison}
       hasGeodata={!!geojson}
       height={520}
+      mapLoading={loading}
+      mapLoadingMessage={loading ? 'Loading comparison…' : undefined}
       legendChildren={legendBlock}
       mapChildren={
         <MapContainer center={[0, 0]} zoom={2} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
@@ -3188,7 +3223,7 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
           <span className="pt-2 text-xs font-semibold uppercase tracking-wide text-gray-400">Scenarios:</span>
           <div className="flex min-w-0 flex-1 flex-col gap-2">
             <div className="flex flex-wrap gap-2">
-              {scenariosLoading && <span className="text-sm text-gray-400 italic py-1">Loading…</span>}
+              {scenariosLoading && <LoadingState label="Loading scenarios…" size={16} className="py-1" />}
               {!scenariosLoading && availableScenarios.length === 0 && selectedCsId && (
                 <span className="text-sm text-gray-400 italic py-1">No scenarios found</span>
               )}
@@ -3307,7 +3342,12 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
               secondaryHydrologyFiles={isComparison ? secondaryData?.hydrologyFiles : null}
               areaNames={areaNames}
               pathogen={availableScenarios.find(s => s.id === primaryScId)?.pathogen}
+              loading={isLoading}
             />
+          ) : isLoading ? (
+            <div className="bg-white rounded-lg border border-gray-200 p-4">
+              <MapLoadingPlaceholder height={520} message={isComparison ? 'Loading comparison…' : 'Loading scenario data…'} />
+            </div>
           ) : (
             <div className="flex-1 flex items-center justify-center py-24">
               <div className="text-center text-gray-400">
@@ -3331,7 +3371,12 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
               secondaryScenarioName={isComparison ? secondaryScenario?.name || secondaryScId : null}
               geojson={geojson}
               areaNames={areaNames}
+              dataLoading={isLoading}
             />
+          ) : isLoading ? (
+            <div className="bg-white rounded-lg border border-gray-200 p-4">
+              <MapLoadingPlaceholder height={480} message={isComparison ? 'Loading comparison…' : 'Loading scenario data…'} />
+            </div>
           ) : (
             <div className="flex-1 flex items-center justify-center py-24">
               <div className="text-center text-gray-400">

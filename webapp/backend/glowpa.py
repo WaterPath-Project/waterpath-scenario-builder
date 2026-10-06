@@ -327,37 +327,6 @@ def _r_iso_csv_to_rds_snippet(csv_path, rds_path, treatment_csv_path=None):
     )
 
 
-_R_PATHOGENFLOWS_CACHE = (
-    "local({"
-    " .pf_cache_dir <- '/tmp/pf_csv_cache'; dir.create(.pf_cache_dir, showWarnings=FALSE, recursive=TRUE);"
-    " .pf_urls <- c("
-    "  k2p='http://data.waterpathogens.org/dataset/eda3c64c-479e-4177-869c-93b3dc247a10/resource/f99291ab-d536-4536-a146-083a07ea49b9/download/k2p_persistence.csv',"
-    "  jmp='http://data.waterpathogens.org/dataset/86741b90-62ab-4dc2-941c-60c85bfe7ffc/resource/9113d653-0e10-4b4d-9159-344c494f7fc7/download/jmp_assumptions.csv'"
-    " );"
-    " for (nm in names(.pf_urls)) {"
-    "  dest <- file.path(.pf_cache_dir, paste0(nm, '.csv'));"
-    "  if (!file.exists(dest) || file.size(dest) < 1000) {"
-    "   for (att in 1:5) {"
-    "    tryCatch(suppressWarnings(download.file(.pf_urls[[nm]], dest, quiet=TRUE)),"
-    "     error=function(e) NULL);"
-    "    if (file.exists(dest) && file.size(dest) > 1000) break;"
-    "    if (file.exists(dest)) file.remove(dest)"
-    "   }"
-    "  }"
-    " };"
-    " .pf_map <- setNames(as.list(file.path(.pf_cache_dir, paste0(names(.pf_urls), '.csv'))), .pf_urls);"
-    " .orig_read_csv <- utils::read.csv;"
-    " .patched_read_csv <- function(file, ...) {"
-    "  if (is.character(file) && !is.null(.pf_map[[file]]) && file.exists(.pf_map[[file]])) file <- .pf_map[[file]];"
-    "  .orig_read_csv(file, ...)"
-    " };"
-    " env <- getNamespace('utils');"
-    " base::unlockBinding('read.csv', env);"
-    " assign('read.csv', .patched_read_csv, envir=env)"
-    "}); "
-)
-
-
 def build_r_expr_exec(cs_folder_name, folder, yaml_filename, cs_path=None, wwtp_mode='POINT'):
     """R expression for docker exec mode."""
     if cs_path:
@@ -895,10 +864,26 @@ def diagnose_scenario(scenario_id):
 
 def run_model(scenario_id):
     """Start the glowpa model for a scenario."""
+    run_id = str(uuid.uuid4())
     try:
         body = request.get_json(silent=True) or {}
         debug_mode = bool(body.get('debug_mode', False))
         include_risk = bool(body.get('include_risk', False))
+
+        with state.model_run_lock:
+            active_run_id, active_run = state.active_model_run()
+            if active_run:
+                return jsonify({
+                    'error': 'Another model run is already in progress.',
+                    'active_run_id': active_run_id,
+                    'active_scenario_id': active_run.get('scenario_id'),
+                }), 409
+            model_runs[run_id] = {
+                'status': 'preparing',
+                'kind': 'glowpa',
+                'scenario_id': scenario_id,
+                'started_at': datetime.now().isoformat(),
+            }
 
         cs, folder = _locate_scenario(scenario_id)
         cs_path = cs['folder_path']
@@ -919,9 +904,9 @@ def run_model(scenario_id):
         with open(yaml_path, 'w', encoding='utf-8') as f:
             f.write(yaml_content)
         os.makedirs(os.path.join(cs_path, 'output', folder), exist_ok=True)
-        run_id = str(uuid.uuid4())
         model_runs[run_id] = {
             'status': 'pending',
+            'kind': 'glowpa',
             'mode': mode,
             'scenario_id': scenario_id,
             'cs_path': cs_path,
@@ -941,9 +926,27 @@ def run_model(scenario_id):
         threading.Thread(target=_execute_model_run, args=(run_id, params), daemon=True).start()
         return jsonify({'status': 'started', 'run_id': run_id, 'mode': mode}), 202
     except ValueError as exc:
+        with state.model_run_lock:
+            model_runs.pop(run_id, None)
         return jsonify({'error': str(exc)}), 404
     except Exception as exc:
+        with state.model_run_lock:
+            model_runs.pop(run_id, None)
         return jsonify({'error': str(exc)}), 500
+
+
+def active_model_run():
+    """Return the active model job for global run controls."""
+    run_id, run = state.active_model_run()
+    if not run:
+        return jsonify({'active': False}), 200
+    return jsonify({
+        'active': True,
+        'run_id': run_id,
+        'scenario_id': run.get('scenario_id'),
+        'status': run.get('status'),
+        'kind': run.get('kind', 'glowpa'),
+    }), 200
 
 
 def run_status(run_id):
@@ -1058,6 +1061,9 @@ def register_routes(app, frontend_app):
         app_obj.add_url_rule('/api/scenarios/<scenario_id>/run-model',
                              endpoint=f'{prefix}_run_model',
                              view_func=run_model, methods=['POST'])
+        app_obj.add_url_rule('/api/model-runs/active',
+                             endpoint=f'{prefix}_active_model_run',
+                             view_func=active_model_run)
         app_obj.add_url_rule('/api/run-status/<run_id>',
                              endpoint=f'{prefix}_run_status',
                              view_func=run_status)

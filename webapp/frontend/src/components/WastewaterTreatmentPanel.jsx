@@ -7,6 +7,7 @@ import DataGridView from './DataGridView';
 import useConfigStore from '../store/configStore';
 import AreaSelector from './AreaSelector';
 import DriverSaveActions from './DriverSaveActions';
+import Spinner, { LoadingState } from './loading/Spinner';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -588,13 +589,15 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
       {/* Mode toggle + Save/Reset */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-3 flex items-center gap-3 flex-wrap">
         <span className="text-sm font-semibold text-wpBlue">I have data on:</span>
-        <div className="flex gap-0.5 p-0.5 bg-gray-200 rounded-lg">
+        <div className="flex gap-1 rounded-xl bg-wpGray-100 p-1 font-inter text-xs" aria-label="Wastewater treatment data type">
           {[{id:'fractions',label:'Treatment fractions'},{id:'facilities',label:'WWTP locations'}].map(opt => (
             <button
               key={opt.id}
+              type="button"
               onClick={() => handleModeSwitch(opt.id)}
-              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                mode === opt.id ? 'bg-white shadow-sm text-wpBlue' : 'text-gray-500 hover:text-gray-700'
+              aria-pressed={mode === opt.id}
+              className={`flex items-center rounded-xl gap-1.5 px-3 py-1.5 font-medium transition-colors ${
+                mode === opt.id ? 'bg-white text-wpBlue' : 'bg-wpGray-100 hover:bg-wpGray-300'
               }`}
             >
               {opt.label}
@@ -701,7 +704,7 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
           <div className="bg-gray-50 relative flex-shrink-0" style={{ height: MAP_H }}>
             {geoLoading ? (
               <div className="absolute inset-0 flex items-center justify-center">
-                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-wpBlue" />
+                <Spinner size={22} className="text-wpBlue" />
               </div>
             ) : (
               <>
@@ -785,7 +788,7 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
             <div className="ml-auto flex items-center gap-2">
               <button
                 onClick={handleAddRow}
-                className="flex items-center gap-1 px-2 py-1 text-xs text-wpBlue border border-wpBlue-200 hover:bg-blue-50 rounded transition-colors"
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-wpBlue-300 text-xs font-semibold text-wpBlue border-wpGray-200 bg-white hover:bg-gray-50 transition-colors"
               >
                 <Plus size={12} /> Add WWTP
               </button>
@@ -800,7 +803,7 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
           </div>
 
           {wwtp.length === 0 ? (
-            <div className="flex flex-col items-center justify-center flex-1 py-12 text-gray-400 gap-2">
+            <div className="px-2.5 py-1.5 rounded-lg border text-xs font-semibold text-wpBlue border-wpGray-200 bg-white hover:bg-gray-50 transition-colors">
               <span className="text-sm">No WWTPs defined</span>
               <span className="text-xs">Click "Add WWTP" to add a facility</span>
             </div>
@@ -1009,10 +1012,7 @@ const WastewaterTreatmentPanel = ({ scenario, onDirtyChange, onSaved, actionsTar
 
   if (state.status === 'loading') {
     return (
-      <div className="flex items-center justify-center py-16 text-gray-400 gap-3">
-        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-wpBlue" />
-        <span className="text-sm">Loading wastewater data…</span>
-      </div>
+      <LoadingState label="Loading wastewater data…" className="py-16" />
     );
   }
 

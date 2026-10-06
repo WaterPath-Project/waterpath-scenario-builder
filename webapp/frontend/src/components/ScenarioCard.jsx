@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { BarChart3, Edit, Save, X, Trash2 } from 'lucide-react';
 import useScenarioStore from '../store/scenarioStore';
+import Spinner from './loading/Spinner';
 
 const SCENARIO_STATUS = {
   error: {
@@ -277,7 +278,7 @@ const ScenarioCard = ({ scenario, selectedCaseStudy, analyticsInfo }) => {
 
         {isSaving && (
           <div className="mt-3 flex items-center gap-2 text-sm text-green-600">
-            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-green-600"></div>
+            <Spinner size={16} />
             <span>Saving scenario...</span>
           </div>
         )}

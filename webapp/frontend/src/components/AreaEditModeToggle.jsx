@@ -19,17 +19,21 @@ export default function AreaEditModeToggle({ mode, onChange, className = '' }) {
     { key: 'individual', label: 'Edit individual areas', Icon: MapPin },
   ];
   return (
-    <div className={`flex gap-0.5 p-0.5 bg-gray-100 border border-gray-200 rounded-lg flex-shrink-0 ${className}`}>
+    <div
+      className={`flex gap-1 rounded-xl bg-wpGray-100 p-1 font-inter text-xs flex-shrink-0 ${className}`}
+      aria-label="Area editing scope"
+    >
       {opts.map(({ key, label, Icon }) => (
         <button
           key={key}
           type="button"
           onClick={() => onChange(key)}
-          className={`flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium rounded-md transition-colors ${
-            mode === key ? 'bg-white text-wpBlue' : 'text-gray-500 hover:text-gray-700'
+          aria-pressed={mode === key}
+          className={`flex items-center rounded-xl gap-1.5 px-3 py-1.5 font-medium transition-colors ${
+            mode === key ? 'bg-white text-wpBlue' : 'bg-wpGray-100 hover:bg-wpGray-300'
           }`}
         >
-          <Icon size={11} />
+          <Icon size={13} />
           {label}
         </button>
       ))}

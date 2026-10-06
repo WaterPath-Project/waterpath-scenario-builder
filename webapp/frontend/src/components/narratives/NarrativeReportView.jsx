@@ -12,6 +12,7 @@ import { FileText, Plus, Trash2, RefreshCw } from 'lucide-react';
 
 import ReportSetupPanel from './ReportSetupPanel';
 import ReportEditor from './ReportEditor';
+import { LoadingState } from '../loading/Spinner';
 
 /** Every state of this view sits on the same white sheet. */
 const Card = ({ children }) => (
@@ -140,7 +141,7 @@ const NarrativeReportView = ({ caseStudyId }) => {
         </div>
       )}
 
-      {loading && <div className="text-sm text-wpGray-500">Loading…</div>}
+      {loading && <LoadingState label="Loading reports…" />}
 
       {!loading && !activeReport && !creating && reports.length === 0 && (
         <div className="border border-dashed border-wpGray-300 rounded-xl p-10 text-center">

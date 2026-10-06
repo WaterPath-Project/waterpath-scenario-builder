@@ -9,6 +9,7 @@ import SSPScenarioDialog from './SSPScenarioDialog';
 import ConfirmDialog from './ConfirmDialog';
 import { paths } from '../routes';
 import OpenFreeMapLayer from './OpenFreeMapLayer';
+import { LoadingState } from './loading/Spinner';
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
 const FLOW_LABEL_W   = 160;          // wider to fit inline description text
@@ -81,7 +82,7 @@ function FitBoundsToData({ geojson }) {
 }
 
 // ─── ScenarioFlowDiagram ─────────────────────────────────────────────────────
-function ScenarioFlowDiagram({ scenarios, emissionTotals, riskTotals, colorScale, emissionRange, onCreateScenario, onRunScenario, runningScenarios, onNavigateScenario }) {
+function ScenarioFlowDiagram({ scenarios, emissionTotals, riskTotals, colorScale, emissionRange, onCreateScenario, onRunScenario, runningScenarios, modelRunActive, onNavigateScenario }) {
   const baseline = useMemo(
     () => scenarios.find(s => String(s.is_baseline).toLowerCase() === 'true'),
     [scenarios]
@@ -283,12 +284,13 @@ function ScenarioFlowDiagram({ scenarios, emissionTotals, riskTotals, colorScale
             {unrunYears.map(yr => {
               const sc        = stops[yr];
               const isRunning = !!runningScenarios?.[sc.id];
+              const isBlocked = modelRunActive && !isRunning;
               const cx        = FLOW_YEAR_X[yr];
               return (
                 <g key={yr}
-                  style={{ cursor: isRunning ? 'default' : 'pointer' }}
-                  onClick={() => !isRunning && onRunScenario?.(sc.id)}
-                  title={isRunning ? 'Running…' : 'Click to run this scenario'}>
+                  style={{ cursor: isRunning || isBlocked ? 'default' : 'pointer', opacity: isBlocked ? 0.45 : 1 }}
+                  onClick={() => !isRunning && !isBlocked && onRunScenario?.(sc.id)}
+                  title={isRunning ? 'Running…' : isBlocked ? 'Another model run is already in progress' : 'Click to run this scenario'}>
                   {isRunning ? (
                     <>
                       <circle cx={cx} cy={sspY} r={11} fill="white" stroke={SSP_FLOW_COLOR} strokeWidth="1.5" />
@@ -350,6 +352,25 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
   const [sspDialogOpen,    setSspDialogOpen]    = useState(false);
   const [pendingSSPData,   setPendingSSPData]   = useState(null);
   const [riskRunScenarioId, setRiskRunScenarioId] = useState(null);
+  const [modelRunActive, setModelRunActive] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refreshActiveRun = async () => {
+      try {
+        const { data } = await axios.get('/api/model-runs/active');
+        if (!cancelled) setModelRunActive(!!data.active);
+      } catch {
+        // Run-start endpoints still enforce exclusivity.
+      }
+    };
+    refreshActiveRun();
+    const intervalId = setInterval(refreshActiveRun, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, []);
 
   // Load case study metadata (datapackage.json)
   useEffect(() => {
@@ -430,7 +451,8 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
 
   // Launch a scenario model run from the flow diagram play button
   const startFlowRun = useCallback(async (scenarioId, includeRisk) => {
-    if (runningScenarios[scenarioId]) return;
+    if (modelRunActive || runningScenarios[scenarioId]) return;
+    setModelRunActive(true);
     setRunningScenarios(prev => ({ ...prev, [scenarioId]: { runId: null, status: 'pending' } }));
     try {
       const { data } = await axios.post(`/api/scenarios/${scenarioId}/run-model`, {
@@ -438,28 +460,48 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
       });
       setRunningScenarios(prev => ({ ...prev, [scenarioId]: { runId: data.run_id, status: 'running' } }));
     } catch {
+      setModelRunActive(false);
       setRunningScenarios(prev => { const n = { ...prev }; delete n[scenarioId]; return n; });
     }
-  }, [runningScenarios]);
+  }, [modelRunActive, runningScenarios]);
+
+  const startRiskOnlyRun = useCallback(async (scenarioId) => {
+    if (modelRunActive || runningScenarios[scenarioId]) return;
+    setModelRunActive(true);
+    setRunningScenarios(prev => ({ ...prev, [scenarioId]: { runId: null, status: 'pending', mode: 'risk_only' } }));
+    try {
+      const { data } = await axios.post(`/api/scenarios/${scenarioId}/qmra/run`);
+      setRunningScenarios(prev => ({
+        ...prev,
+        [scenarioId]: { runId: data.run_id, status: 'running', mode: 'risk_only' },
+      }));
+    } catch {
+      setModelRunActive(false);
+      setRunningScenarios(prev => { const n = { ...prev }; delete n[scenarioId]; return n; });
+    }
+  }, [modelRunActive, runningScenarios]);
 
   const handleFlowRun = useCallback((scenarioId) => {
-    if (runningScenarios[scenarioId]) return;
+    if (modelRunActive || runningScenarios[scenarioId]) return;
     const scenario = scenarios.find(item => item.id === scenarioId);
     if (scenario?.qmra_available && !scenario.has_qmra_output) {
       setRiskRunScenarioId(scenarioId);
       return;
     }
     startFlowRun(scenarioId, !!scenario?.qmra_available);
-  }, [runningScenarios, scenarios, startFlowRun]);
+  }, [modelRunActive, runningScenarios, scenarios, startFlowRun]);
 
   // Poll active run statuses every 2 s
   useEffect(() => {
     const running = Object.entries(runningScenarios).filter(([, v]) => v.runId);
     if (running.length === 0) return;
     const pollId = setInterval(async () => {
-      for (const [scenarioId, { runId }] of running) {
+      for (const [scenarioId, { runId, mode }] of running) {
         try {
-          const { data } = await axios.get(`/api/run-status/${runId}`);
+          const statusUrl = mode === 'risk_only'
+            ? `/api/qmra/run-status/${runId}`
+            : `/api/run-status/${runId}`;
+          const { data } = await axios.get(statusUrl);
           if (['success', 'error', 'timeout'].includes(data.status)) {
             setRunningScenarios(prev => { const n = { ...prev }; delete n[scenarioId]; return n; });
             if (data.status === 'success') setScenariosVersion(v => v + 1);
@@ -644,9 +686,9 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
         {csSlug && (
           <button
             onClick={() => { onGoToScenarios?.(csId); navigate(paths.scenarios({ folder_name: csSlug })); }}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-wpGreen rounded-lg hover:bg-wpGreen/80 transition-colors flex-shrink-0"
+            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-wpBlue bg-wpGreen font-semibold rounded-lg hover:bg-wpGreen/80 transition-colors flex-shrink-0"
           >
-            <ChartColumn size={15} /> Scenarios
+            <ChartColumn size={15} /> View scenarios
           </button>
         )}
         
@@ -673,9 +715,7 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
               <FitBoundsToData geojson={geodata} />
             </MapContainer>
           ) : (
-            <div className="h-full flex items-center justify-center text-sm text-gray-300">
-              Loading map…
-            </div>
+            <LoadingState label="Loading map…" className="h-full" />
           )}
         </div>
 
@@ -766,10 +806,11 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
               onCreateScenario={(prefill) => { setPendingSSPData(prefill); setSspDialogOpen(true); }}
               onRunScenario={handleFlowRun}
               runningScenarios={runningScenarios}
+              modelRunActive={modelRunActive}
               onNavigateScenario={csSlug ? (sc) => navigate(paths.scenario({ folder_name: csSlug }, sc.name, 'human-emissions', 'population')) : undefined}
             />
           ) : (
-            <p className="text-sm text-gray-400 italic py-6 text-center">Loading scenarios…</p>
+            <LoadingState label="Loading scenarios…" className="py-6" />
           )}
         </div>
       </div>
@@ -795,10 +836,16 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
           setRiskRunScenarioId(null);
           return startFlowRun(scenarioId, false);
         }}
-        title="Include risk estimations?"
-        message="Exposure pathways are configured for this scenario. Risk estimation will run after the model completes."
-        confirmText="Include risk"
-        cancelText="Run without risk"
+        onAlternate={() => {
+          const scenarioId = riskRunScenarioId;
+          setRiskRunScenarioId(null);
+          return startRiskOnlyRun(scenarioId);
+        }}
+        title="Run scenario"
+        message="Concentration outputs are available. Run the full model again, with or without risk estimation, or use the existing concentrations to estimate risk only."
+        confirmText="Run model + risk"
+        cancelText="Run model only"
+        alternateText="Run risk only"
         confirmVariant="primary"
       />
     </div>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Edit3, Trash2, BarChart3, Play, Loader2, ScrollText, BarChart2, CheckCircle, AlertTriangle } from 'lucide-react';
+import { Edit3, Trash2, BarChart3, Play, ScrollText, BarChart2, CheckCircle, AlertTriangle } from 'lucide-react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import useScenarioStore from '../store/scenarioStore';
@@ -30,6 +30,7 @@ import FlowIcon from '../../assets/icons/flow.svg';
 import DischargeIcon from '../../assets/icons/discharge.svg';
 import RunoffIcon from '../../assets/icons/runoff.svg';
 import RiverParametersIcon from '../../assets/icons/river_parameters.svg';
+import Spinner from './loading/Spinner';
 
 
 // Run status pill config
@@ -136,6 +137,7 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
   const [logLoading, setLogLoading] = useState(false);
   const [showLog,    setShowLog]    = useState(false);
   const [showRiskRunDialog, setShowRiskRunDialog] = useState(false);
+  const [modelRunActive, setModelRunActive] = useState(false);
   const needsRerun = needsRerunIds[scenarioId] ?? false;
 
   // Sync scenarioInfo when the parent re-loads analytics data (e.g. after a
@@ -148,6 +150,24 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
 
   const canRun     = scenarioInfo?.readiness?.ready === true;
   const hasResults = runStatus === 'success' || !!scenarioInfo?.has_outputs;
+
+  useEffect(() => {
+    let cancelled = false;
+    const refreshActiveRun = async () => {
+      try {
+        const { data } = await axios.get('/api/model-runs/active');
+        if (!cancelled) setModelRunActive(!!data.active);
+      } catch {
+        // The POST endpoint remains the source of truth if this status check fails.
+      }
+    };
+    refreshActiveRun();
+    const intervalId = setInterval(refreshActiveRun, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, []);
 
   // Filter categories to those enabled by the case study (null/undefined means all).
   // 'risk' is always available: its config lives per scenario and is created on
@@ -269,6 +289,10 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
     (d) => handleSubcatDirtyChange(activeSubcategory, d),
     [handleSubcatDirtyChange, activeSubcategory]
   );
+  const handleExposureDirtyChange = useCallback(
+    (d) => handleSubcatDirtyChange('exposure-pathways', d),
+    [handleSubcatDirtyChange]
+  );
 
   const isCategoryDirty = (categoryId) => {
     const cat = availableCategories.find((c) => c.id === categoryId);
@@ -303,7 +327,10 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
     if (!runId) return;
     pollRef.current = setInterval(async () => {
       try {
-        const res = await axios.get(`/api/run-status/${runId}`);
+        const statusUrl = runMode === 'risk_only'
+          ? `/api/qmra/run-status/${runId}`
+          : `/api/run-status/${runId}`;
+        const res = await axios.get(statusUrl);
         const data = res.data;
         setRunStatus(data.status);
         setRunOutput({ stdout: data.stdout || '', stderr: data.stderr || '' });
@@ -311,7 +338,7 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
           clearInterval(pollRef.current);
           setRunLoading(false);
           if (Array.isArray(data.output_files)) setRunOutputFiles(data.output_files);
-          if (data.status === 'success') {
+          if (data.status === 'success' && runMode !== 'risk_only') {
             setNeedsRerun(scenarioId, false);
           }
           // Refresh scenario info so has_outputs is up to date.
@@ -330,12 +357,12 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
     }, 2000);
     return () => clearInterval(pollRef.current);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runId]);
-
-  // ── Re-run risk handler ────────────────────────────────────────────────────
+  }, [runId, runMode]);
 
   // ── Run model handler ──────────────────────────────────────────────────────
   const startModelRun = async (includeRisk) => {
+    if (modelRunActive || runLoading) return;
+    setModelRunActive(true);
     setRunLoading(true);
     setRunStatus('pending');
     setShowOutput(false);
@@ -349,6 +376,26 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
       setRunId(res.data.run_id);
       setRunMode(res.data.mode);
     } catch (err) {
+      setModelRunActive(false);
+      setRunLoading(false);
+      setRunStatus('error');
+      setRunOutput({ stdout: '', stderr: err.response?.data?.error || err.message });
+    }
+  };
+
+  const startRiskOnlyRun = async () => {
+    if (modelRunActive || runLoading) return;
+    setModelRunActive(true);
+    setRunLoading(true);
+    setRunStatus('pending');
+    setShowOutput(false);
+    setShowLog(false);
+    try {
+      const res = await axios.post(`/api/scenarios/${scenarioId}/qmra/run`);
+      setRunMode('risk_only');
+      setRunId(res.data.run_id);
+    } catch (err) {
+      setModelRunActive(false);
       setRunLoading(false);
       setRunStatus('error');
       setRunOutput({ stdout: '', stderr: err.response?.data?.error || err.message });
@@ -526,18 +573,18 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
               disabled={logLoading}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 bg-gray-100 rounded-lg transition-colors disabled:opacity-40"
             >
-              {logLoading ? <Loader2 size={15} className="animate-spin" /> : <ScrollText size={15} />}
+              {logLoading ? <Spinner size={15} /> : <ScrollText size={15} />}
               <span>Show logs</span>
             </button>
             )}
             {/* Run model */}
             <button
               onClick={handleRunModel}
-              disabled={!canRun || runLoading}
-              title={canRun ? 'Run model for this scenario' : 'Scenario is not ready (missing files or pathogen)'}
+              disabled={!canRun || runLoading || modelRunActive}
+              title={modelRunActive ? 'Another model run is already in progress' : canRun ? 'Run model for this scenario' : 'Scenario is not ready (missing files or pathogen)'}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-wpBlue text-white font-semibold rounded-lg hover:bg-wpBlue/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              {runLoading ? <Loader2 size={15} className="animate-spin" /> : <Play size={15} />}
+              {runLoading ? <Spinner size={15} /> : <Play size={15} />}
               <span>Run model</span>
             </button>
 
@@ -704,7 +751,9 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
               key={scenario.id}
               scenario={scenario}
               caseStudyId={selectedCaseStudy?.id}
+              onDirtyChange={handleExposureDirtyChange}
               onSaved={handleSubcatSaved}
+              actionsTarget={driverActionsTarget}
             />
           ) : (
             <div className="bg-white rounded-lg border border-gray-200 p-6">
@@ -730,10 +779,12 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
         onClose={() => setShowRiskRunDialog(false)}
         onConfirm={() => { setShowRiskRunDialog(false); return startModelRun(true); }}
         onCancel={() => { setShowRiskRunDialog(false); return startModelRun(false); }}
-        title="Include risk estimations?"
-        message="Exposure pathways are configured for this scenario. Risk estimation will run after the model completes."
-        confirmText="Include risk"
-        cancelText="Run without risk"
+        onAlternate={() => { setShowRiskRunDialog(false); return startRiskOnlyRun(); }}
+        title="Run scenario"
+        message="Concentration outputs are available. Run the full model again, with or without risk estimation, or use the existing concentrations to estimate risk only."
+        confirmText="Run model + risk"
+        cancelText="Run model only"
+        alternateText="Run risk only"
         confirmVariant="primary"
       />
     </div>

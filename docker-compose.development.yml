@@ -1,6 +1,9 @@
 services:
   glowpa:
-    image: docker-registry.wur.nl/glowpa/glowpa-r/glowpa-main:0.2.1
+    build:
+      context: ./glowpa
+      dockerfile: Dockerfile
+    image: glowpa-custom
     container_name: glowpa-container
     ports:
       - "8080:8080"

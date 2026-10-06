@@ -4,7 +4,7 @@
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import axios from 'axios';
-import { ArrowUpRight, ArrowDownRight, ArrowRight, Minus, Plus, X, Maximize2, Minimize2, Printer } from 'lucide-react';
+import { ArrowUpRight, ArrowDownRight, ArrowRight, Info, Minus, Plus, X, Maximize2, Minimize2, Printer } from 'lucide-react';
 import { MapContainer, useMap, GeoJSON as LeafletGeoJSON } from 'react-leaflet';
 import parseGeoraster from 'georaster';
 import GeoRasterLayer from 'georaster-layer-for-leaflet';
@@ -19,6 +19,10 @@ import PlayingIcon      from '../../assets/icons/playing.svg';
 import WashingIcon      from '../../assets/icons/washing.svg';
 import OpenFreeMapLayer from './OpenFreeMapLayer';
 import { printMapContainer } from './printUtils';
+import useSettingsStore from '../store/settingsStore';
+import { blendRasterForDisplay } from './rasterInterpolation';
+import Spinner from './loading/Spinner';
+import { MapLoadingFrame, useMapLoadingTracker, addLayerTracked } from './loading/MapLoading';
 
 window.proj4 = proj4;
 
@@ -193,8 +197,10 @@ function RiskLegendTooltip({ hlNorm, isComparison }) {
 // --- Overview map layer ------------------------------------------------------
 function RiskRasterLayer({ tifUrl, isCases, hlCtx, bandIndex = 1 }) {
   const map = useMap();
+  const rasterInterpolation = useSettingsStore(state => state.rasterInterpolation);
   const bandRef  = useRef(bandIndex);
   const layerRef = useRef(null);
+  const loadingTracker = useMapLoadingTracker();
   // Switch which band is coloured without re-fetching the raster.
   useEffect(() => {
     bandRef.current = bandIndex;
@@ -203,10 +209,12 @@ function RiskRasterLayer({ tifUrl, isCases, hlCtx, bandIndex = 1 }) {
   useEffect(() => {
     if (!tifUrl || !map) return;
     let layer = null, cancelled = false, rafId = null;
+    const endLoading = loadingTracker.begin();
     (async () => {
       try {
         const result = await fetchRasterData(tifUrl);
-        if (cancelled || !result) return;
+        if (!result) { endLoading(); return; }
+        if (cancelled) return;
         const { gr } = result;
         let maxVal = 1;
         if (isCases) {
@@ -221,8 +229,11 @@ function RiskRasterLayer({ tifUrl, isCases, hlCtx, bandIndex = 1 }) {
             maxVal = allVals[Math.floor(allVals.length * 0.95)] || allVals[allVals.length-1];
           }
         }
+        const displayRaster = rasterInterpolation === 'bilinear'
+          ? blendRasterForDisplay(gr, { logarithmic: isCases })
+          : gr;
         layer = new GeoRasterLayer({
-          georaster: gr, opacity: 0.85, resolution: 256, caching: false,
+          georaster: displayRaster, opacity: 0.85, resolution: 256, caching: false,
           pixelValuesToColorFn: (values) => {
             const v = isCases ? values[0] : values[(bandRef.current || 1) - 1];
             if (v == null || isNaN(v) || v <= 0) return null;
@@ -235,7 +246,12 @@ function RiskRasterLayer({ tifUrl, isCases, hlCtx, bandIndex = 1 }) {
             return `rgb(${r},${g},${b})`;
           },
         });
-        layer.addTo(map);
+        if (rasterInterpolation !== 'none') {
+          layer.on('tileload', (event) => {
+            if (event.tile) event.tile.style.imageRendering = rasterInterpolation === 'bilinear' ? 'auto' : 'pixelated';
+          });
+        }
+        addLayerTracked(map, layer, endLoading);
         layerRef.current = layer;
         if (hlCtx) {
           hlCtx.current.redraw = () => {
@@ -244,16 +260,17 @@ function RiskRasterLayer({ tifUrl, isCases, hlCtx, bandIndex = 1 }) {
           };
         }
           try { map.fitBounds(layer.getBounds(), { padding: [24, 24], maxZoom: 12 }); } catch {}
-      } catch (err) { console.error('RiskRasterLayer error:', err); }
+      } catch (err) { console.error('RiskRasterLayer error:', err); endLoading(); }
     })();
     return () => {
       cancelled = true;
+      endLoading();
       cancelAnimationFrame(rafId);
       if (hlCtx) hlCtx.current.redraw = null;
       layerRef.current = null;
       if (layer && map) try { map.removeLayer(layer); } catch {};
     };
-  }, [tifUrl, map]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tifUrl, map, rasterInterpolation]); // eslint-disable-line react-hooks/exhaustive-deps
   return null;
 }
 
@@ -302,12 +319,83 @@ function fmtCases(v) {
   if (v == null) return EM;
   return v >= 1000 ? v.toLocaleString('en-US', { maximumFractionDigits: 0 }) : v.toFixed(1);
 }
-function Skeleton({ w = 'w-20', h = 'h-8' }) {
-  return <div className={`${w} ${h} bg-gray-200 rounded animate-pulse`} />;
+function Skeleton({ w = 'w-20', h = 'h-8', size = 18 }) {
+  return (
+    <div className={`${w} ${h} flex items-center text-wpBlue`}>
+      <Spinner size={size} />
+    </div>
+  );
 }
 function NoDash({ title }) {
   return (
     <span className="text-gray-300 text-sm cursor-help" title={title}>{EM}</span>
+  );
+}
+function RiskCalculationPopover() {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const handlePointerDown = (event) => {
+      if (!containerRef.current?.contains(event.target)) setOpen(false);
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <span ref={containerRef} className="relative inline-flex">
+      <button
+        type="button"
+        onClick={() => setOpen(value => !value)}
+        aria-label="Combined risk calculation"
+        aria-expanded={open}
+        aria-controls="combined-risk-explanation"
+        className="inline-flex h-6 w-6 items-center justify-center rounded-full text-wpBlue-900 hover:bg-wpBlue/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-wpBlue focus-visible:ring-offset-2 transition-colors"
+      >
+        <Info size={15} aria-hidden="true" />
+      </button>
+      {open && (
+        <span
+          id="combined-risk-explanation"
+          role="dialog"
+          aria-label="Combined risk calculation"
+          className="absolute left-0 top-full z-50 mt-2 block w-80 max-w-[calc(100vw-2rem)] rounded-lg border border-gray-200 bg-white p-4 text-left normal-case tracking-normal shadow-xl"
+        >
+          <span className="mb-2 flex items-start justify-between gap-3">
+            <span className="text-sm font-semibold text-gray-800">Combined risk calculation</span>
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              aria-label="Close explanation"
+              className="-mr-1 -mt-1 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-wpBlue"
+            >
+              <X size={14} aria-hidden="true" />
+            </button>
+          </span>
+          <span className="block space-y-2 text-xs font-inter font-normal leading-relaxed text-gray-600">
+            <span className="block">
+              Combined risk simulates all enabled pathways together and compounds the 12 monthly probabilities. 
+            </span>
+            <span className="block">
+              <span className="mt-1 block rounded bg-gray-50 px-2 py-1 font-mono text-[11px] text-gray-700">
+                1 - Π(1 - monthly risk)
+              </span>
+            </span>
+          </span>
+        </span>
+      )}
+    </span>
   );
 }
 // --- Month navigation + deviation boxes ------------------------------------
@@ -411,13 +499,16 @@ function diffColor(pct, scale = 100) {
 
 function RiskDiffRasterLayer({ diffUrl, hlCtx }) {
   const map = useMap();
+  const rasterInterpolation = useSettingsStore(state => state.rasterInterpolation);
+  const loadingTracker = useMapLoadingTracker();
   useEffect(() => {
     if (!diffUrl || !map) return;
     let layer = null, cancelled = false, rafId = null;
+    const endLoading = loadingTracker.begin();
     (async () => {
       try {
         const res = await fetch(diffUrl, { cache: 'no-store' });
-        if (!res.ok) { console.error('RiskDiffRasterLayer HTTP', res.status); return; }
+        if (!res.ok) { console.error('RiskDiffRasterLayer HTTP', res.status); endLoading(); return; }
         const ab = await res.arrayBuffer();
         if (cancelled) return;
         const gr = await parseGeoraster(ab);
@@ -432,11 +523,14 @@ function RiskDiffRasterLayer({ diffUrl, hlCtx }) {
             }
           }
         }
-        if (!isFinite(vmin)) { console.warn('RiskDiffRasterLayer: no valid pixels'); return; }
+        if (!isFinite(vmin)) { console.warn('RiskDiffRasterLayer: no valid pixels'); endLoading(); return; }
         const absMax = Math.max(Math.abs(vmin), Math.abs(vmax)) || 1;
         const scale  = Math.max(100, Math.floor(absMax / 100) * 100);
+        const displayRaster = rasterInterpolation === 'bilinear'
+          ? blendRasterForDisplay(gr)
+          : gr;
         layer = new GeoRasterLayer({
-          georaster: gr, opacity: 0.85, resolution: 256, caching: false,
+          georaster: displayRaster, opacity: 0.85, resolution: 256, caching: false,
           pixelValuesToColorFn: ([v]) => {
             if (v == null || !isFinite(v) || v === nd) return null;
             const color = diffColor(v, scale);
@@ -448,7 +542,12 @@ function RiskDiffRasterLayer({ diffUrl, hlCtx }) {
             return color;
           },
         });
-        layer.addTo(map);
+        if (rasterInterpolation !== 'none') {
+          layer.on('tileload', (event) => {
+            if (event.tile) event.tile.style.imageRendering = rasterInterpolation === 'bilinear' ? 'auto' : 'pixelated';
+          });
+        }
+        addLayerTracked(map, layer, endLoading);
         if (hlCtx) {
           hlCtx.current.redraw = () => {
             cancelAnimationFrame(rafId);
@@ -456,15 +555,16 @@ function RiskDiffRasterLayer({ diffUrl, hlCtx }) {
           };
         }
         try { map.fitBounds(layer.getBounds(), { maxZoom: 9 }); } catch {}
-      } catch (err) { console.error('RiskDiffRasterLayer error:', err); }
+      } catch (err) { console.error('RiskDiffRasterLayer error:', err); endLoading(); }
     })();
     return () => {
       cancelled = true;
+      endLoading();
       cancelAnimationFrame(rafId);
       if (hlCtx) hlCtx.current.redraw = null;
       if (layer && map) try { map.removeLayer(layer); } catch {};
     };
-  }, [diffUrl, map]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [diffUrl, map, rasterInterpolation]); // eslint-disable-line react-hooks/exhaustive-deps
   return null;
 }
 
@@ -552,7 +652,7 @@ function fmtPct(v) {
 // mode='pp'  → shows percentage-point change: (sec-pri)*100 pp (used for risk probabilities)
 // mode='pct' → shows relative % change: (sec-pri)/|pri|*100 % (used for counts/infections)
 function DeltaChip({ pri, sec, loading, mode = 'pp' }) {
-  if (loading) return <span className="inline-block w-10 h-3 bg-gray-200 rounded animate-pulse ml-1" />;
+  if (loading) return <Spinner size={11} className="inline-block ml-1 text-wpBlue" />;
   if (pri == null || sec == null || !isFinite(pri) || !isFinite(sec)) return null;
   let d, label;
   if (mode === 'pp') {
@@ -649,7 +749,7 @@ function RiskAreaDialog({ area, riskAreaStats, secondaryRiskAreaStats, isCompari
 }
 
 // --- Main component ----------------------------------------------------------
-export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, secondaryScenarioId = null, secondaryScenarioName = null, geojson = null, areaNames = null }) {
+export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, secondaryScenarioId = null, secondaryScenarioName = null, geojson = null, areaNames = null, dataLoading = false }) {
   const [files,       setFiles]      = useState({ combined: { monthly: [], daily: [] }, routes: {} });
   const [qmraStats,   setQmraStats]  = useState(null);
   const [loading,     setLoading]    = useState(false);
@@ -905,10 +1005,7 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
           <div className="flex-1 min-w-0">
             <div className="text-lg font-outfit font-semibold text-wpBlue uppercase tracking-wide mb-1 flex items-center gap-1">
               Risk of Infection
-              <span
-                className="text-gray-300 cursor-help normal-case font-normal"
-                title="Combined risk = 1 − ∏(1 − riskᵢ) across pathways."
-              >ⓘ</span>
+              <RiskCalculationPopover />
             </div>
             <div
               onClick={canClickCombined ? () => setMapLayer('combined') : undefined}
@@ -917,7 +1014,7 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
                 canClickCombined ? 'cursor-pointer hover:bg-gray-50' : ''
               } ${canClickCombined && mapLayer === 'combined' ? '' : ''}`}
             >
-              {loading || statsLoading ? <Skeleton w="w-28" h="h-10" /> : isComparison ? (
+              {loading || statsLoading ? <Skeleton w="w-28" h="h-10" size={24} /> : isComparison ? (
                 <>
                   <div className="flex items-baseline gap-1.5 flex-wrap">
                     <span style={combinedRiskSelQ ? { color: `rgb(${colorForRisk(combinedRiskSelQ.mean).join(',')})`, filter: riskGlowFilter(combinedRiskSelQ.mean) } : {}}
@@ -927,7 +1024,7 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
                     <ArrowRight size={18} className="text-gray-400 flex-shrink-0" />
                     <span style={secCombinedRiskSelQ ? { color: `rgb(${colorForRisk(secCombinedRiskSelQ.mean).join(',')})`, filter: riskGlowFilter(secCombinedRiskSelQ.mean) } : {}}
                       className="text-3xl font-bold font-outfit tabular-nums">
-                      {secStatsLoading ? '…' : secCombinedRiskSelQ ? fmtRisk(secCombinedRiskSelQ.mean) : EM}
+                      {secStatsLoading ? <Spinner size={14} className="inline-block" /> : secCombinedRiskSelQ ? fmtRisk(secCombinedRiskSelQ.mean) : EM}
                     </span>
                   </div>
                   {combinedRiskSelQ && secCombinedRiskSelQ && (
@@ -972,8 +1069,8 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
             )}
             {!loading && combinedRiskQ025 && combinedRiskQ975 && (
               <div className="text-[10px] text-gray-400 mt-1.5 tabular-nums text-right leading-tight" title="Monte-Carlo uncertainty band (2.5th–97.5th percentile), averaged across cells.">
-                {fmtRisk(combinedRiskQ025.mean)} {EM} {fmtRisk(combinedRiskQ975.mean)}
-                <span className="block text-gray-300">(q2.5{EM}q97.5)</span>
+                {fmtRisk(combinedRiskQ025.mean)} - {fmtRisk(combinedRiskQ975.mean)}
+                <span className="block text-gray-300">(q2.5 -q97.5)</span>
               </div>
             )}
           </div>
@@ -1002,7 +1099,7 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
               {conf.icon
                 ? <img src={conf.icon} alt={conf.label} className="w-8 h-8 flex-shrink-0 opacity-75" />
                 : <div className="w-8 h-8 flex-shrink-0" />}
-              {loading || statsLoading ? <Skeleton w="w-12" h="h-5" /> : (
+              {loading || statsLoading ? <Skeleton w="w-12" h="h-5" size={14} /> : (
                 rSelQ || (isComparison && secRSelQ) ? (
                   <div className="min-w-0 flex-1 flex flex-col p-4">
                     <span className="text-sm font-semibold text-wpBlue truncate">{conf.label}</span>
@@ -1016,7 +1113,7 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
                         <span
                           className="text-lg font-bold"
                           style={secRSelQ ? { color: `rgb(${colorForRisk(secRSelQ.mean).join(',')})`, filter: riskGlowFilter(secRSelQ.mean) } : {}}
-                        >{secStatsLoading ? '…' : secRSelQ ? fmtRisk(secRSelQ.mean) : EM}</span>
+                        >{secStatsLoading ? <Spinner size={12} className="inline-block" /> : secRSelQ ? fmtRisk(secRSelQ.mean) : EM}</span>
                         {rSelQ && secRSelQ && <DeltaChip pri={rSelQ.mean} sec={secRSelQ.mean} mode="pp" />}
                       </span>
                     ) : (
@@ -1050,17 +1147,17 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
               </span>
             )}
           </h3>
-          <div className="flex rounded-xl overflow-hidden border border-gray-200 text-sm flex-shrink-0">
+          <div className="flex gap-1 rounded-xl bg-wpGray-100 p-1 font-outfit text-sm">
             <button
               onClick={() => setViewMode('annual')}
-              className={`px-3 py-1.5 font-medium transition-colors ${
-                viewMode === 'annual' ? 'bg-white text-wpBlue' : 'text-wpBlue/60 bg-gray-100 hover:bg-gray-200'
+              className={`flex items-center rounded-xl gap-1.5 px-3 py-1.5 font-medium transition-colors ${
+                viewMode === 'annual' ? 'bg-white text-wpBlue' : 'bg-wpGray-100 hover:bg-wpGray-300'
               }`}
             >Annual</button>
             <button
               onClick={() => setViewMode('monthly')}
-              className={`px-3 py-1.5 font-medium transition-colors ${
-                viewMode === 'monthly' ? 'bg-white text-wpBlue' : 'text-wpBlue/60 bg-gray-100 hover:bg-gray-200'
+              className={`flex items-center rounded-xl gap-1.5 px-3 py-1.5 font-medium transition-colors ${
+                viewMode === 'monthly' ? 'bg-white text-wpBlue' : 'bg-wpGray-100 hover:bg-wpGray-300'
               }`}
             >Monthly</button>
           </div>
@@ -1077,7 +1174,11 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
           <div className="flex gap-3" style={{ height: 480 }}>
             {/* Map */}
             <div className="flex flex-col min-w-0" style={{ flex: 2 }}>
-              <div className="relative rounded overflow-hidden border border-gray-100 flex-1">
+              <MapLoadingFrame
+                className="rounded overflow-hidden border border-gray-100 flex-1"
+                loading={loading || dataLoading}
+                message={dataLoading ? 'Loading comparison…' : loading ? 'Loading risk outputs…' : isComparison ? 'Computing comparison…' : 'Loading map layers…'}
+              >
                 <MapContainer
                   style={{ height: '100%', width: '100%' }}
                   center={[0, 30]} zoom={3}
@@ -1099,7 +1200,7 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
                   <RiskMapControls />
                   <RiskLegendTooltip hlNorm={hlNorm} isComparison={isComparison} />
                 </MapContainer>
-              </div>
+              </MapLoadingFrame>
               <RiskLegend isComparison={isComparison} hlCtx={hlCtx} hlNorm={hlNorm} onHlChange={setHlNorm} />
             </div>
             {/* Right panel */}
@@ -1178,14 +1279,14 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
               ) : (
                 <>
                   <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Expected annual infections</p>
-                  {loading || statsLoading ? <Skeleton w="w-24" h="h-8" /> : combinedCases ? (
+                  {loading || statsLoading ? <Skeleton w="w-24" h="h-8" size={20} /> : combinedCases ? (
                     isComparison ? (
                       <div>
                         <div className="flex items-baseline gap-1.5 flex-wrap">
                           <span className="text-2xl font-bold font-outfit tabular-nums text-gray-400">{fmtCases(combinedCases.sum)}</span>
                           <ArrowRight size={16} className="text-gray-400 flex-shrink-0" />
                           <span className="text-2xl font-bold font-outfit tabular-nums text-wpBlue">
-                            {secStatsLoading ? '…' : secCombinedCases ? fmtCases(secCombinedCases.sum) : EM}
+                            {secStatsLoading ? <Spinner size={14} className="inline-block" /> : secCombinedCases ? fmtCases(secCombinedCases.sum) : EM}
                           </span>
                           {secCombinedCases && <DeltaChip pri={combinedCases.sum} sec={secCombinedCases.sum} mode="pct" />}
                         </div>
@@ -1241,4 +1342,3 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
     </>
   );
 }
-

@@ -10,6 +10,7 @@ must be accessed via the module attribute (``state.glowpa_running``).
 """
 
 import os
+import threading
 
 import docker
 from flask import Flask
@@ -126,6 +127,20 @@ GLOWPA_DATARAW_PATHOGENS = 'data-raw/pathogens.csv'
 case_studies = []   # list[dict]
 scenarios = []      # list[dict] — legacy in-memory cache (mostly unused)
 model_runs = {}     # run_id -> run status/output dict
+model_run_lock = threading.Lock()
+
+
+def active_model_run():
+    """Return the first queued/preparing/running model job, if any."""
+    active_statuses = {'preparing', 'pending', 'queued', 'running'}
+    return next(
+        (
+            (run_id, run)
+            for run_id, run in model_runs.items()
+            if run.get('status') in active_statuses
+        ),
+        (None, None),
+    )
 
 
 # ── Mutable scalar state (rebound; access via state.<name>) ──────────────────

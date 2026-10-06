@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
+import Spinner from './loading/Spinner';
 
 // ─── Constants (mirrored from ResultsView) ─────────────────────────────────────
 
@@ -90,7 +91,7 @@ export default function HumanEmissionsPreview({ scenarioId }) {
   if (loading) {
     return (
       <div className="border-t border-gray-200 bg-white px-6 py-3 flex items-center gap-2 text-xs text-gray-400 flex-shrink-0">
-        <div className="w-3 h-3 rounded-full border-2 border-gray-300 border-t-transparent animate-spin" />
+        <Spinner size={12} className="text-wpBlue" />
         Loading emission preview…
       </div>
     );

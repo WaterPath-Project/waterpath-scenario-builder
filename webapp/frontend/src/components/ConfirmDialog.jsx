@@ -1,6 +1,7 @@
 import React from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './Dialog';
 import { AlertTriangle, X } from 'lucide-react';
+import Spinner from './loading/Spinner';
 
 const ConfirmDialog = ({ 
   isOpen, 
@@ -12,6 +13,8 @@ const ConfirmDialog = ({
   cancelText = "Cancel",
   confirmVariant = "danger",
   onCancel,
+  alternateText,
+  onAlternate,
   isLoading = false 
 }) => {
   const handleConfirm = async () => {
@@ -23,6 +26,10 @@ const ConfirmDialog = ({
   const handleCancel = async () => {
     if (onCancel) await onCancel();
     else onClose?.();
+  };
+
+  const handleAlternate = async () => {
+    if (onAlternate) await onAlternate();
   };
 
   const confirmButtonClass = confirmVariant === "danger" 
@@ -52,12 +59,21 @@ const ConfirmDialog = ({
           >
             {cancelText}
           </button>
+          {alternateText && onAlternate && (
+            <button
+              onClick={handleAlternate}
+              disabled={isLoading}
+              className="px-4 py-2 text-wpBlue bg-wpBlue/10 hover:bg-wpBlue/20 rounded-lg transition-colors disabled:opacity-50"
+            >
+              {alternateText}
+            </button>
+          )}
           <button
             onClick={handleConfirm}
             disabled={isLoading}
             className={`px-4 py-2 text-white rounded-lg transition-colors disabled:opacity-50 ${confirmButtonClass}`}
           >
-            {isLoading ? 'Processing...' : confirmText}
+            {isLoading ? <span className="inline-flex items-center gap-2"><Spinner size={14} /> Processing…</span> : confirmText}
           </button>
         </div>
       </DialogContent>

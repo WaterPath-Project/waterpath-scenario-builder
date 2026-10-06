@@ -5,6 +5,7 @@ import DataGridView from './DataGridView';
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle } from './Dialog';
 import { PopulationMap } from './LivestockEditorPanel';
 import DriverSaveActions from './DriverSaveActions';
+import { LoadingState } from './loading/Spinner';
 
 // helpers
 const fmt = (n, decimals = 0) =>
@@ -291,7 +292,7 @@ const PopulationPanelInner = ({ scenario, initialRows, fieldnames, onDirtyChange
           <div className="ml-auto" />
           <Dialog>
             <DialogTrigger asChild>
-              <button className="flex items-center gap-1 px-2 py-1 text-xs text-wpBlue border border-wpBlue/40 rounded hover:bg-wpBlue/5 transition font-medium">
+              <button className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-wpBlue-300 text-xs font-semibold text-wpBlue border-wpGray-200 bg-white hover:bg-gray-50 transition-colors">
                 View summary data
               </button>
             </DialogTrigger>
@@ -452,10 +453,7 @@ const PopulationPanel = ({ scenario, onDirtyChange, onSaved, assumptions, action
 
   if (fetchState.status === 'loading') {
     return (
-      <div className="flex items-center justify-center py-16 text-gray-400 gap-3">
-        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-wpBlue" />
-        <span className="text-sm">Loading population data…</span>
-      </div>
+      <LoadingState label="Loading population data…" className="py-16" />
     );
   }
 

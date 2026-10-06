@@ -11,7 +11,7 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import axios from 'axios';
-import { Play, RefreshCw, CheckCircle, AlertTriangle, ChevronDown, ChevronRight, SlidersHorizontal, Map as MapIcon, RotateCcw } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, SlidersHorizontal, Map as MapIcon, RotateCcw } from 'lucide-react';
 import { MapContainer, useMap } from 'react-leaflet';
 import GeoRasterLayer from 'georaster-layer-for-leaflet';
 import parseGeoraster from 'georaster';
@@ -20,6 +20,7 @@ import 'leaflet/dist/leaflet.css';
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle } from './Dialog';
 import AreaEditModeToggle from './AreaEditModeToggle';
 import AreaSelector from './AreaSelector';
+import DriverSaveActions from './DriverSaveActions';
 import OpenFreeMapLayer from './OpenFreeMapLayer';
 import DrinkingIcon from '../../assets/icons/drinking.svg';
 import SwimmingIcon from '../../assets/icons/swimming.svg';
@@ -27,6 +28,7 @@ import FloodIcon from '../../assets/icons/floods.svg';
 import OpenDrainIcon from '../../assets/icons/open_drains.svg';
 import PlayingIcon from '../../assets/icons/playing.svg';
 import WashingIcon from '../../assets/icons/washing.svg';
+import Spinner from './loading/Spinner';
 
 // Required by georaster-layer-for-leaflet to reproject TIFs not in WGS84
 if (typeof window !== 'undefined') window.proj4 = proj4;
@@ -66,6 +68,7 @@ const DEFAULT_CONFIG = {
   mci: 1000, model: 'bp', quantiles: [0.025, 0.5, 0.975],
   bp_params: PATHOGEN_BP_DEFAULTS, pathways: DEFAULT_PATHWAYS, area_overrides: {},
 };
+const cloneConfig = config => JSON.parse(JSON.stringify(config));
 
 // Fields the QMRA engine can be made to vary per area (see AREA_OVERRIDE_FIELDS
 // in the backend). Volume distributions and the treatment raster cannot.
@@ -192,9 +195,16 @@ function PathwayCard({ route, pc, onChange, treatmentAvailable, advanced = true,
   return (
     <div className="flex-1 min-w-0 bg-white rounded-xl border border-gray-200 px-5 py-4 flex flex-col gap-1 shadow-sm">
       <div className={`flex items-center gap-2 px-4 py-2.5 ${advanced && pc.enabled ? 'cursor-pointer' : ''} select-none`} onClick={() => advanced && pc.enabled && setOpen(o => !o)}>
-        <input type="checkbox" checked={!!pc.enabled} onChange={e => handleEnable(e.target.checked)} onClick={e => e.stopPropagation()} className="rounded border-gray-300 text-wpBlue-600 focus:ring-wpBlue-500" />
-        <img src={ROUTE_ICONS[route]} alt="" aria-hidden="true" className={`h-7 w-7 flex-shrink-0 ${pc.enabled ? '' : 'opacity-40 grayscale'}`} />
-        <span className={`font-medium text-sm flex-1 ${pc.enabled ? 'text-wpBlue' : 'text-gray-500'}`}>{ROUTE_LABELS[route]}</span>
+        <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2" onClick={e => e.stopPropagation()}>
+          <input
+            type="checkbox"
+            checked={!!pc.enabled}
+            onChange={e => handleEnable(e.target.checked)}
+            className="h-5 w-5 flex-shrink-0 rounded border-gray-300 text-wpBlue-600 focus:ring-wpBlue-500"
+          />
+          <img src={ROUTE_ICONS[route]} alt="" aria-hidden="true" className={`h-7 w-7 flex-shrink-0 ${pc.enabled ? '' : 'opacity-40 grayscale'}`} />
+          <span className={`min-w-0 flex-1 font-medium text-sm ${pc.enabled ? 'text-wpBlue' : 'text-gray-500'}`}>{ROUTE_LABELS[route]}</span>
+        </label>
         {overridden && (
           <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700" title="Differs from the scenario default for the selected area(s)">
             Overridden
@@ -388,7 +398,7 @@ function TreatmentLegend({ legend }) {
             />
             <div className="min-w-0">
               <span className="text-xs font-medium text-gray-800">
-                {e.code} — {e.label}
+                {e.code} - {e.label}
               </span>
               {e.steps?.length > 0 && (
                 <span className="text-xs text-gray-500 ml-1.5">
@@ -442,26 +452,8 @@ function TreatmentMap({ caseStudyId }) {
   );
 }
 
-function RunStatusLine({ status, groupCount }) {
-  if (status === 'running') {
-    return (
-      <div className="flex items-center gap-1.5 text-blue-700 text-xs">
-        <RefreshCw size={13} className="animate-spin" />
-        {groupCount > 1 ? `Running QMRA — ${groupCount} area groups…` : 'Running QMRA…'}
-      </div>
-    );
-  }
-  if (status === 'success') {
-    return <div className="flex items-center gap-1.5 text-green-600 text-xs"><CheckCircle size={13} /> Risk outputs updated.</div>;
-  }
-  if (status === 'error' || status === 'timeout') {
-    return <div className="flex items-center gap-1.5 text-red-600 text-xs"><AlertTriangle size={13} /> QMRA run failed. Check the run log.</div>;
-  }
-  return null;
-}
-
 // Count distinct effective parameter sets the same way the backend does, so the
-// user can see the run cost before hitting the button.
+// user can see the run cost before launching risk from the Run model dialog.
 function countRunGroups(config, areaKeys) {
   const pathways = config.pathways || DEFAULT_PATHWAYS;
   const overrides = config.area_overrides || {};
@@ -480,28 +472,22 @@ function countRunGroups(config, areaKeys) {
   return sigs.size;
 }
 
-export default function ExposurePathwaysPanel({ scenario, caseStudyId, onSaved }) {
+export default function ExposurePathwaysPanel({ scenario, caseStudyId, onDirtyChange, onSaved, actionsTarget }) {
   const scenarioId = scenario?.id;
   const [config, setConfig]                     = useState(DEFAULT_CONFIG);
+  const [savedConfig, setSavedConfig]           = useState(null);
+  const [modelDefaults, setModelDefaults]       = useState(DEFAULT_CONFIG);
   const [areas, setAreas]                       = useState([]);
   const [pathogen, setPathogen]                 = useState(null);
   const [treatmentAvailable, setTreatmentAvail] = useState(false);
   const [loading, setLoading]                   = useState(true);
-  const [saveOk, setSaveOk]                     = useState(false);
+  const [isSaving, setIsSaving]                 = useState(false);
   const [advanced, setAdvanced]                 = useState(false);
   const [editMode, setEditMode]                 = useState('all');
   const [selectedIndices, setSelectedIndices]   = useState(new Set());
-  const [runStatus, setRunStatus]               = useState('idle');
-  const [runGroupCount, setRunGroupCount]       = useState(1);
-  const isFirstLoad   = useRef(true);
-  const autoSaveTimer = useRef(null);
-  const pollRef       = useRef(null);
-
-  useEffect(() => () => { clearInterval(pollRef.current); clearTimeout(autoSaveTimer.current); }, []);
 
   useEffect(() => {
     if (!scenarioId) return;
-    isFirstLoad.current = true;
     setLoading(true);
     Promise.all([
       axios.get(`/api/scenarios/${scenarioId}/qmra/config`),
@@ -509,38 +495,35 @@ export default function ExposurePathwaysPanel({ scenario, caseStudyId, onSaved }
     ])
       .then(([cfgRes, areaRes]) => {
         const data = cfgRes.data;
-        setTreatmentAvail(!!data.treatment_available);
-        setPathogen(data.pathogen ?? null);
-        setConfig({
+        const loadedConfig = {
           mci:            data.mci            ?? 1000,
           model:          data.model          ?? 'bp',
           quantiles:      data.quantiles      ?? [0.025, 0.5, 0.975],
           bp_params:      data.bp_params      ?? PATHOGEN_BP_DEFAULTS,
           pathways:       data.pathways       ?? DEFAULT_PATHWAYS,
           area_overrides: data.area_overrides ?? {},
-        });
+        };
+        setTreatmentAvail(!!data.treatment_available);
+        setPathogen(data.pathogen ?? null);
+        setConfig(cloneConfig(loadedConfig));
+        setSavedConfig(cloneConfig(loadedConfig));
+        setModelDefaults(cloneConfig(data.model_defaults ?? DEFAULT_CONFIG));
         setAreas(areaRes.data.areas || []);
       })
-      .catch(() => {})
+      .catch((error) => {
+        alert('Failed to load exposure pathways: ' + (error.response?.data?.error || error.message));
+      })
       .finally(() => setLoading(false));
   }, [scenarioId]);
 
+  const isDirty = useMemo(
+    () => savedConfig !== null && JSON.stringify(config) !== JSON.stringify(savedConfig),
+    [config, savedConfig],
+  );
+
   useEffect(() => {
-    if (loading) return;
-    if (isFirstLoad.current) { isFirstLoad.current = false; return; }
-    clearTimeout(autoSaveTimer.current);
-    autoSaveTimer.current = setTimeout(async () => {
-      if (!scenarioId) return;
-      try {
-        const { data } = await axios.put(`/api/scenarios/${scenarioId}/qmra/config`, config);
-        if (data?.run_group_count) setRunGroupCount(data.run_group_count);
-        setSaveOk(true);
-        onSaved?.();
-        setTimeout(() => setSaveOk(false), 1500);
-      } catch (_) {}
-    }, 600);
-    return () => clearTimeout(autoSaveTimer.current);
-  }, [config]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!loading) onDirtyChange?.(isDirty);
+  }, [isDirty, loading, onDirtyChange]);
 
   const areaKeys   = useMemo(() => areas.map(a => a.key), [areas]);
   const areaLabels = useMemo(() => areas.map(a => a.name), [areas]);
@@ -550,9 +533,7 @@ export default function ExposurePathwaysPanel({ scenario, caseStudyId, onSaved }
     () => [...selectedIndices].map(i => areaKeys[i]).filter(Boolean),
     [selectedIndices, areaKeys],
   );
-
   const groupCount = useMemo(() => countRunGroups(config, areaKeys), [config, areaKeys]);
-  useEffect(() => { setRunGroupCount(groupCount); }, [groupCount]);
 
   const overridesForFirstSelected = perArea ? (config.area_overrides?.[selectedKeys[0]] || {}) : {};
 
@@ -602,34 +583,29 @@ export default function ExposurePathwaysPanel({ scenario, caseStudyId, onSaved }
     });
   }, [selectedKeys]);
 
-  const handleResetDefaults = useCallback(() => setConfig(DEFAULT_CONFIG), []);
+  const handleReset = useCallback(() => {
+    if (savedConfig) setConfig(cloneConfig(savedConfig));
+  }, [savedConfig]);
 
-  const handleRerun = useCallback(async () => {
-    if (!scenarioId) return;
-    clearInterval(pollRef.current);
-    setRunStatus('running');
-    let runId = null;
+  const handleResetModelDefaults = useCallback(() => {
+    setConfig(cloneConfig(modelDefaults));
+  }, [modelDefaults]);
+
+  const handleSave = useCallback(async () => {
+    if (!scenarioId || !isDirty) return;
+    setIsSaving(true);
     try {
-      const { data } = await axios.post(`/api/scenarios/${scenarioId}/qmra/run`);
-      runId = data.run_id;
-    } catch (_) {
-      setRunStatus('error');
-      return;
+      const configToSave = cloneConfig(config);
+      await axios.put(`/api/scenarios/${scenarioId}/qmra/config`, configToSave);
+      setSavedConfig(configToSave);
+      onDirtyChange?.(false);
+      onSaved?.();
+    } catch (error) {
+      alert('Failed to save exposure pathways: ' + (error.response?.data?.error || error.message));
+    } finally {
+      setIsSaving(false);
     }
-    pollRef.current = setInterval(async () => {
-      try {
-        const { data } = await axios.get(`/api/qmra/run-status/${runId}`);
-        if (data.group_count) setRunGroupCount(data.group_count);
-        if (['success', 'error', 'timeout'].includes(data.status)) {
-          clearInterval(pollRef.current);
-          setRunStatus(data.status);
-        }
-      } catch (_) {
-        clearInterval(pollRef.current);
-        setRunStatus('error');
-      }
-    }, 2000);
-  }, [scenarioId]);
+  }, [config, isDirty, onDirtyChange, onSaved, scenarioId]);
 
   const overriddenKeys = new Set(Object.keys(config.area_overrides || {}));
   const areaBadges = areaKeys.map(k =>
@@ -641,24 +617,15 @@ export default function ExposurePathwaysPanel({ scenario, caseStudyId, onSaved }
   const pathways = displayedPathways;
   const overCap  = groupCount > GROUP_HARD_CAP;
 
-  const runBlock = (
-    <div className="space-y-2">
-      <button onClick={handleRerun} disabled={runStatus === 'running' || overCap}
-        className="flex items-center gap-2 px-4 py-2 rounded-lg bg-wpBlue text-white text-sm font-semibold hover:bg-wpBlue-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
-        {runStatus === 'running' ? <><RefreshCw size={14} className="animate-spin" /> Running&hellip;</> : <><Play size={14} /> Re-run risk</>}
-      </button>
-      {groupCount > GROUP_WARN_THRESHOLD && (
-        <p className={`text-xs ${overCap ? 'text-red-600' : 'text-amber-600'}`}>
-          <AlertTriangle size={12} className="inline mr-1 -mt-0.5" />
-          {groupCount} distinct area settings — the model runs once per group.
-          {overCap
-            ? ` Reduce to ${GROUP_HARD_CAP} or fewer before running.`
-            : ' This will take considerably longer than a single run.'}
-        </p>
-      )}
-      <RunStatusLine status={runStatus} groupCount={runGroupCount} />
-    </div>
-  );
+  const groupWarning = groupCount > GROUP_WARN_THRESHOLD ? (
+    <p className={`text-xs ${overCap ? 'text-red-600' : 'text-amber-600'}`}>
+      <AlertTriangle size={12} className="inline mr-1 -mt-0.5" />
+      {groupCount} distinct area settings — risk estimation runs once per group.
+      {overCap
+        ? ` Reduce to ${GROUP_HARD_CAP} or fewer before running risk.`
+        : ' This will take considerably longer than a single run.'}
+    </p>
+  ) : null;
 
   return (
     <div className="space-y-5">
@@ -668,21 +635,20 @@ export default function ExposurePathwaysPanel({ scenario, caseStudyId, onSaved }
         <p className="text-sm text-gray-600 flex-1 min-w-[200px]">
           Configure how people are exposed to contaminated water in this scenario.
         </p>
-        {saveOk && <span className="flex items-center gap-1 text-green-600 text-xs"><CheckCircle size={12} /> Saved</span>}
-        {loading && <RefreshCw size={14} className="animate-spin text-gray-400" />}
+        {loading && <Spinner size={14} className="text-gray-400" />}
         <button
-          onClick={handleResetDefaults}
-          title="Reset all settings to defaults"
-          className="px-2.5 py-1.5 rounded-lg border text-xs font-medium text-gray-600 border-gray-300 bg-white hover:bg-gray-50 transition-colors"
+          onClick={handleResetModelDefaults}
+          title="Reset all settings to the defaults used by the QMRA model"
+          className="px-2.5 py-1.5 rounded-lg border text-xs font-semibold text-wpBlue border-wpGray-200 bg-white hover:bg-gray-50 transition-colors"
         >
-          Reset to defaults
+          Reset to model defaults
         </button>
         {treatmentAvailable && (
           <Dialog>
             <DialogTrigger asChild>
               <button
                 title="View the treatment raster wired into the QMRA drinking-water pathway"
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium text-gray-600 border-gray-300 bg-white hover:bg-gray-50 transition-colors"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold text-wpBlue border-wpGray-200 bg-white hover:bg-gray-50 transition-colors"
               >
                 <MapIcon size={13} /> View treatment data
               </button>
@@ -695,13 +661,20 @@ export default function ExposurePathwaysPanel({ scenario, caseStudyId, onSaved }
             </DialogContent>
           </Dialog>
         )}
-        <div className="inline-flex items-center rounded-lg border border-gray-300 bg-gray-100 p-0.5" aria-label="Settings detail level">
+        <DriverSaveActions
+          target={actionsTarget}
+          isDirty={isDirty}
+          isSaving={isSaving}
+          onReset={handleReset}
+          onSave={handleSave}
+        />
+        <div className="flex gap-1 rounded-xl bg-wpGray-100 p-1 font-inter text-xs" aria-label="Settings detail level">
           <button
             type="button"
             onClick={() => setAdvanced(false)}
             aria-pressed={!advanced}
-            className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-              !advanced ? 'bg-wpBlue text-white' : 'text-gray-500 hover:text-gray-700'
+            className={`flex items-center rounded-xl gap-1.5 px-3 py-1.5 font-medium transition-colors ${
+              !advanced ? 'bg-white text-wpBlue' : 'bg-wpGray-100 hover:bg-wpGray-300'
             }`}
           >
             Standard
@@ -710,8 +683,8 @@ export default function ExposurePathwaysPanel({ scenario, caseStudyId, onSaved }
             type="button"
             onClick={() => setAdvanced(true)}
             aria-pressed={advanced}
-            className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-              advanced ? 'bg-wpBlue text-white' : 'text-gray-500 hover:text-gray-700'
+            className={`flex items-center rounded-xl gap-1.5 px-3 py-1.5 font-medium transition-colors ${
+              advanced ? 'bg-white text-wpBlue' : 'bg-wpGray-100 hover:bg-wpGray-300'
             }`}
           >
             Advanced
@@ -771,7 +744,7 @@ export default function ExposurePathwaysPanel({ scenario, caseStudyId, onSaved }
                 areaMode={perArea} overridden={perArea && !!overridesForFirstSelected[route]} />
             ))}
           </div>
-          <div className="border-t border-gray-100 pt-3">{runBlock}</div>
+          {groupWarning && <div className="border-t border-gray-100 pt-3">{groupWarning}</div>}
         </div>
       ) : (
         /* Advanced mode: two-column grid */
@@ -824,13 +797,13 @@ export default function ExposurePathwaysPanel({ scenario, caseStudyId, onSaved }
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-3 text-sm">
               <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Run</h4>
               <p className="text-xs text-gray-500">Re-run QMRA for this scenario using the configuration above. Emission and concentration outputs are not affected.</p>
-              {runBlock}
+              {groupWarning}
             </div>
           </div>
 
           <div className="space-y-3">
             <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-              Exposure pathways{perArea && ` — ${selectedKeys.length} area${selectedKeys.length !== 1 ? 's' : ''} selected`}
+              Exposure pathways{perArea && ` - ${selectedKeys.length} area${selectedKeys.length !== 1 ? 's' : ''} selected`}
             </h4>
             {ROUTE_ORDER.map(route => (
               <PathwayCard key={route} route={route} pc={pathways[route] || DEFAULT_PATHWAYS[route]}

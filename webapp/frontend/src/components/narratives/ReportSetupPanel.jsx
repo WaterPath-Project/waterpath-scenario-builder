@@ -8,7 +8,8 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
-import { ArrowLeft, Loader2 } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
+import Spinner, { LoadingState } from '../loading/Spinner';
 
 const QUANTILES = [
   { value: 0.025, label: 'Lower bound (2.5%)' },
@@ -143,7 +144,7 @@ const ReportSetupPanel = ({ caseStudyId, onCancel, onCreated }) => {
         )}
       </div>
 
-      {loading && <div className="text-sm text-wpGray-500">Loading scenarios…</div>}
+      {loading && <LoadingState label="Loading scenariosâ€¦" />}
 
       {!loading && baseline && (
         <div className="px-3 py-2 mb-2 bg-wpGray-100 border border-wpGray-200 rounded-lg text-sm text-wpGray-600">
@@ -171,7 +172,7 @@ const ReportSetupPanel = ({ caseStudyId, onCancel, onCreated }) => {
             />
             <span className="text-sm text-wpBlue font-medium">{scenario.name}</span>
             <span className="text-xs text-wpGray-500 ml-auto">
-              {[scenario.ssp, scenario.year].filter(Boolean).join(' · ')}
+              {[scenario.ssp, scenario.year].filter(Boolean).join(' Â· ')}
             </span>
           </label>
         ))}
@@ -190,7 +191,7 @@ const ReportSetupPanel = ({ caseStudyId, onCancel, onCreated }) => {
           disabled={submitting || selected.length === 0}
           className="flex items-center gap-2 px-4 py-2 bg-wpBlue text-white text-sm font-medium rounded-lg hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {submitting && <Loader2 size={14} className="animate-spin" />}
+          {submitting && <Spinner size={14} />}
           Generate report
         </button>
         <button

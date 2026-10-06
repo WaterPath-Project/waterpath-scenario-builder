@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
-import { Loader2, ChevronDown, ChevronUp, TableProperties } from 'lucide-react';
+import { ChevronDown, ChevronUp, TableProperties } from 'lucide-react';
 import AreaSelector from './AreaSelector';
 import AreaEditModeToggle from './AreaEditModeToggle';
 import DataGridView from './DataGridView';
@@ -32,6 +32,7 @@ import PigsIcon from '../../assets/icons/pigs.svg';
 import PoultryIcon from '../../assets/icons/poultry.svg';
 import SheepIcon from '../../assets/icons/sheep.svg';
 import LivestockEmissionsIcon from '../../assets/icons/livestock_emissions.svg';
+import { LoadingState as SharedLoadingState } from './loading/Spinner';
 
 const ICONS = {
   asses: AssesIcon,
@@ -286,10 +287,7 @@ function SaveResetBar({ title, hint, isDirty, isSaving, onSave, onReset, validat
 
 function LoadingState({ label }) {
   return (
-    <div className="flex items-center justify-center py-16 text-gray-400 gap-3">
-      <Loader2 size={20} className="animate-spin" />
-      <span className="text-sm">Loading {label}…</span>
-    </div>
+    <SharedLoadingState label={`Loading ${label}…`} className="py-16" />
   );
 }
 
@@ -839,7 +837,7 @@ function LivestockPopulationEditor({ scenario, onDirtyChange, onSaved, onHeadCou
             {headsSummary.status === 'done' && (headsSummary.areas?.length || 0) > 0 && (
               <Dialog>
                 <DialogTrigger asChild>
-                  <button className="flex items-center gap-1 px-3 py-1.5 text-xs text-wpBlue border border-wpBlue/40 rounded hover:bg-wpBlue/5 transition font-medium">
+                  <button className="px-2.5 py-1.5 rounded-lg border text-xs font-semibold text-wpBlue border-wpGray-200 bg-white hover:bg-gray-50 transition-colors">
                     View animal distribution
                   </button>
                 </DialogTrigger>

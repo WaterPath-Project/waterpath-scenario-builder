@@ -2,6 +2,7 @@ import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react'
 import { RotateCcw, Save } from 'lucide-react';
 import axios from 'axios';
 import AreaSelector from './AreaSelector';
+import { LoadingState } from './loading/Spinner';
 
 // ─── Field definitions ────────────────────────────────────────────────────────
 
@@ -441,10 +442,7 @@ const SanitationPanel = ({ scenario, onDirtyChange }) => {
 
   if (fetchState.status === 'loading') {
     return (
-      <div className="flex items-center justify-center py-16 text-gray-400 gap-3">
-        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-wpBlue" />
-        <span className="text-sm">Loading sanitation data…</span>
-      </div>
+      <LoadingState label="Loading sanitation data…" className="py-16" />
     );
   }
 

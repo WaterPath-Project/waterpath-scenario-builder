@@ -11,10 +11,10 @@ import {
   ChevronDown,
   ChevronUp,
   AlertTriangle,
-  Loader2,
   ScrollText,
   BarChart2,
 } from 'lucide-react';
+import Spinner from './loading/Spinner';
 
 // ─── Small helpers ────────────────────────────────────────────────────────────
 
@@ -143,7 +143,10 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
     if (!runId) return;
     pollRef.current = setInterval(async () => {
       try {
-        const res = await axios.get(`/api/run-status/${runId}`);
+        const statusUrl = runMode === 'risk_only'
+          ? `/api/qmra/run-status/${runId}`
+          : `/api/run-status/${runId}`;
+        const res = await axios.get(statusUrl);
         const data = res.data;
         setRunStatus(data.status);
         setRunOutput({ stdout: data.stdout || '', stderr: data.stderr || '' });
@@ -161,7 +164,7 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
       }
     }, 2000);
     return () => clearInterval(pollRef.current);
-  }, [runId]);
+  }, [runId, runMode]);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
   const startModelRun = async (includeRisk) => {
@@ -190,6 +193,24 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
       return;
     }
     startModelRun(!!scenario.qmra_available);
+  };
+
+  const startRiskOnlyRun = async () => {
+    setRunLoading(true);
+    setRunStatus('pending');
+    setShowOutput(true);
+    setRunOutputFiles([]);
+    onRunStart?.();
+    try {
+      const res = await axios.post(`/api/scenarios/${scenario.id}/qmra/run`);
+      setRunMode('risk_only');
+      setRunId(res.data.run_id);
+    } catch (err) {
+      setRunLoading(false);
+      setRunStatus('error');
+      setRunOutput({ stdout: '', stderr: err.response?.data?.error || err.message });
+      onRunEnd?.();
+    }
   };
 
   const handleFetchLog = async (force = false) => {
@@ -279,7 +300,7 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
           title={isAnyRunning && !runLoading ? 'Another scenario is already running' : undefined}
         >
           {runLoading ? (
-            <><RefreshCw size={13} className="animate-spin" /> Running…</>
+            <><Spinner size={13} /> Running…</>
           ) : (
             <><Play size={13} /> Run Model</>
           )}
@@ -311,7 +332,7 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
           className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-gray-600 bg-gray-100 hover:bg-gray-200 rounded disabled:opacity-50 transition-colors"
           title="Read glowpa.log from filesystem"
         >
-          {logLoading ? <Loader2 size={13} className="animate-spin" /> : <ScrollText size={13} />}
+          {logLoading ? <Spinner size={13} /> : <ScrollText size={13} />}
           {showLog ? 'Hide log' : 'Execution log'}
         </button>
       </div>
@@ -335,7 +356,9 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
         <div className="mt-3 space-y-1">
           {runMode && (
             <p className="text-xs text-gray-400">
-              Ran via: <span className="font-outfit">{runMode === 'exec' ? 'docker exec glowpa-container' : 'docker run (one-shot)'}</span>
+              Ran via: <span className="font-outfit">
+                {runMode === 'risk_only' ? 'QMRA using existing concentrations' : runMode === 'exec' ? 'docker exec glowpa-container' : 'docker run (one-shot)'}
+              </span>
             </p>
           )}
           {runOutput.stdout && (
@@ -386,10 +409,12 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
         onClose={() => setShowRiskRunDialog(false)}
         onConfirm={() => { setShowRiskRunDialog(false); return startModelRun(true); }}
         onCancel={() => { setShowRiskRunDialog(false); return startModelRun(false); }}
-        title="Include risk estimations?"
-        message="Exposure pathways are configured for this scenario. Risk estimation will run after the model completes."
-        confirmText="Include risk"
-        cancelText="Run without risk"
+        onAlternate={() => { setShowRiskRunDialog(false); return startRiskOnlyRun(); }}
+        title="Run scenario"
+        message="Concentration outputs are available. Run the full model again, with or without risk estimation, or use the existing concentrations to estimate risk only."
+        confirmText="Run model + risk"
+        cancelText="Run model only"
+        alternateText="Run risk only"
         confirmVariant="primary"
       />
     </div>

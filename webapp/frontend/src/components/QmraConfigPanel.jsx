@@ -10,6 +10,7 @@ import {
   Play, RefreshCw, CheckCircle, AlertTriangle,
   ChevronDown, ChevronUp, SlidersHorizontal, Settings2,
 } from 'lucide-react';
+import Spinner, { LoadingState } from './loading/Spinner';
 
 // ─── Route metadata ───────────────────────────────────────────────────────────
 const ROUTE_LABELS = {
@@ -450,9 +451,7 @@ export default function QmraConfigPanel({ scenarioId, caseStudyId, scenarioInfo,
     setConfig(prev => ({ ...prev, pathways: { ...prev.pathways, [route]: pc } }));
 
   if (loading) return (
-    <div className="flex items-center justify-center h-40 text-gray-400 text-sm">
-      <RefreshCw size={16} className="animate-spin mr-2" /> Loading config…
-    </div>
+    <LoadingState label="Loading config…" className="h-40" />
   );
   if (!config) return null;
 
@@ -582,7 +581,7 @@ export default function QmraConfigPanel({ scenarioId, caseStudyId, scenarioInfo,
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-wpBlue text-white text-xs font-medium hover:bg-wpBlue/90 disabled:opacity-50"
         >
           {isRunning
-            ? <><RefreshCw size={13} className="animate-spin" /> Running…</>
+            ? <><Spinner size={13} /> Running…</>
             : <><Play size={13} /> Run risk model</>
           }
         </button>
@@ -636,7 +635,7 @@ export default function QmraConfigPanel({ scenarioId, caseStudyId, scenarioInfo,
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-gray-700 text-xs font-medium hover:bg-gray-50 disabled:opacity-50"
           >
             {rerunAllStatus === 'running'
-              ? <><RefreshCw size={13} className="animate-spin" /> Starting…</>
+              ? <><Spinner size={13} /> Starting…</>
               : <><RefreshCw size={13} /> Re-run risk (all scenarios)</>
             }
           </button>
