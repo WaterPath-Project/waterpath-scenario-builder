@@ -19,13 +19,19 @@ export function useMapLoadingTracker() {
   return useContext(MapLoadingContext) || NOOP_TRACKER;
 }
 
-// Adds a Leaflet GridLayer to the map and calls `end` once its first batch of
-// visible tiles has rendered (GridLayer 'load'), or after a safety timeout.
+// Adds a Leaflet GridLayer to the map and calls `end` once its first visible
+// tile has rendered, when the layer finishes without a tile, or after a safety timeout.
 export function addLayerTracked(map, layer, end) {
-  layer.once('load', end);
+  const finish = () => {
+    clearTimeout(timeoutId);
+    end();
+  };
+  const timeoutId = setTimeout(finish, LAYER_LOAD_TIMEOUT_MS);
+
+  layer.once('tileload', finish);
+  layer.once('load', finish);
   map.addLayer(layer);
-  if (typeof layer.isLoading === 'function' && !layer.isLoading()) end();
-  setTimeout(end, LAYER_LOAD_TIMEOUT_MS);
+  if (typeof layer.isLoading === 'function' && !layer.isLoading()) finish();
 }
 
 export function MapLoadingOverlay({ visible, message = 'Loading map layers…' }) {

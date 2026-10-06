@@ -18,6 +18,7 @@ from state import (
     _SCHEMA_CATEGORY_MAP,
 )
 from hydrology import _detect_hydrology_module
+from fs_utils import _resolve_data_path
 
 
 def _livestock_subpath_for_file(base_name):
@@ -47,6 +48,16 @@ def apply_projections_to_scenario(case_study_path, folder_name, ssp, year, schem
 
     scenario_input_path = os.path.join(case_study_path, 'input', folder_name)
     results = {}
+    baseline_isoraster_path = _resolve_data_path(
+        case_study_path, 'baseline', 'isoraster.tif'
+    )
+    if not os.path.exists(baseline_isoraster_path):
+        error = f"Baseline isoraster.tif not found at {baseline_isoraster_path}"
+        print(f"[WARNING] Projection skipped: {error}")
+        return {
+            schema: {'ok': False, 'error': error, 'summary': None}
+            for schema in schemas
+        }
 
     isodata_to_schemas = {}
     isodata_to_cat_folder = {}
@@ -85,11 +96,21 @@ def apply_projections_to_scenario(case_study_path, folder_name, ssp, year, schem
 
         print(f"[DEBUG] Calling projections API: POST {url} params={params} schemas={schema_group}")
         try:
-            with open(isodata_path, 'rb') as f:
+            with (
+                open(isodata_path, 'rb') as isodata_file,
+                open(baseline_isoraster_path, 'rb') as isoraster_file,
+            ):
                 resp = requests.post(
                     url,
                     params=params,
-                    files={'file': ('isodata.csv', f, 'text/csv')},
+                    files={
+                        'file': ('isodata.csv', isodata_file, 'text/csv'),
+                        'isoraster': (
+                            'isoraster.tif',
+                            isoraster_file,
+                            'image/tiff',
+                        ),
+                    },
                     timeout=PROJECTION_API_TIMEOUT,
                 )
 

@@ -151,7 +151,7 @@ A background thread in `app.py` pre-warms the cache at startup so the first UI r
 
 - URL: `WATERPATH_DATA_API_URL` (default `https://dev.waterpath.venthic.com/api`)
 - Endpoint: `POST /data/projections/download`
-- Payload: the scenario's `isodata.csv`
+- Multipart payload: the scenario's `isodata.csv` and the case study baseline's `isoraster.tif`
 - Parameters: `ssp`, `year`, `schema` (population / sanitation / treatment / all)
 - Timeout: `PROJECTION_API_TIMEOUT` (default 600 s)
 - Response: ZIP archive; files are unpacked into the appropriate category subfolders and rasters are renamed per `state.RASTER_RENAME_MAP`.
