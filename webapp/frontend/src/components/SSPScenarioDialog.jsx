@@ -467,10 +467,10 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit, defaultPathogen = '', pr
 
           {/* ISIMIP Loading Indicator */}
           {isLoadingISIMIP && (
-            <div className="bg-blue-50 border border-blue-200 rounded-md p-4">
+            <div className="bg-wpBlue/20 border border-wpBlue rounded-md p-4">
               <div className="flex items-center gap-3">
-                <Spinner size={20} className="text-blue-600" />
-                <span className="text-sm font-medium text-blue-900">
+                <Spinner size={20} className="text-wpBlue" />
+                <span className="text-sm font-medium text-wpBlue-900">
                   Auto-calculating assumptions (this may take a few minutes)...
                 </span>
               </div>
