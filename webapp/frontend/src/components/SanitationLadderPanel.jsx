@@ -1,5 +1,5 @@
 ﻿import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import { ChevronDown, ChevronRight, ChevronUp, AlertTriangle, TableProperties, ChartBarStacked } from 'lucide-react';
+import { ChevronDown, ChevronRight, ChevronUp, AlertTriangle, TableProperties, ChartBarStacked, Copy } from 'lucide-react';
 import axios from 'axios';
 import DataGridView from './DataGridView';
 import AreaSelector from './AreaSelector';
@@ -462,6 +462,7 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, isFractionsM
   const [showFullData, setShowFullData] = useState(false);
   const [showJMPLadder, setShowJMPLadder] = useState(false);
   const [mgmtExpanded, setMgmtExpanded] = useState(false);
+  const [copySourceIdx, setCopySourceIdx] = useState('');
 
   // Which suffixes have unsaved changes (for orange dot on tab)
   const dirtySuffixes = useMemo(() => {
@@ -660,20 +661,80 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, isFractionsM
   const editIndices = selectedArr;
   // Resolved suffix tab — falls back to first active suffix if current tab is not available
   const resolvedTab = activeSfx.includes(activeSfxTab) ? activeSfxTab : (activeSfx[0] ?? '_urb');
+  const copySourceIndices = initialRows
+    .map((row, index) => ({ index, urbanFraction: parseFloat(row.fraction_urban_pop) || 0 }))
+    .filter(({ urbanFraction }) => resolvedTab === '_urb' ? urbanFraction > 0 : urbanFraction < 1)
+    .filter(({ index }) => selectedArr.length !== 1 || index !== selectedArr[0])
+    .map(({ index }) => index);
+  const validCopySourceIdx = copySourceIndices.includes(Number(copySourceIdx)) ? copySourceIdx : '';
+
+  const copyTechnologyMix = () => {
+    const sourceIdx = Number(copySourceIdx);
+    if (!Number.isInteger(sourceIdx) || !copySourceIndices.includes(sourceIdx)) return;
+
+    setLocalValues((prev) => {
+      const source = prev[sourceIdx];
+      if (!source) return prev;
+      const targets = selectedArr.filter((index) => {
+        const urbanFraction = parseFloat(initialRows[index].fraction_urban_pop) || 0;
+        return resolvedTab === '_urb' ? urbanFraction > 0 : urbanFraction < 1;
+      });
+      const next = prev.map((values, index) => {
+        if (!targets.includes(index)) return values;
+        const patch = {};
+        TECH_FIELDS.forEach((field) => {
+          const key = `${field}${resolvedTab}`;
+          if (key in source && key in values) patch[key] = source[key];
+        });
+        return { ...values, ...patch };
+      });
+      markDirty(next);
+      return next;
+    });
+  };
 
   return (
     <div className="space-y-4">
 
       {/* ── Toolbar ─────────────────────────────────────────────────────── */}
-      {editMode === 'individual' && initialRows.length > 1 && (
+      {initialRows.length > 1 && (
         <div className="flex items-center gap-3 flex-wrap">
-          <AreaSelector
-            labels={initialRows.map((r, i) => r.subarea || r.iso || `Area ${i + 1}`)}
-            selectedIndices={selectedIndices}
-            onChange={setSelectedIndices}
-            badges={areaBadges}
-            allowAll={false}
-          />
+          {editMode === 'individual' && (
+            <AreaSelector
+              labels={initialRows.map((r, i) => r.subarea || r.iso || `Area ${i + 1}`)}
+              selectedIndices={selectedIndices}
+              onChange={setSelectedIndices}
+              badges={areaBadges}
+              allowAll={false}
+            />
+          )}
+          <div className="ml-auto flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-2 py-1.5">
+            <Copy size={14} className="text-gray-400 flex-shrink-0" />
+            <span className="text-xs font-medium text-gray-500 whitespace-nowrap">
+              Copy {SUFFIX_LABELS[resolvedTab].toLowerCase()} technologies from
+            </span>
+            <select
+              value={validCopySourceIdx}
+              onChange={(event) => setCopySourceIdx(event.target.value)}
+              className="max-w-[12rem] rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 focus:outline-none focus:ring-1 focus:ring-wpBlue"
+            >
+              <option value="">Select area</option>
+              {copySourceIndices.map((index) => (
+                <option key={index} value={index}>
+                  {initialRows[index].subarea || initialRows[index].iso || `Area ${index + 1}`}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={copyTechnologyMix}
+              disabled={validCopySourceIdx === ''}
+              title={`Copy the source area's ${SUFFIX_LABELS[resolvedTab].toLowerCase()} technology mix to the current target area group`}
+              className="rounded-lg bg-wpBlue px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-wpBlue-600 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Copy
+            </button>
+          </div>
         </div>
       )}
 
@@ -934,25 +995,39 @@ const SanitationLadderInner = ({ scenario, initialRows, fieldnames, isFractionsM
                             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 text-center">
                               Treatment fractions
                             </p>
-                            <div className="flex flex-col flex-1 space-y-3 w-full">
-                              <p className="text-[12px] text-gray-400 italic text-center leading-tight"></p>
-                              <div className="flex flex-row gap-6 justify-center">
-                                {TREATMENT_FIELDS.map((f) => {
-                                  const key = `${f}${sfx}`;
-                                  const val = displayVals[key] ?? 0;
-                                  return (
-                                    <div key={key} className="text-center">
-                                      <p className="text-[12px] text-gray-500 leading-tight">{FIELD_LABELS[f].replace(' (fraction)', '')}</p>
-                                      <p className="tabular-nums text-md font-semibold text-wpBlue">{(val * 100).toFixed(1)}%</p>
+                            <div className="flex flex-col flex-1 space-y-3 w-full min-h-0">
+                              <div className="flex gap-2 justify-center flex-1 min-h-0">
+                                <div className="flex flex-col items-center gap-1 flex-1">
+                                  <span className="text-[12px] pt-4 font-semibold text-gray-600 text-center leading-tight w-full break-words px-1">
+                                    Sewage treated
+                                  </span>
+                                  <div className="flex-1 flex items-stretch justify-center min-h-0">
+                                    <div className="relative rounded-full bg-gray-200 overflow-hidden" style={{ width: 8 }}>
+                                      <div
+                                        className="absolute bottom-0 left-0 right-0"
+                                        style={{
+                                          backgroundColor: COLORS.safelyManaged,
+                                          height: `${Math.min(1, displayVals[`sewageTreated${sfx}`] ?? 0) * 100}%`,
+                                        }}
+                                      />
                                     </div>
-                                  );
-                                })}
+                                  </div>
+                                  <span className="text-xs tabular-nums font-medium px-1 py-0.5" style={{ color: COLORS.safelyManaged }}>
+                                    {((displayVals[`sewageTreated${sfx}`] ?? 0) * 100).toFixed(1)}%
+                                  </span>
+                                </div>
+                                {`fecalSludgeTreated${sfx}` in displayVals && (
+                                  <VerticalSliderColumn
+                                    label="Fecal sludge treated"
+                                    value={displayVals[`fecalSludgeTreated${sfx}`] ?? 0}
+                                    fieldKey={`fecalSludgeTreated${sfx}`}
+                                    accentColor={COLORS.safelyManaged}
+                                    onChange={makeChange}
+                                  />
+                                )}
                               </div>
                               <p className="text-[12px] text-gray-500 text-center leading-tight">
-                                The two treatment fractions greatly affect whether the improved facilities proportions can be considered as safely managed. For example, if sewer = 0.6 and treated = 0.5, then 30% of the population is estimated to be safely managed via sewer (0.6 × 0.5 = 0.3). To view how this roughly corresponds to the JMP definitions of safely managed, enable the "Estimate Sanitation Ladder" view above. 
-                              </p>
-                              <p className="text-[12px] text-gray-500 text-center leading-tight">
-                                To edit these treatment fractions, go to the "Wastewater Treatment" tab.
+                                Sewage treated is calculated from the sum of the wastewater treatment types. Fecal sludge treated is managed here for each urban and rural context.
                               </p>
                             </div>
                           </>
@@ -1119,10 +1194,50 @@ const SanitationLadderPanel = ({ scenario, onDirtyChange, onSaved, actionsTarget
       .then(([isoRes, treatRes]) => {
         if (!cancelled) {
           const treatFieldnames = treatRes.data.fieldnames ?? [];
-          const isFractionsMode = treatFieldnames.includes('FractionPrimarytreatment');
+          const treatmentRows = treatRes.data.data ?? [];
+          const isPointMode = treatmentRows.length > 0 &&
+            treatFieldnames.includes('lon') &&
+            treatFieldnames.includes('lat');
+          const isFractionsMode = !isPointMode;
+          const rows = isoRes.data.data ?? [];
+
+          if (isFractionsMode) {
+            const fractionFields = [
+              'FractionPrimarytreatment',
+              'FractionSecondarytreatment',
+              'FractionTertiarytreatment',
+              'FractionQuaternarytreatment',
+            ];
+            const fractionRows = treatFieldnames.includes('FractionPrimarytreatment')
+              ? treatmentRows
+              : [];
+            const byArea = new Map();
+            fractionRows.forEach((row) => {
+              const key = row.gid || row.iso;
+              if (key != null && key !== '') byArea.set(String(key), row);
+            });
+            const averageFractions = fractionFields.map((field) => {
+              if (!fractionRows.length) return 0;
+              return fractionRows.reduce((sum, row) => sum + (parseFloat(row[field]) || 0), 0) / fractionRows.length;
+            });
+
+            rows.forEach((row) => {
+              const key = String(row.gid || row.iso || '');
+              const fractionRow = byArea.get(key);
+              const fractions = fractionRow
+                ? fractionFields.map((field) => parseFloat(fractionRow[field]) || 0)
+                : fractionRows.length
+                  ? averageFractions
+                  : fractionFields.map((field) => parseFloat(row[field]) || 0);
+              const sewageTreated = Math.min(1, fractions.reduce((sum, value) => sum + value, 0));
+              row.sewageTreated_urb = sewageTreated;
+              row.sewageTreated_rur = sewageTreated;
+            });
+          }
+
           setFetchState({
             status: 'done',
-            rows: isoRes.data.data ?? [],
+            rows,
             fieldnames: isoRes.data.fieldnames ?? [],
             isFractionsMode,
           });

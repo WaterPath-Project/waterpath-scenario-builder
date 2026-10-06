@@ -361,7 +361,7 @@ function Legend({ hlCtx, hlNorm, onHlChange }) {
         label: `${String(Math.round(t * LOG_MAX))}`,
       }));
     return (
-      <div className="mt-2">
+      <div className="mt-2" data-map-export-legend>
         <div className="flex items-center flex-wrap">
           <div className="flex flex-col items-center" onMouseLeave={hlLeave}>
             <div className="h-3 w-[70px] border b-gray-100" style={{ background: '#fff' }}/>
@@ -395,7 +395,7 @@ function Legend({ hlCtx, hlNorm, onHlChange }) {
   for (let v = 1; v <= Math.floor(effectiveLogMax); v += 2) legendTicks.push(v);
 
   return (
-    <div className="mt-2">
+    <div className="mt-2" data-map-export-legend>
       <div className="flex items-center gap-2">
         {/* NA swatch */}
         <div className="flex flex-col items-center flex-shrink-0">
@@ -453,7 +453,7 @@ function DiffLegend({ hlCtx, hlNorm, onHlChange, scale = 100 }) {
     `≥+${scale}%`,
   ];
   return (
-    <div className="mt-2">
+    <div className="mt-2" data-map-export-legend>
       <div className="relative">
         <div className="h-5 rounded"
           style={{ background: 'linear-gradient(to right,rgb(20,83,45),rgb(187,247,208),#f3f4f6,rgb(254,202,202),rgb(153,27,27))', cursor: hlCtx ? 'crosshair' : 'default' }}
@@ -662,6 +662,76 @@ function GeoTiffLayer({ url, hlCtx }) {
 // Rendered as absolute-positioned overlay inside the MapContainer so it has
 // access to the Leaflet map instance via useMap().
 
+function drawLegendToCanvas(ctx, legend, x, y, outputWidth) {
+  const rootRect = legend.getBoundingClientRect();
+  if (!rootRect.width || !rootRect.height) return;
+  const scale = outputWidth / rootRect.width;
+
+  const drawNode = (node) => {
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return;
+    const rect = node.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const left = rect.left - rootRect.left;
+    const top = rect.top - rootRect.top;
+
+    ctx.save();
+    ctx.globalAlpha *= Number(style.opacity) || 1;
+
+    if (style.backgroundColor && style.backgroundColor !== 'rgba(0, 0, 0, 0)') {
+      ctx.fillStyle = style.backgroundColor;
+      ctx.fillRect(left, top, rect.width, rect.height);
+    }
+
+    if (style.backgroundImage?.startsWith('linear-gradient')) {
+      const colors = style.backgroundImage.match(/rgba?\([^)]+\)|#[0-9a-fA-F]{3,8}/g) || [];
+      if (colors.length >= 2) {
+        const gradient = ctx.createLinearGradient(left, top, left + rect.width, top);
+        colors.forEach((color, index) => gradient.addColorStop(index / (colors.length - 1), color));
+        ctx.fillStyle = gradient;
+        ctx.fillRect(left, top, rect.width, rect.height);
+      }
+    }
+
+    const borderWidth = parseFloat(style.borderTopWidth) || 0;
+    if (borderWidth > 0 && style.borderTopColor !== 'rgba(0, 0, 0, 0)') {
+      ctx.strokeStyle = style.borderTopColor;
+      ctx.lineWidth = borderWidth;
+      ctx.strokeRect(left + borderWidth / 2, top + borderWidth / 2, rect.width - borderWidth, rect.height - borderWidth);
+    }
+
+    Array.from(node.children).forEach(drawNode);
+
+    const text = Array.from(node.childNodes)
+      .filter((child) => child.nodeType === Node.TEXT_NODE)
+      .map((child) => child.textContent)
+      .join('')
+      .trim();
+    if (text) {
+      ctx.fillStyle = style.color;
+      ctx.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+      ctx.textBaseline = 'middle';
+      if (style.textAlign === 'center') {
+        ctx.textAlign = 'center';
+        ctx.fillText(text, left + rect.width / 2, top + rect.height / 2);
+      } else if (style.textAlign === 'right') {
+        ctx.textAlign = 'right';
+        ctx.fillText(text, left + rect.width, top + rect.height / 2);
+      } else {
+        ctx.textAlign = 'left';
+        ctx.fillText(text, left, top + rect.height / 2);
+      }
+    }
+    ctx.restore();
+  };
+
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+  drawNode(legend);
+  ctx.restore();
+}
+
 function MapExportControls({ title }) {
   const map = useMap();
   const [isFs, setIsFs] = useState(false);
@@ -684,11 +754,18 @@ function MapExportControls({ title }) {
   const handleDownloadPng = async () => {
     const container = map.getContainer();
     const size = map.getSize();
+    const mapColumn = container.closest('[data-map-export-column]');
+    const legend = mapColumn?.querySelector('[data-map-export-legend]');
+    const legendRect = legend?.getBoundingClientRect();
+    const legendHeight = legendRect?.width ? Math.ceil(legendRect.height * (size.x / legendRect.width)) : 0;
+    const legendGap = legendHeight > 0 ? 8 : 0;
     const offscreen = document.createElement('canvas');
     offscreen.width = size.x;
-    offscreen.height = size.y;
+    offscreen.height = size.y + legendGap + legendHeight;
     const ctx = offscreen.getContext('2d');
     const mapRect = container.getBoundingClientRect();
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, offscreen.width, offscreen.height);
     ctx.fillStyle = '#f2f2f0';
     ctx.fillRect(0, 0, size.x, size.y);
     // Re-fetch base tiles with crossOrigin='anonymous' to avoid canvas taint.
@@ -713,9 +790,18 @@ function MapExportControls({ title }) {
       if (!c.width || !c.height) return;
       try { const r = c.getBoundingClientRect(); ctx.drawImage(c, r.left - mapRect.left, r.top - mapRect.top, r.width, r.height); } catch (_) {}
     });
+    if (legend && legendHeight > 0) {
+      drawLegendToCanvas(ctx, legend, 0, size.y + legendGap, size.x);
+    }
     const a = document.createElement('a');
     a.download = `${title ? title.replace(/\s+/g, '_').toLowerCase() : 'emissions_map'}.png`;
-    a.href = offscreen.toDataURL('image/png');
+    try {
+      a.href = offscreen.toDataURL('image/png');
+    } catch (error) {
+      console.error('Map PNG export failed:', error);
+      alert('Unable to export this map because one of its layers does not permit image export.');
+      return;
+    }
     a.click();
   };
 
@@ -937,14 +1023,14 @@ function EmissionMapPanel({
         <MapLoadingPlaceholder height={480} message={isComparison ? 'Loading comparison…' : 'Loading scenario data…'} />
       ) : geojson ? (
         <div className="flex gap-3" style={{ height: 480 }}>
-          <div className="flex flex-col min-w-0" style={{ flex: 2 }}>
+          <div className="flex flex-col min-w-0" style={{ flex: 2 }} data-map-export-column>
             <MapLoadingFrame
               className="rounded overflow-hidden border border-gray-100 flex-1"
               loading={loading}
               message={loading && isComparison ? 'Loading comparison…' : isComparison ? 'Computing comparison…' : 'Loading map layers…'}
             >
               <MapContainer center={[0,0]} zoom={2} style={{ height:'100%', width:'100%' }} scrollWheelZoom>
-                <OpenFreeMapLayer />
+                <OpenFreeMapLayer exportable />
                 <CreateBlendPane/>
                 {/* Single raster: GeoTIFF rendered via georaster-layer-for-leaflet with proj4 CRS support.
                     Skipped in choropleth mode — area is too small for the raster grid, polygons are
@@ -2105,7 +2191,7 @@ function MapWithSidePanel({
       )}
       {hasGeodata ? (
         <div className="flex gap-3" style={{ height }}>
-          <div className="flex flex-col min-w-0" style={{ flex: 2 }}>
+          <div className="flex flex-col min-w-0" style={{ flex: 2 }} data-map-export-column>
             <MapLoadingFrame
               className="rounded overflow-hidden border border-gray-100 flex-1"
               loading={mapLoading}
@@ -2529,7 +2615,7 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
 
   // Legend block (used inside MapWithSidePanel legendChildren)
   const legendBlock = (
-    <div className="pt-2">
+    <div className="pt-2" data-map-export-legend>
       {isComparison && showDiff ? (
         !diffError ? (
           <div className="flex items-center gap-2">
@@ -2804,7 +2890,7 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
       legendChildren={legendBlock}
       mapChildren={
         <MapContainer center={[0, 0]} zoom={2} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
-          <OpenFreeMapLayer />
+          <OpenFreeMapLayer exportable />
           <CreateBlendPane />
           {(!isComparison || !showDiff) && rasterUrl && <HydrologyGeoTiffLayer key={rasterUrl} url={rasterUrl} hlCtx={hlCtx} />}
           {diffUrl && <HydrologyDiffGeoTiffLayer key={`${diffUrl}-${hydroScale ?? 'auto'}`} url={diffUrl} scale={hydroScale} hlCtx={hlCtx} onError={() => setDiffError(true)} onStats={setDiffStats} />}

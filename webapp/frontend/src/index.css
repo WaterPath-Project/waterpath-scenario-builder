@@ -231,6 +231,15 @@ input[type="range"].split-slider::-moz-range-thumb {
     width: 100vw !important;
     height: 100vh !important;
     overflow: hidden !important;
+    print-color-adjust: exact !important;
+    -webkit-print-color-adjust: exact !important;
+  }
+
+  body.print-map-only .print-map-target *,
+  body.print-map-only .print-map-target *::before,
+  body.print-map-only .print-map-target *::after {
+    print-color-adjust: exact !important;
+    -webkit-print-color-adjust: exact !important;
   }
 
   body.print-map-only [data-map-export-controls] {

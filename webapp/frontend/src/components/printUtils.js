@@ -1,16 +1,17 @@
 export function printMapContainer(map, title = 'Map') {
   const container = map?.getContainer?.();
   if (!container) return;
+  const target = container.closest('[data-map-export-column]') || container;
 
   const previousTitle = document.title;
   document.title = title;
   document.body.classList.add('print-map-only');
-  container.classList.add('print-map-target');
+  target.classList.add('print-map-target');
 
   try {
     window.print();
   } finally {
-    container.classList.remove('print-map-target');
+    target.classList.remove('print-map-target');
     document.body.classList.remove('print-map-only');
     document.title = previousTitle;
   }

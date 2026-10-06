@@ -63,7 +63,7 @@ function withWaterBodyColor(style) {
   };
 }
 
-export default function OpenFreeMapLayer() {
+export default function OpenFreeMapLayer({ exportable = false }) {
   const map = useMap();
   const basemapStyle = useSettingsStore(state => state.basemapStyle);
 
@@ -85,11 +85,13 @@ export default function OpenFreeMapLayer() {
         const styledMap = withWaterBodyColor(style);
         baseLayer = maplibreGL({
           style: styledMap,
+          preserveDrawingBuffer: exportable,
           attribution: '&copy; <a href="https://openfreemap.org/">OpenFreeMap</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
         }).addTo(map);
 
         foregroundLayer = maplibreGL({
           style: contextStyle(styledMap),
+          preserveDrawingBuffer: exportable,
           pane: CONTEXT_PANE,
           attribution: '',
           interactive: false,
@@ -105,7 +107,7 @@ export default function OpenFreeMapLayer() {
       if (foregroundLayer) map.removeLayer(foregroundLayer);
       if (baseLayer) map.removeLayer(baseLayer);
     };
-  }, [map, basemapStyle]);
+  }, [map, basemapStyle, exportable]);
 
   return null;
 }

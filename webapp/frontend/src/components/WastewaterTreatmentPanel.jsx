@@ -236,7 +236,7 @@ const FEmittedReadout = ({ value, pathogenLabel }) => {
 
 // ─── Inner panel (receives already-loaded data) ───────────────────────────────
 
-const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions, initialFecalSludge = [], isoRows = [], isoFieldnames = [], onDirtyChange, onSaved, actionsTarget }) => {
+const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions, isoRows = [], isoFieldnames = [], onDirtyChange, onSaved, actionsTarget }) => {
   const { pathogens } = useConfigStore();
 
   // Resolve the active pathogen type ('virus' or 'protozoa') for the scenario
@@ -253,8 +253,7 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
   const [wwtp, setWwtp] = useState(initialWwtp);
   // fractions is [[FP, FS, FT, FQ], ...] — one array per isodata row
   const [fractions, setFractions] = useState(initialFractions);
-  // fecalSludge — one value per isodata row (independent of treatment fractions)
-  const [fecalSludge, setFecalSludge] = useState(() => initialFecalSludge.length ? initialFecalSludge : [0]);
+  const [treatmentContext, setTreatmentContext] = useState('_urb');
   const [selectedIndices, setSelectedIndices] = useState(new Set());
   const [geodata, setGeodata] = useState(null);
   const [projConfig, setProjConfig] = useState({ center: [0, 0], scale: 200 });
@@ -272,7 +271,6 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
   const savedWwtpRef = useRef(initialWwtp);
   const savedFractionsRef = useRef(initialFractions);
   const savedModeRef = useRef(initialMode);
-  const savedFecalSludgeRef = useRef(initialFecalSludge);
 
   // Fetch geodata on mount; projConfig falls back to WWTP coords if geodata is unavailable
   useEffect(() => {
@@ -403,35 +401,10 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
     markDirty(next, fractions, mode);
   };
 
-  const handleFecalSludgeChange = (val) => {
-    const rounded = Math.round(val * 1000) / 1000;
-    let next;
-    if (fecalSludge.length <= 1 || selectedIndices.size === 1) {
-      const aIdx = selectedIndices.size === 1 ? [...selectedIndices][0] : 0;
-      next = fecalSludge.map((v, i) => i === aIdx ? rounded : v);
-    } else {
-      const delta = rounded - displayFecalSludge;
-      const targets = selectedIndices.size === 0 ? null : selectedIndices;
-      next = fecalSludge.map((v, i) => {
-        if (targets && !targets.has(i)) return v;
-        return Math.max(0, Math.min(1, Math.round((v + delta) * 1000) / 1000));
-      });
-    }
-    setFecalSludge(next);
-    const dirty =
-      mode !== savedModeRef.current ||
-      JSON.stringify(wwtp) !== JSON.stringify(savedWwtpRef.current) ||
-      JSON.stringify(fractions) !== JSON.stringify(savedFractionsRef.current) ||
-      JSON.stringify(next) !== JSON.stringify(savedFecalSludgeRef.current);
-    setIsDirty(dirty);
-    onDirtyChange?.(dirty);
-  };
-
   const handleReset = () => {
     setMode(savedModeRef.current);
     setWwtp(savedWwtpRef.current);
     setFractions(savedFractionsRef.current);
-    setFecalSludge(savedFecalSludgeRef.current);
     setIsDirty(false);
     onDirtyChange?.(false);
   };
@@ -440,12 +413,11 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
     setIsSaving(true);
     try {
       if (mode === 'fractions') {
-        // Save per-area fraction sliders + sewageTreated + fecalSludgeTreated + fEmitted → isodata.csv; clear treatment.csv
-        const indexedFractions = fractions.map(([FP, FS, FT, FQ = 0], i) => {
+        // Save per-area treatment fractions, derived sewage treatment, and fEmitted to isodata.csv.
+        const indexedFractions = fractions.map(([FP, FS, FT, FQ = 0]) => {
           const fEmittedVirus    = FP * 0.2425 + FS * 0.025 + FT * 0.004 + FQ * 0.001;
           const fEmittedProtozoa = FP * 0.425  + FS * 0.02  + FT * 0.02  + FQ * 0.001;
           const sumFrac = parseFloat((FP + FS + FT + FQ).toFixed(6));
-          const fsl     = parseFloat((fecalSludge[i] ?? 0).toFixed(6));
           return {
             FractionPrimarytreatment:    FP,
             FractionSecondarytreatment:  FS,
@@ -453,8 +425,6 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
             FractionQuaternarytreatment: FQ,
             sewageTreated_urb:           sumFrac,
             sewageTreated_rur:           sumFrac,
-            fecalSludgeTreated_urb:      fsl,
-            fecalSludgeTreated_rur:      fsl,
             fEmitted_inEffluent_after_treatment_virus:    parseFloat(fEmittedVirus.toFixed(6)),
             fEmitted_inEffluent_after_treatment_protozoa: parseFloat(fEmittedProtozoa.toFixed(6)),
           };
@@ -495,7 +465,6 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
       savedModeRef.current = mode;
       savedWwtpRef.current = wwtp;
       savedFractionsRef.current = fractions;
-      savedFecalSludgeRef.current = fecalSludge;
       setIsDirty(false);
       onDirtyChange?.(false);
       onSaved?.();
@@ -516,15 +485,32 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
   const fractionSumOk = fractionSum <= 1.005;
   const canSave = fractionSumOk;
 
-  // Displayed fecalSludge — average over selected areas (mirrors displayFractions logic)
+  const availableTreatmentContexts = useMemo(() => {
+    const contexts = [];
+    if (isoRows.some(row => (parseFloat(row.fraction_urban_pop) || 0) > 0)) contexts.push('_urb');
+    if (isoRows.some(row => (parseFloat(row.fraction_urban_pop) || 0) < 1)) contexts.push('_rur');
+    return contexts.length ? contexts : ['_urb', '_rur'];
+  }, [isoRows]);
+
+  useEffect(() => {
+    if (!availableTreatmentContexts.includes(treatmentContext)) {
+      setTreatmentContext(availableTreatmentContexts[0]);
+    }
+  }, [availableTreatmentContexts, treatmentContext]);
+
+  // Fecal sludge treatment remains owned by the sanitation panel and is read-only here.
   const displayFecalSludge = useMemo(() => {
-    if (!fecalSludge.length) return 0;
-    if (fecalSludge.length === 1) return fecalSludge[0] ?? 0;
-    if (selectedIndices.size === 1) return fecalSludge[[...selectedIndices][0]] ?? 0;
-    const pool = selectedIndices.size === 0 ? fecalSludge : [...selectedIndices].map(i => fecalSludge[i]).filter(v => v != null);
+    const selectedRows = selectedIndices.size === 0
+      ? isoRows
+      : [...selectedIndices].map(i => isoRows[i]).filter(Boolean);
+    const pool = selectedRows.filter(row => {
+      const urbanFraction = parseFloat(row.fraction_urban_pop) || 0;
+      return treatmentContext === '_urb' ? urbanFraction > 0 : urbanFraction < 1;
+    });
     if (!pool.length) return 0;
-    return Math.round(pool.reduce((a, b) => a + b, 0) / pool.length * 1000) / 1000;
-  }, [fecalSludge, selectedIndices]);
+    const field = `fecalSludgeTreated${treatmentContext}`;
+    return Math.round(pool.reduce((sum, row) => sum + (parseFloat(row[field]) || 0), 0) / pool.length * 1000) / 1000;
+  }, [isoRows, selectedIndices, treatmentContext]);
 
   // Live fEmitted readout — fractions mode (uses displayed/averaged fractions, for active pathogen)
   const displayFEmittedValue = useMemo(() => {
@@ -624,6 +610,23 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
           <span className={`ml-auto text-xs font-outfit px-1.5 py-0.5 rounded ${fractionSumOk ? 'text-gray-400' : 'text-red-600 bg-red-50 font-semibold'}`}>
             Σ = {(fractionSum * 100).toFixed(1)}%
           </span>
+          <div className="flex gap-1 rounded-xl bg-wpGray-100 p-1 font-inter text-xs" aria-label="Treatment population setting">
+            {availableTreatmentContexts.map(context => (
+              <button
+                key={context}
+                type="button"
+                onClick={() => setTreatmentContext(context)}
+                aria-pressed={treatmentContext === context}
+                className={`flex items-center rounded-xl gap-1.5 px-3 py-1.5 font-medium transition-colors ${
+                  treatmentContext === context
+                    ? 'bg-white text-wpBlue'
+                    : 'bg-wpGray-100 hover:bg-wpGray-300'
+                }`}
+              >
+                {context === '_urb' ? 'Urban' : 'Rural'}
+              </button>
+            ))}
+          </div>
           <DriverSaveActions
             target={actionsTarget}
             isDirty={isDirty}
@@ -648,8 +651,8 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
                 <FractionSlider key={i} label={label} value={displayFractions[i]} color={FRACTION_COLORS[i]} onChange={val => handleFractionChange(i, val)} />
               ))}
             </div>
-            {/* Right: vertical bars for sewage treated (r/o) + fecal sludge treated */}
-            <div className="flex flex-col border-l border-gray-100 pl-4" style={{ height: 160, gap: 4 }}>
+            {/* Right: contextual read-only treatment coverage */}
+            <div className="flex flex-col self-stretch border-l border-gray-100 pl-4 gap-1">
               {/* Shared label row — both labels in same flex row, row height = tallest label */}
               <div className="flex gap-3 flex-shrink-0">
                 {['Sewage treated', 'Fecal sludge treated'].map(lbl => (
@@ -672,7 +675,7 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
                   hideLabel
                   value={displayFecalSludge}
                   color={TREATMENT_SAFE_COLOR}
-                  onChange={handleFecalSludgeChange}
+                  readOnly
                 />
               </div>
             </div>
@@ -803,9 +806,8 @@ const WastewaterTreatmentPanelInner = ({ scenario, initialWwtp, initialFractions
           </div>
 
           {wwtp.length === 0 ? (
-            <div className="px-2.5 py-1.5 rounded-lg border text-xs font-semibold text-wpBlue border-wpGray-200 bg-white hover:bg-gray-50 transition-colors">
-              <span className="text-sm">No WWTPs defined</span>
-              <span className="text-xs">Click "Add WWTP" to add a facility</span>
+            <div className="px-8 py-8 text-xs text-wpBlue-900 bg-white hover:bg-gray-50 transition-colors">
+              <span className="text-sm">No WWTPs defined - Click "Add WWTP" to add a facility</span>
             </div>
           ) : (
             <div className="overflow-y-auto" style={{ maxHeight: 320 }}>
@@ -991,17 +993,7 @@ const WastewaterTreatmentPanel = ({ scenario, onDirtyChange, onSaved, actionsTar
           normFractions = [[1, 0, 0, 0]];
         }
 
-        // Extract fecalSludgeTreated per row (average of urb and rur variants)
-        const initialFecalSludge = allIsoRows.map(row => {
-          const urb = parseFloat(row['fecalSludgeTreated_urb']);
-          const rur = parseFloat(row['fecalSludgeTreated_rur']);
-          if (!isNaN(urb) && !isNaN(rur)) return Math.round((urb + rur) / 2 * 1000) / 1000;
-          if (!isNaN(urb)) return urb;
-          if (!isNaN(rur)) return rur;
-          return 0;
-        });
-
-        setState({ status: 'done', wwtp, fractions: normFractions, fecalSludge: initialFecalSludge, isoRows: allIsoRows, isoFieldnames: isoRes.data.fieldnames ?? [] });
+        setState({ status: 'done', wwtp, fractions: normFractions, isoRows: allIsoRows, isoFieldnames: isoRes.data.fieldnames ?? [] });
       })
       .catch(e => {
         if (!cancelled) setState({ status: 'error', error: e.response?.data?.error || e.message });
@@ -1030,7 +1022,6 @@ const WastewaterTreatmentPanel = ({ scenario, onDirtyChange, onSaved, actionsTar
       scenario={scenario}
       initialWwtp={state.wwtp}
       initialFractions={state.fractions}
-      initialFecalSludge={state.fecalSludge ?? []}
       isoRows={state.isoRows ?? []}
       isoFieldnames={state.isoFieldnames ?? []}
       onDirtyChange={onDirtyChange}

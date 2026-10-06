@@ -1184,7 +1184,7 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
                   center={[0, 30]} zoom={3}
                   scrollWheelZoom={false} zoomControl={false} attributionControl={false}
                 >
-                  <OpenFreeMapLayer />
+                  <OpenFreeMapLayer exportable />
                   {isComparison && diffTifUrl
                     ? <RiskDiffRasterLayer key={diffTifUrl} diffUrl={diffTifUrl} hlCtx={hlCtx} />
                     : tifUrl && <RiskRasterLayer key={tifUrl} tifUrl={tifUrl} isCases={selectedFile === 'expected_cases.tif'} hlCtx={hlCtx} bandIndex={mapBandIndex} />

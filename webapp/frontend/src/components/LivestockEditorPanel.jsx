@@ -1021,9 +1021,17 @@ function ManureManagementEditor({ scenario, onDirtyChange, onSaved, animalsWithH
     const visibleAnimals = (animalsWithHeads
       ? [...animalMap.keys()].filter(a => animalsWithHeads.has(a))
       : [...animalMap.keys()]
-    ).filter(a => !EXCLUDED_BY_DEFAULT.has(a));
+    ).filter(a => !EXCLUDED_BY_DEFAULT.has(a)).filter((animal) => {
+      const cols = [...(animalMap.get(animal)?.values() || [])];
+      return rows.some((row) => cols.some((col) => {
+        const raw = row[col];
+        if (raw === '' || raw == null) return false;
+        const value = Number(raw);
+        return !Number.isFinite(value) || value !== 0;
+      }));
+    });
     return { animals: visibleAnimals, allSystems, colMap: animalMap };
-  }, [fieldnames, animalsWithHeads]);
+  }, [fieldnames, animalsWithHeads, rows]);
 
   // Sum errors: Map<`${rowIdx}_${animal}`, sum>
   const sumErrors = useMemo(() => {
