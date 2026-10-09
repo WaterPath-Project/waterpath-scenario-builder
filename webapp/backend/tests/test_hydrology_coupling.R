@@ -59,6 +59,13 @@ cropped <- terra::crop(coarse, terra::ext(0, 2, 0, 4))
 expect_error(wp_sum_to_grid(fine, cropped, "coverage"), "conservation failed")
 expect_error(wp_sum_to_grid(shifted, coarse, "crs"), "shared CRS")
 
+# Empty padding cells that only touch the hydrology's west/south edge are skipped.
+padded <- terra::rast(nrows = 5, ncols = 5, xmin = -1, xmax = 4,
+                      ymin = -1, ymax = 4, crs = "EPSG:3857", vals = 0)
+padded[1:4, 2:5] <- 1:16
+padded_result <- wp_sum_to_grid(padded, coarse, "padded")
+stopifnot(identical(as.numeric(terra::values(padded_result)), c(14, 22, 46, 54)))
+
 # Large row counts exercise the block-wise accumulator.
 tall <- terra::rast(nrows = 600, ncols = 2, xmin = 0, xmax = 4,
                     ymin = 0, ymax = 4, crs = "EPSG:3857", vals = 1)

@@ -11,6 +11,9 @@ wp_axis_weights <- function(source_edges, target_edges, latitude = FALSE) {
     lower <- pmax(lo, target_edges[j])
     upper <- pmin(hi, target_edges[j + 1L])
     keep <- upper > lower
+    # A cell touching the target's west/south edge from outside has zero overlap;
+    # cbind would drop the empty columns and break the rbind below.
+    if (!any(keep)) return(NULL)
     cbind(target = j[keep], source = i,
           weight = (measure(upper[keep]) - measure(lower[keep])) /
             (measure(hi) - measure(lo)))
