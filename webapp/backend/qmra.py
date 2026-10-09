@@ -859,6 +859,28 @@ def _qmra_run_blocks_r(*, enabled, treatment_path, base_dir_expr, conc_var):
   }}""")
 
     enabled_routes = list(enabled.keys())
+    if len(enabled_routes) == 1:
+        route = enabled_routes[0]
+        blocks.append(f"""
+  # ── A single route is already the combined result; reuse it verbatim.
+  {{
+    cat('Reusing {route} outputs as combined output...\\n')
+    for (otype in c('monthly', 'daily')) {{
+      source_dir <- file.path({base_dir_expr}, 'routes', {_r_literal(route)}, otype)
+      combined_dir <- file.path({base_dir_expr}, 'combined', otype)
+      unlink(combined_dir, recursive = TRUE)
+      dir.create(combined_dir, recursive = TRUE, showWarnings = FALSE)
+      source_files <- list.files(source_dir, full.names = TRUE, all.files = TRUE, no.. = TRUE)
+      source_files <- source_files[!file.info(source_files)$isdir]
+      if (length(source_files) &&
+          !all(file.copy(source_files, combined_dir, overwrite = TRUE))) {{
+        stop('Failed to copy single-route QMRA outputs into the combined output directory.')
+      }}
+    }}
+    cat('Combined output ready.\\n')
+  }}""")
+        return ''.join(blocks)
+
     drinking_pc = enabled.get('drinking', {})
     combined_boiling = bool(drinking_pc.get('boiling', False)) if 'drinking' in enabled else False
     use_treatment_combined = bool(drinking_pc.get('use_treatment', False)) if 'drinking' in enabled else False

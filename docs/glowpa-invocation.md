@@ -29,7 +29,10 @@ When they differ, the wrapper in `webapp/backend/hydrology_coupling.R` performs:
 3. **Monthly hydrology:** distribute annual direct-water and land totals over
    12 months, apply GloWPa's monthly runoff fractions to land loads, then use its
    river survival, routing, discharge threshold and concentration functions on
-   the native hydrology network. Land runoff is counted once, not twice.
+   the native hydrology network. Land runoff is counted once, not twice. If a
+   loaded cell is outside the valid flow-direction/flow-accumulation mask, move
+   its final monthly inflow to the nearest valid routing cell. This happens
+   after runoff conversion and conserves every monthly total.
 4. **Optional QMRA:** only after hydrology succeeds, run the existing chosen risk
    configuration using the coarse monthly concentrations. Coarse risk is sampled
    back onto the original population grid for district statistics. The fine
@@ -43,13 +46,17 @@ All hydrology inputs must share one CRS, extent, resolution and origin, with
 one file per month for each monthly variable. Emissions and hydrology must use
 the same CRS; differing CRSs fail explicitly rather than silently reprojecting
 loads. Missing routing coverage or monthly runoff at cells carrying emissions
-also fails explicitly. The wrapper uses the installed GloWPa 0.2.1 internal
-hydrology interfaces; upgrades must revalidate this integration.
+fails explicitly only when no valid destination exists; monthly runoff gaps at
+cells carrying land emissions still fail explicitly. The wrapper uses the
+installed GloWPa 0.2.1 internal hydrology interfaces; upgrades must revalidate
+this integration.
 
 Intermediates and conservation totals are stored under
 `output/<scenario>/hydrology/coupling/`; a `complete.json` file marks successful
 hydrology completion. Fine annual runoff and coarse annual runoff totals must
 agree within `max(1e-8, total * 1e-9)`; both totals are recorded in `complete.json`.
+The file also records the number of relocated routing cells, per-month moved
+loads, maximum relocation distance and its unit.
 The map serves the original fine emission TIFFs, never the coarse intermediates.
 Same-grid runs and runs without hydrology retain stock GloWPa behavior, including
 the fixed runoff fraction when hydrology is disabled.
@@ -59,7 +66,15 @@ The run-status API reports `coupling` ("Aggregating emissions") followed by
 `hydrology_running` ("Routing and calculating concentrations"), before optional
 `risk_running`. All these stages belong to the same model job; users do not
 need to launch an additional run. Both Docker exec and one-shot Docker run use
-the same orchestration.
+the same orchestration. Same-grid runs use stock GloWPa; while they are active,
+the status API detects GloWPa's current routing phase from the latest run
+section in `glowpa.log` so routing time is not reported as emissions time.
+
+QMRA continues to execute every distinct area/area-group pathway configuration
+independently and mosaics those outputs into the scenario result. Within each
+group, when exactly one pathway is enabled, its per-route output is also the
+mathematically identical combined output and is copied rather than calculated
+a second time. Multi-pathway groups still run an explicit combined calculation.
 
 Regression checks:
 

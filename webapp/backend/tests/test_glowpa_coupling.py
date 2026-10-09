@@ -55,6 +55,18 @@ class CoupledRunTests(unittest.TestCase):
         self.run['status'] = 'error'
         self.assertEqual(self.client.get('/status/test').json['status'], 'error')
 
+    def test_same_grid_log_reports_routing_phase_for_current_run(self):
+        log_path = self.output / 'glowpa.log'
+        log_path.write_text(
+            'Current working directory: /old\nStart routing.\n'
+            'Current working directory: /current\nRun human pathogenflows\n',
+            encoding='utf-8',
+        )
+        self.assertEqual(self.client.get('/status/test').json['status'], 'running')
+        with log_path.open('a', encoding='utf-8') as log_file:
+            log_file.write('Start routing.\n')
+        self.assertEqual(self.client.get('/status/test').json['status'], 'hydrology_running')
+
     def test_risk_status_follows_hydrology(self):
         self.run.update(status='success', include_risk=True, risk_run_id='risk')
         state.model_runs['risk'] = {'status': 'running'}
@@ -94,6 +106,60 @@ class CoupledRunTests(unittest.TestCase):
         (coarse / 'complete.json').write_text('{}', encoding='utf-8')
         self.assertEqual(qmra._pop_rasters(str(self.root), 'baseline')[0],
                          os.fspath(coarse / 'poprural.tif'))
+
+    def test_single_route_qmra_reuses_route_outputs_for_combined(self):
+        script = qmra._qmra_run_blocks_r(
+            enabled={'drinking': qmra.DEFAULT_QMRA_CONFIG['pathways']['drinking']},
+            treatment_path=None,
+            base_dir_expr='output_directory',
+            conc_var='conc.list',
+        )
+
+        self.assertEqual(script.count('qmra_run_helper('), 2)
+        self.assertIn('Reusing drinking outputs as combined output', script)
+        self.assertNotIn('Running combined (monthly)', script)
+
+    def test_multi_route_qmra_still_calculates_combined_risk(self):
+        script = qmra._qmra_run_blocks_r(
+            enabled={
+                'drinking': qmra.DEFAULT_QMRA_CONFIG['pathways']['drinking'],
+                'swimming': qmra.DEFAULT_QMRA_CONFIG['pathways']['swimming'],
+            },
+            treatment_path=None,
+            base_dir_expr='output_directory',
+            conc_var='conc.list',
+        )
+
+        self.assertEqual(script.count('qmra_run_helper('), 6)
+        self.assertIn('Running combined (monthly)', script)
+
+    def test_area_groups_keep_independent_single_route_runs(self):
+        pathways = {'drinking': qmra.DEFAULT_QMRA_CONFIG['pathways']['drinking']}
+        script = qmra._build_qmra_r_script(
+            pathogen='cryptosporidium',
+            conc_paths=[f'/tmp/concentration_{month}.tif' for month in range(12)],
+            treatment_path=None,
+            pathway_configs=pathways,
+            model='bp',
+            mci=100,
+            quantiles=[0.025, 0.5, 0.975],
+            boiling_lrv={'min': 6, 'max': 9},
+            random_seed=100,
+            output_directory='/tmp/output',
+            conc_multiplier=1.0,
+            run_groups=[
+                {'signature': 'default', 'area_keys': ['1'], 'pathways': pathways,
+                 'is_default': True},
+                {'signature': 'override', 'area_keys': ['2'], 'pathways': pathways,
+                 'is_default': False},
+            ],
+            zones_shp_path='/tmp/areas.shp',
+        )
+
+        self.assertEqual(script.count('Reusing drinking outputs as combined output'), 2)
+        self.assertIn('Run group 1/2', script)
+        self.assertIn('Run group 2/2', script)
+        self.assertIn("merge_group_dir(group_dirs, c('combined', 'monthly')", script)
 
     def test_single_route_combined_band_uses_configured_variant(self):
         descriptions = (

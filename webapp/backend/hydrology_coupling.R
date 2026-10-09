@@ -90,6 +90,59 @@ wp_fraction_to_grid <- function(fraction, target) {
   terra::rast(target, vals = as.vector(t(result)))
 }
 
+wp_relocate_to_domain <- function(loads, domain) {
+  if (!terra::compareGeom(loads, domain, stopOnError = FALSE)) {
+    stop("Routing relocation requires loads and routing domain on the same grid.")
+  }
+  values <- terra::values(loads, mat = TRUE)
+  if (any(is.infinite(values)) || any(values < 0, na.rm = TRUE)) {
+    stop("Routing loads must be finite and non-negative.")
+  }
+  values[is.na(values)] <- 0
+  domain_values <- terra::values(domain, mat = FALSE)
+  unsupported <- which(is.na(domain_values) & rowSums(values) > 0)
+  if (!length(unsupported)) {
+    return(list(loads = terra::setValues(loads, values), cells = 0L,
+                layer_totals = rep(0, terra::nlyr(loads)),
+                maximum_distance = 0))
+  }
+  supported <- which(!is.na(domain_values))
+  if (!length(supported)) {
+    stop("Routing network has no valid cells.")
+  }
+
+  from <- terra::vect(terra::xyFromCell(loads, unsupported),
+                      type = "points", crs = terra::crs(loads))
+  to <- terra::vect(terra::xyFromCell(loads, supported),
+                    type = "points", crs = terra::crs(loads))
+  nearest <- as.data.frame(terra::nearest(from, to))
+  nearest <- nearest[match(seq_along(unsupported), nearest$from_id), , drop = FALSE]
+  if (anyNA(nearest$to_id) || anyNA(nearest$distance)) {
+    stop("Could not find a routing cell for all unsupported emissions.")
+  }
+  destinations <- supported[nearest$to_id]
+  layer_totals <- colSums(values[unsupported, , drop = FALSE])
+  original_totals <- colSums(values)
+  for (layer in seq_len(ncol(values))) {
+    moved <- rowsum(values[unsupported, layer], destinations, reorder = FALSE)
+    destination_cells <- as.integer(rownames(moved))
+    values[destination_cells, layer] <- values[destination_cells, layer] + moved[, 1]
+    values[unsupported, layer] <- 0
+  }
+  relocated_totals <- colSums(values)
+  tolerance <- pmax(1e-8, abs(original_totals) * 1e-9)
+  if (any(abs(relocated_totals - original_totals) > tolerance)) {
+    stop("Routing relocation failed to conserve monthly emissions.")
+  }
+  message(sprintf(
+    "Relocated emissions from %d unsupported routing cells (maximum distance %.3f).",
+    length(unsupported), max(nearest$distance)))
+  list(loads = terra::setValues(loads, values),
+       cells = length(unsupported),
+       layer_totals = layer_totals,
+       maximum_distance = max(nearest$distance))
+}
+
 wp_monthly_files <- function(directory, variable) {
   if (is.null(directory) || !dir.exists(directory)) {
     stop("Missing hydrology directory: ", variable)
@@ -245,14 +298,6 @@ wp_run_model <- function(config_path) {
   # Preserve the native routing network, including cells outside the fine domain.
   run$domain <- terra::ifel(!is.na(flowacc) & !is.na(flowdir), 1, NA)
   names(run$domain) <- "isoraster"
-  supported_load <- terra::global(terra::mask(coarse_direct + coarse_land, run$domain),
-                                 "sum", na.rm = TRUE)[1, 1]
-  total_load <- sum(unlist(balance$direct_water["target_total"]),
-                    unlist(balance$land["target_total"]))
-  if (!is.finite(supported_load) ||
-      abs(supported_load - total_load) > max(1e-8, total_load * 1e-9)) {
-    stop("Routing network has NoData cells containing aggregated emissions.")
-  }
   glowpa:::validate_hydrology_input(settings$input$hydrology)
   glowpa:::validate_routing_input(settings$input$routing)
   missing_runoff <- terra::global((coarse_land > 0) & is.na(fraction), "sum", na.rm = TRUE)
@@ -260,6 +305,8 @@ wp_run_model <- function(config_path) {
     stop("Monthly runoff has NoData in cells containing land emissions.")
   }
   inflow <- sum(coarse_direct / 12, coarse_land / 12 * fraction, na.rm = TRUE)
+  relocation <- wp_relocate_to_domain(inflow, run$domain)
+  inflow <- relocation$loads
   terra::time(inflow, tstep = "months") <- 1:12
   survival <- glowpa:::river_survival()
   loads <- glowpa:::routing(inflow, survival, flowdir, flowacc)
@@ -270,7 +317,12 @@ wp_run_model <- function(config_path) {
   jsonlite::write_json(list(conservation = balance, grid = list(
     nrow = terra::nrow(hydrology_grid), ncol = terra::ncol(hydrology_grid),
     resolution = terra::res(hydrology_grid)), runoff = list(
-      fine_total = fine_runoff_total, coarse_total = coarse_runoff_total)),
+      fine_total = fine_runoff_total, coarse_total = coarse_runoff_total),
+    routing_relocation = list(
+      cells = relocation$cells,
+      monthly_loads = as.list(stats::setNames(relocation$layer_totals, month.abb)),
+      maximum_distance = relocation$maximum_distance,
+      distance_unit = if (terra::is.lonlat(inflow)) "metres" else "map_units")),
     complete_path, auto_unbox = TRUE, pretty = TRUE, digits = 17)
   run$timing$end <- Sys.time()
   message("Finished WaterPath coupled simulation")

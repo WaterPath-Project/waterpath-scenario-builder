@@ -682,7 +682,11 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
             </div>
             <div className="bg-gray-900 rounded-lg p-3 text-xs font-outfit text-gray-100 max-h-48 overflow-y-auto">
               <pre className="whitespace-pre-wrap">
-                {typeof glowpaLog === 'string' ? glowpaLog : (glowpaLog.log ?? JSON.stringify(glowpaLog, null, 2))}
+                {typeof glowpaLog === 'string'
+                  ? glowpaLog
+                  : glowpaLog.exists === false
+                    ? 'No GloWPa execution log was found for this scenario.'
+                    : glowpaLog.content || 'The GloWPa execution log is empty.'}
               </pre>
             </div>
           </div>

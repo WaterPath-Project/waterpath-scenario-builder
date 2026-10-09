@@ -71,6 +71,29 @@ tall <- terra::rast(nrows = 600, ncols = 2, xmin = 0, xmax = 4,
                     ymin = 0, ymax = 4, crs = "EPSG:3857", vals = 1)
 stopifnot(abs(sum(terra::values(wp_sum_to_grid(tall, coarse, "blocks"))) - 1200) < 1e-9)
 
+# Monthly inflows outside the routing mask move to the nearest valid cell
+# without changing any layer total.
+routing_grid <- terra::rast(nrows = 3, ncols = 3, xmin = 0, xmax = 3,
+                            ymin = 0, ymax = 3, crs = "EPSG:3857")
+routing_domain <- terra::rast(routing_grid, vals = c(NA, 1, NA, NA, 1, NA, NA, 1, NA))
+routing_loads <- c(terra::rast(routing_grid, vals = c(4, 1, rep(0, 7))),
+                   terra::rast(routing_grid, vals = c(rep(0, 8), 7)))
+relocated <- wp_relocate_to_domain(routing_loads, routing_domain)
+relocated_values <- terra::values(relocated$loads, mat = TRUE)
+stopifnot(relocated$cells == 2L,
+          identical(as.numeric(colSums(relocated_values)), c(5, 7)),
+          all(relocated_values[c(1, 9), ] == 0),
+          relocated_values[2, 1] == 5,
+          relocated_values[8, 2] == 7,
+          identical(as.numeric(relocated$layer_totals), c(4, 7)),
+          relocated$maximum_distance == 1)
+unchanged <- wp_relocate_to_domain(relocated$loads, routing_domain)
+stopifnot(unchanged$cells == 0L,
+          identical(as.numeric(terra::values(unchanged$loads)),
+                    as.numeric(relocated_values)))
+expect_error(wp_relocate_to_domain(routing_loads, terra::rast(fine)),
+             "same grid")
+
 local({
   root <- tempfile("hydrology-grid-test-")
   dir.create(root)

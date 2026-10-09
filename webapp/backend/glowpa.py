@@ -1092,6 +1092,26 @@ def active_model_run():
     }), 200
 
 
+def _same_grid_run_phase(run):
+    """Infer stock GloWPa's current phase from this run's log section."""
+    log_path = os.path.join(
+        run.get('cs_path', ''), 'output', run.get('folder', ''), 'glowpa.log',
+    )
+    try:
+        with open(log_path, encoding='utf-8', errors='replace') as log_file:
+            log_text = log_file.read()
+    except (OSError, TypeError):
+        return None
+
+    marker = 'Current working directory:'
+    if marker not in log_text:
+        return None
+    current_run_log = log_text.rsplit(marker, 1)[-1]
+    if 'Start routing.' in current_run_log:
+        return 'hydrology_running'
+    return None
+
+
 def model_settings(case_study_id):
     """Read or update case-study-level constants stored in baseline_config.yaml."""
     cs = next((item for item in case_studies if item['id'] == case_study_id), None)
@@ -1129,6 +1149,8 @@ def run_status(run_id):
             phase = None
         if phase in ('coupling', 'hydrology_running'):
             response['status'] = phase
+        elif _same_grid_run_phase(run) == 'hydrology_running':
+            response['status'] = 'hydrology_running'
     risk_run_id = run.get('risk_run_id')
     if risk_run_id:
         risk_run = model_runs.get(risk_run_id, {})
