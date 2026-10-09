@@ -87,8 +87,9 @@ export const paths = {
  * - `scenarios`: array of scenario NAMES (raw, unencoded). Comma-joined.
  * - `emissionType`: 'water' | 'land' (default 'water' is omitted).
  * - `area`: ISO code (raw). Empty string omits.
+ * - `view`: 'emissions' | 'concentrations' | 'risk' (default 'emissions' is omitted).
  */
-export const buildAnalyticsQuery = ({ scenarios, emissionType, area } = {}) => {
+export const buildAnalyticsQuery = ({ scenarios, emissionType, area, view } = {}) => {
   const usp = new URLSearchParams();
   if (Array.isArray(scenarios) && scenarios.length) {
     // Join with commas — scenario names may contain commas themselves, so we
@@ -97,6 +98,7 @@ export const buildAnalyticsQuery = ({ scenarios, emissionType, area } = {}) => {
   }
   if (emissionType && emissionType !== 'water') usp.set('emissionType', emissionType);
   if (area) usp.set('area', area);
+  if (view && view !== 'emissions') usp.set('view', view);
   const s = usp.toString();
   // URLSearchParams re-encodes our already-encoded scenario names — undo the
   // outer layer so downstream `decodeURIComponent` gets the intended value.

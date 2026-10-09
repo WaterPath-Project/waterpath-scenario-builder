@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Edit3, Trash2, BarChart3, Play, ScrollText, BarChart2, CheckCircle, AlertTriangle } from 'lucide-react';
+import { Edit3, Trash2, Copy, BarChart3, Play, ScrollText, BarChart2, CheckCircle, AlertTriangle, Settings } from 'lucide-react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import useScenarioStore from '../store/scenarioStore';
@@ -12,6 +12,7 @@ import WastewaterTreatmentPanel from './WastewaterTreatmentPanel';
 import LivestockEditorPanel from './LivestockEditorPanel';
 import ExposurePathwaysPanel from './ExposurePathwaysPanel';
 import ConfirmDialog from './ConfirmDialog';
+import ModelSettingsDialog from './ModelSettingsDialog';
 import { paths } from '../routes';
 // Import category icons
 import HumanEmissionsIcon from '../../assets/icons/human_emissions.svg';
@@ -35,10 +36,12 @@ import Spinner from './loading/Spinner';
 
 // Run status pill config
 const RUN_STATUS_CFG = {
-  pending: { label: 'Queued',   cls: 'bg-yellow-100 text-yellow-700' },
-  running: { label: 'Running\u2026', cls: 'bg-blue-100 text-blue-700' },
-  risk_running: { label: 'Estimating risk\u2026', cls: 'bg-blue-100 text-blue-700' },
-  success: { label: 'Done \u2713',   cls: 'bg-green-100 text-green-700' },
+  pending: { label: 'Queued, waiting to start\u2026', cls: 'bg-yellow-100 text-yellow-700' },
+  running: { label: 'Calculating emissions\u2026', cls: 'bg-blue-100 text-blue-700' },
+  coupling: { label: 'Aggregating emissions onto the hydrology grid\u2026', cls: 'bg-blue-100 text-blue-700' },
+  hydrology_running: { label: 'Calculating monthly concentrations\u2026', cls: 'bg-blue-100 text-blue-700' },
+  risk_running: { label: 'Calculating exposure and health risk\u2026', cls: 'bg-blue-100 text-blue-700' },
+  success: { label: 'Done \u2713',   cls: 'bg-wpGreen text-white' },
   error:   { label: 'Error',    cls: 'bg-red-100 text-red-700' },
   timeout: { label: 'Timeout',  cls: 'bg-orange-100 text-orange-700' },
 };
@@ -137,6 +140,7 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
   const [logLoading, setLogLoading] = useState(false);
   const [showLog,    setShowLog]    = useState(false);
   const [showRiskRunDialog, setShowRiskRunDialog] = useState(false);
+  const [showModelSettings, setShowModelSettings] = useState(false);
   const [modelRunActive, setModelRunActive] = useState(false);
   const needsRerun = needsRerunIds[scenarioId] ?? false;
 
@@ -312,14 +316,15 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
   }, [isDirty]);
 
   // ── Fetch scenario readiness / has_outputs ─────────────────────────────────
-  // Skip when the parent already supplied analyticsInfo via prop.
   useEffect(() => {
     if (!selectedCaseStudy?.id || !scenarioId) return;
-    if (analyticsInfo) return; // already seeded from prop
+    let cancelled = false;
     axios.get(`/api/scenarios/${scenarioId}/info`)
-      .then((res) => setScenarioInfo(res.data))
-      .catch(() => setScenarioInfo(null));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+      .then((res) => {
+        if (!cancelled) setScenarioInfo(res.data);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
   }, [selectedCaseStudy?.id, scenarioId]);
 
   // ── Poll run status ────────────────────────────────────────────────────────
@@ -403,11 +408,11 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
   };
 
   const handleRunModel = () => {
-    if (scenarioInfo?.qmra_available && !scenarioInfo?.has_qmra_output) {
+    if (scenarioInfo?.qmra_available) {
       setShowRiskRunDialog(true);
       return;
     }
-    startModelRun(!!scenarioInfo?.qmra_available);
+    startModelRun(false);
   };
 
   // ── Fetch GloWPa execution log ─────────────────────────────────────────────
@@ -521,6 +526,17 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
                 >
                   <Edit3 size={17} />
                 </button>
+                {!scenario.isTemp && (
+                  <button
+                    type="button"
+                    onClick={() => handleCloneScenario(scenario)}
+                    aria-label="Duplicate scenario"
+                    title="Duplicate scenario"
+                    className="p-1.5 text-gray-400 hover:text-wpBlue hover:bg-wpBlue-50 rounded-md transition-colors"
+                  >
+                    <Copy size={17} />
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleDeleteScenario}
@@ -534,10 +550,10 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
               <p className="text-sm font-outfit text-wpBlue">
                 {scenario.isTemp ? (
                   <span className="text-xs text-wpBlue">Temporary scenario (not saved)</span>
-                ) : runStatus === 'pending' || runStatus === 'running' || runStatus === 'risk_running' ? (
+                ) : ['pending', 'running', 'coupling', 'hydrology_running', 'risk_running'].includes(runStatus) ? (
                   <span className="flex items-center gap-1.5 text-xs text-wpTeal">
                     <span className="w-2 h-2 rounded-full bg-wpTeal animate-pulse" />
-                    {runStatus === 'risk_running' ? 'Estimating risk…' : 'Running model…'}
+                    Running…
                   </span>
                 ) : runStatus === 'error' ? (
                   <span className="flex items-center gap-1.5 text-xs text-red-500">
@@ -578,15 +594,26 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
             </button>
             )}
             {/* Run model */}
-            <button
-              onClick={handleRunModel}
-              disabled={!canRun || runLoading || modelRunActive}
-              title={modelRunActive ? 'Another model run is already in progress' : canRun ? 'Run model for this scenario' : 'Scenario is not ready (missing files or pathogen)'}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-wpBlue text-white font-semibold rounded-lg hover:bg-wpBlue/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {runLoading ? <Spinner size={15} /> : <Play size={15} />}
-              <span>Run model</span>
-            </button>
+            <div className="inline-flex rounded-lg shadow-sm" role="group" aria-label="Model controls">
+              <button
+                onClick={handleRunModel}
+                disabled={!canRun || runLoading || modelRunActive}
+                title={modelRunActive ? 'Another model run is already in progress' : canRun ? 'Run model for this scenario' : 'Scenario is not ready (missing files or pathogen)'}
+                className="flex items-center gap-1.5 rounded-l-lg bg-wpBlue px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-wpBlue/90 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {runLoading ? <Spinner size={15} /> : <Play size={15} />}
+                <span>Run model</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowModelSettings(true)}
+                title="Model settings"
+                aria-label="Model settings"
+                className="flex items-center rounded-r-lg border-l border-white/30 bg-wpBlue px-2.5 py-1.5 text-white transition-colors hover:bg-wpBlue/90"
+              >
+                <Settings size={15} />
+              </button>
+            </div>
 
             {/* View results */}
             {hasResults && (
@@ -599,6 +626,11 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
               </button>
             )}
 
+            <div
+              className={dirtySubcategories[activeSubcategory] ? 'ml-1 border-l border-gray-300 pl-3' : ''}
+            >
+              <div ref={setDriverActionsTarget} className="flex items-center gap-2" />
+            </div>
           </div>
         </div>
 
@@ -607,13 +639,17 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
           <div className="px-6 pb-3 flex items-center gap-3">
             {RUN_STATUS_CFG[runStatus] && (
               <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                runStatus === 'running' || runStatus === 'pending' || runStatus === 'risk_running'
+                ['running', 'pending', 'coupling', 'hydrology_running', 'risk_running'].includes(runStatus)
                   ? 'text-[#18B6A3] bg-[#18B6A3]/10'
                   : runStatus === 'success'
                     ? 'text-[#9EB65B] bg-[#9EB65B]/10'
                     : RUN_STATUS_CFG[runStatus].cls
               }`}>
-                {RUN_STATUS_CFG[runStatus].label}
+                {runMode === 'risk_only' && runStatus === 'pending'
+                  ? 'Risk run queued — waiting to start…'
+                  : runMode === 'risk_only' && runStatus === 'running'
+                    ? 'Calculating exposure and health risk…'
+                    : RUN_STATUS_CFG[runStatus].label}
               </span>
             )}
             <button
@@ -709,7 +745,6 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
               {visibleDriverSubcategories.find(sub => sub.id === activeSubcategory)?.label
                 || currentCategory?.subcategories.find(sub => sub.id === activeSubcategory)?.label}
             </h3>
-            <div ref={setDriverActionsTarget} className="flex items-center gap-2" />
           </div>
 
           {activeSubcategory === 'population' ? (
@@ -772,20 +807,28 @@ const ScenarioDetailView = ({ scenarioId, selectedCaseStudy, caseStudySlug = '',
         scenario={scenario}
         onSave={handleMetadataSave}
         locked={!scenario?.isTemp && !!scenarioInfo?.has_outputs}
-        onClone={onCloneScenario ? handleCloneScenario : undefined}
       />
       <ConfirmDialog
         isOpen={showRiskRunDialog}
         onClose={() => setShowRiskRunDialog(false)}
         onConfirm={() => { setShowRiskRunDialog(false); return startModelRun(true); }}
         onCancel={() => { setShowRiskRunDialog(false); return startModelRun(false); }}
-        onAlternate={() => { setShowRiskRunDialog(false); return startRiskOnlyRun(); }}
+        onAlternate={scenarioInfo?.has_hydrology
+          ? () => { setShowRiskRunDialog(false); return startRiskOnlyRun(); }
+          : undefined}
         title="Run scenario"
-        message="Concentration outputs are available. Run the full model again, with or without risk estimation, or use the existing concentrations to estimate risk only."
+        message={scenarioInfo?.has_hydrology
+          ? 'Choose whether to run the model with risk estimation, without it, or estimate risk from the existing concentrations.'
+          : 'Choose whether to run the model with or without risk estimation.'}
         confirmText="Run model + risk"
         cancelText="Run model only"
-        alternateText="Run risk only"
+        alternateText={scenarioInfo?.has_hydrology ? 'Run risk only' : undefined}
         confirmVariant="primary"
+      />
+      <ModelSettingsDialog
+        isOpen={showModelSettings}
+        onClose={() => setShowModelSettings(false)}
+        caseStudyId={selectedCaseStudy?.id}
       />
     </div>
   );

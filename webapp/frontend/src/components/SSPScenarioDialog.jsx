@@ -25,6 +25,7 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit, defaultPathogen = '', pr
 
   const [errors, setErrors] = useState({});
   const [isLoadingISIMIP, setIsLoadingISIMIP] = useState(false);
+  const isDuplicate = Boolean(prefillData?._cloneFromId);
 
   // Keep pathogen in sync with the baseline's pathogen when the dialog opens
   useEffect(() => {
@@ -63,6 +64,10 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit, defaultPathogen = '', pr
     { value: '2050', label: '2050' },
     { value: '2100', label: '2100' }
   ];
+  const sourceYear = String(prefillData?.year || '');
+  if (sourceYear && !yearOptions.some((option) => option.value === sourceYear)) {
+    yearOptions.unshift({ value: sourceYear, label: sourceYear });
+  }
 
   const projectionMethodOptions = [
     { value: 'isimip', label: 'Auto-calculate assumptions (Internet access required)' },
@@ -151,23 +156,46 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit, defaultPathogen = '', pr
     e.preventDefault();
 
     if (validateForm()) {
-      if (formData.projectionMethod === 'isimip') {
+      if (isDuplicate) {
+        setIsSubmitting(true);
+        try {
+          await onSubmit(formData);
+          handleReset();
+        } catch (error) {
+          setErrors((prev) => ({
+            ...prev,
+            submit: error.response?.data?.error || error.message || 'Failed to duplicate scenario',
+          }));
+        } finally {
+          setIsSubmitting(false);
+        }
+      } else if (formData.projectionMethod === 'isimip') {
         // Show loading while the backend fetches and applies projections
         setIsLoadingISIMIP(true);
         try {
           await onSubmit(formData);
+          handleReset();
+        } catch (error) {
+          setErrors((prev) => ({
+            ...prev,
+            submit: error.response?.data?.error || error.message || 'Failed to create scenario',
+          }));
         } finally {
           setIsLoadingISIMIP(false);
-          handleReset();
         }
       } else {
         // Custom assumptions – copy baseline and submit immediately
         setIsSubmitting(true);
         try {
           await onSubmit(formData);
+          handleReset();
+        } catch (error) {
+          setErrors((prev) => ({
+            ...prev,
+            submit: error.response?.data?.error || error.message || 'Failed to create scenario',
+          }));
         } finally {
           setIsSubmitting(false);
-          handleReset();
         }
       }
     }
@@ -195,14 +223,18 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit, defaultPathogen = '', pr
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => { if (!open && !isBusy) onClose(); }}>
+    <Dialog open={isOpen} onOpenChange={(open) => { if (!open && !isBusy) handleCancel(); }}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>
-            Create New SSP-Based Scenario {step === 2 && '- Configuration'}
+            {isDuplicate
+              ? 'Duplicate Scenario'
+              : `Create New SSP-Based Scenario ${step === 2 ? '- Configuration' : ''}`}
           </DialogTitle>
           <DialogDescription>
-            {step === 1 
+            {isDuplicate
+              ? 'Choose details for the new scenario. Its input data will be copied from the active scenario.'
+              : step === 1
               ? 'Define basic scenario information (Step 1 of 2)'
               : 'Configure data projection method and modifiers (Step 2 of 2)'
             }
@@ -303,20 +335,30 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit, defaultPathogen = '', pr
                 >
                   Cancel
                 </button>
-                <button
-                  type="button"
-                  onClick={handleNext}
-                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-wpBlue border border-transparent rounded-lg hover:bg-wpBlue-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-wpBlue"
-                >
-                  Next
-                  <ChevronRight size={16} />
-                </button>
+                {isDuplicate ? (
+                  <button
+                    type="submit"
+                    disabled={isBusy}
+                    className="px-4 py-2 text-sm font-medium text-white bg-wpBlue border border-transparent rounded-lg hover:bg-wpBlue-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-wpBlue disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isBusy ? 'Duplicating scenario…' : 'Duplicate Scenario'}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleNext}
+                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-wpBlue border border-transparent rounded-lg hover:bg-wpBlue-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-wpBlue"
+                  >
+                    Next
+                    <ChevronRight size={16} />
+                  </button>
+                )}
               </div>
             </>
           )}
 
           {/* Step 2: Configuration */}
-          {step === 2 && (
+          {!isDuplicate && step === 2 && (
             <>
 
           {/* Data Projection Method */}
@@ -507,6 +549,10 @@ const SSPScenarioDialog = ({ isOpen, onClose, onSubmit, defaultPathogen = '', pr
             </div>
           </div>
             </>
+          )}
+
+          {errors.submit && (
+            <p className="text-sm text-red-600" role="alert">{errors.submit}</p>
           )}
         </form>
       </DialogContent>

@@ -5,7 +5,9 @@ endpoints that expose all of these to the UI.
 
 import csv
 import io
+import math
 import os
+import re
 import subprocess
 import threading
 import traceback
@@ -36,6 +38,129 @@ from state import (
 # YAML generation
 # ──────────────────────────────────────────────────────────────────────────────
 
+DEFAULT_MODEL_SETTINGS = {
+    'runoff_fraction': 0.025,
+    'threshold_discharge': 1.0,
+}
+
+
+def _baseline_config_path(cs_path):
+    return os.path.join(cs_path, 'config', 'baseline_config.yaml')
+
+
+def _constants_block(lines):
+    for index, line in enumerate(lines):
+        if line.strip() != 'constants:':
+            continue
+        indent = len(line) - len(line.lstrip())
+        end = index + 1
+        while end < len(lines):
+            stripped = lines[end].strip()
+            line_indent = len(lines[end]) - len(lines[end].lstrip())
+            if stripped and line_indent <= indent:
+                break
+            end += 1
+        return index, end
+    return None
+
+
+def _read_model_settings(cs_path):
+    settings = dict(DEFAULT_MODEL_SETTINGS)
+    config_path = _baseline_config_path(cs_path)
+    if not os.path.exists(config_path):
+        return settings
+
+    with open(config_path, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+    block = _constants_block(lines)
+    if not block:
+        return settings
+
+    start, end = block
+    for line in lines[start + 1:end]:
+        match = re.match(r'^\s*(runoff_fraction|threshold_discharge)\s*:\s*([^#\s]+)', line)
+        if not match:
+            continue
+        try:
+            value = float(match.group(2))
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid {match.group(1)} value in {config_path}: {match.group(2)}"
+            ) from exc
+        if not math.isfinite(value):
+            raise ValueError(f"Invalid {match.group(1)} value in {config_path}: {match.group(2)}")
+        settings[match.group(1)] = value
+    return settings
+
+
+def _validated_model_settings(data):
+    settings = {}
+    for key in DEFAULT_MODEL_SETTINGS:
+        value = data.get(key)
+        if isinstance(value, bool):
+            raise ValueError(f'{key} must be a number')
+        try:
+            value = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f'{key} must be a number') from exc
+        if not math.isfinite(value):
+            raise ValueError(f'{key} must be a finite number')
+        settings[key] = value
+
+    if not 0 <= settings['runoff_fraction'] <= 1:
+        raise ValueError('runoff_fraction must be between 0 and 1')
+    if settings['threshold_discharge'] < 0:
+        raise ValueError('threshold_discharge must be greater than or equal to 0')
+    return settings
+
+
+def _write_model_settings(cs_path, settings):
+    config_path = _baseline_config_path(cs_path)
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+    if os.path.exists(config_path):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    else:
+        lines = []
+    block = _constants_block(lines)
+    if not block:
+        if lines and lines[-1].strip():
+            lines.append('\n')
+        lines.extend([
+            'constants:\n',
+            f"  runoff_fraction: {format(settings['runoff_fraction'], '.15g')}\n",
+            f"  threshold_discharge: {format(settings['threshold_discharge'], '.15g')}\n",
+        ])
+        block = _constants_block(lines)
+
+    start, end = block
+    found = set()
+    for index in range(start + 1, end):
+        match = re.match(
+            r'^(\s*)(runoff_fraction|threshold_discharge)(\s*:\s*)[^#\s]+(\s*(?:#.*)?)(\r?\n)?$',
+            lines[index],
+        )
+        if not match:
+            continue
+        key = match.group(2)
+        value = format(settings[key], '.15g')
+        lines[index] = f'{match.group(1)}{key}{match.group(3)}{value}{match.group(4)}{match.group(5) or ""}'
+        found.add(key)
+
+    missing = [key for key in DEFAULT_MODEL_SETTINGS if key not in found]
+    if missing:
+        indent = ' ' * (len(lines[start]) - len(lines[start].lstrip()) + 2)
+        additions = [f"{indent}{key}: {format(settings[key], '.15g')}\n" for key in missing]
+        lines[end:end] = additions
+
+    temp_path = f'{config_path}.{uuid.uuid4().hex}.tmp'
+    try:
+        with open(temp_path, 'w', encoding='utf-8', newline='') as f:
+            f.writelines(lines)
+        os.replace(temp_path, config_path)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 def generate_yaml_content(folder, pathogen, flat=False, cs_path=None, wwtp_mode='POINT'):
@@ -44,6 +169,7 @@ def generate_yaml_content(folder, pathogen, flat=False, cs_path=None, wwtp_mode=
     slug = folder
     ls = _detect_livestock_module(cs_path, folder) if cs_path else None
     hy = _detect_hydrology_module(cs_path, folder) if cs_path else None
+    model_settings = _read_model_settings(cs_path) if cs_path else dict(DEFAULT_MODEL_SETTINGS)
 
     # If the scenario has livestock but no temperature raster, fall back to
     # the baseline's temperature file (it is static across SSP scenarios).
@@ -222,8 +348,8 @@ def generate_yaml_content(folder, pathogen, flat=False, cs_path=None, wwtp_mode=
         f"      grid: land_emissions_{p}_{slug}.tif\n"
         + hydrology_output_yaml
         + f"constants:\n"
-        f"  runoff_fraction: 0.025\n"
-        f"  threshold_discharge: 1\n"
+        f"  runoff_fraction: {format(model_settings['runoff_fraction'], '.15g')}\n"
+        f"  threshold_discharge: {format(model_settings['threshold_discharge'], '.15g')}\n"
     )
 
 
@@ -263,6 +389,14 @@ def _r_csv_to_rds_snippet(csv_path, rds_path):
         f" saveRDS(read.csv(csv, stringsAsFactors=FALSE), rds) "
         f"}}"
     )
+
+
+def _r_model_run_snippet(config_path):
+    with open(os.path.join(os.path.dirname(__file__), 'hydrology_coupling.R'),
+              encoding='utf-8') as source:
+        coupling_code = source.read()
+    escaped_path = config_path.replace('\\', '\\\\').replace("'", "\\'")
+    return f"\n{coupling_code}\nwp_run_model('{escaped_path}')\n"
 
 
 def _r_iso_csv_to_rds_snippet(csv_path, rds_path, treatment_csv_path=None):
@@ -393,8 +527,7 @@ def build_r_expr_exec(cs_folder_name, folder, yaml_filename, cs_path=None, wwtp_
         f"  tryCatch(.patch(.fn), error=function(e) NULL)"
         f"}}"
         f"}}); "
-        f"glowpa_init('config/{yaml_filename}'); "
-        f"glowpa_start()"
+        + _r_model_run_snippet(f'config/{yaml_filename}')
     )
 
 
@@ -466,8 +599,7 @@ def build_r_expr_run(yaml_filename, cs_path=None, folder=None, wwtp_mode='POINT'
         f"  tryCatch(.patch(.fn), error=function(e) NULL)"
         f"}}"
         f"}}); "
-        f"glowpa_init('/app/config/{yaml_filename}'); "
-        f"glowpa_start()"
+        + _r_model_run_snippet(f'/app/config/{yaml_filename}')
     )
 
 
@@ -592,7 +724,7 @@ def _execute_model_run(run_id, params):
             if os.path.isdir(output_dir):
                 output_files = sorted(
                     f for f in os.listdir(output_dir)
-                    if not f.endswith('.log')
+                    if not f.endswith('.log') and not f.startswith('.')
                 )
         model_runs[run_id]['output_files'] = output_files
 
@@ -654,6 +786,14 @@ def _execute_model_run(run_id, params):
         model_runs[run_id]['status'] = 'error'
         model_runs[run_id]['stderr'] = str(exc)
     finally:
+        run = model_runs[run_id]
+        if run.get('cs_path') and run.get('folder'):
+            phase_path = os.path.join(run['cs_path'], 'output', run['folder'], '.glowpa_phase')
+            if os.path.exists(phase_path):
+                try:
+                    os.remove(phase_path)
+                except OSError as exc:
+                    print(f'[model-run] Could not remove phase file {phase_path}: {exc}')
         script_host = params.get('script_host')
         if script_host and os.path.exists(script_host):
             try:
@@ -904,6 +1044,9 @@ def run_model(scenario_id):
         with open(yaml_path, 'w', encoding='utf-8') as f:
             f.write(yaml_content)
         os.makedirs(os.path.join(cs_path, 'output', folder), exist_ok=True)
+        phase_path = os.path.join(cs_path, 'output', folder, '.glowpa_phase')
+        if os.path.exists(phase_path):
+            os.remove(phase_path)
         model_runs[run_id] = {
             'status': 'pending',
             'kind': 'glowpa',
@@ -939,7 +1082,7 @@ def active_model_run():
     """Return the active model job for global run controls."""
     run_id, run = state.active_model_run()
     if not run:
-        return jsonify({'active': False}), 200
+        return jsonify({'active': False})
     return jsonify({
         'active': True,
         'run_id': run_id,
@@ -949,12 +1092,43 @@ def active_model_run():
     }), 200
 
 
+def model_settings(case_study_id):
+    """Read or update case-study-level constants stored in baseline_config.yaml."""
+    cs = next((item for item in case_studies if item['id'] == case_study_id), None)
+    if not cs:
+        return jsonify({'error': 'Case study not found'}), 404
+
+    try:
+        if request.method == 'GET':
+            return jsonify(_read_model_settings(cs['folder_path']))
+
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({'error': 'A JSON object is required'}), 400
+        settings = _validated_model_settings(data)
+        _write_model_settings(cs['folder_path'], settings)
+        return jsonify(settings)
+    except FileNotFoundError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+
 def run_status(run_id):
     """Poll the status of a model run."""
     run = model_runs.get(run_id)
     if not run:
         return jsonify({'error': 'Run not found'}), 404
     response = dict(run)
+    if run.get('status') == 'running' and run.get('cs_path') and run.get('folder'):
+        phase_path = os.path.join(run['cs_path'], 'output', run['folder'], '.glowpa_phase')
+        try:
+            with open(phase_path, encoding='utf-8') as phase_file:
+                phase = phase_file.read().strip()
+        except FileNotFoundError:
+            phase = None
+        if phase in ('coupling', 'hydrology_running'):
+            response['status'] = phase
     risk_run_id = run.get('risk_run_id')
     if risk_run_id:
         risk_run = model_runs.get(risk_run_id, {})
@@ -1064,6 +1238,9 @@ def register_routes(app, frontend_app):
         app_obj.add_url_rule('/api/model-runs/active',
                              endpoint=f'{prefix}_active_model_run',
                              view_func=active_model_run)
+        app_obj.add_url_rule('/api/case-studies/<case_study_id>/model-settings',
+                             endpoint=f'{prefix}_model_settings',
+                             view_func=model_settings, methods=['GET', 'PUT'])
         app_obj.add_url_rule('/api/run-status/<run_id>',
                              endpoint=f'{prefix}_run_status',
                              view_func=run_status)

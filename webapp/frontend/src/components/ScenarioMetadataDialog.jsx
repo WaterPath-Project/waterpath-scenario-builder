@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Calendar, AlertTriangle, Copy } from 'lucide-react';
+import { Calendar, AlertTriangle } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -10,7 +10,7 @@ import {
 import useConfigStore from '../store/configStore';
 import { validateScenarioName } from '../routes';
 
-const ScenarioMetadataDialog = ({ isOpen, onClose, scenario, onSave, requirePathogen = false, locked = false, onClone }) => {
+const ScenarioMetadataDialog = ({ isOpen, onClose, scenario, onSave, requirePathogen = false, locked = false }) => {
   const { pathogenOptions } = useConfigStore();
   const [formData, setFormData] = useState({
     name: '',
@@ -278,20 +278,7 @@ const ScenarioMetadataDialog = ({ isOpen, onClose, scenario, onSave, requirePath
         </div>
 
         {/* Footer Actions */}
-        <div className="flex items-center justify-between pt-4 border-t border-gray-200">
-          <div>
-            {onClone && (
-              <button
-                type="button"
-                onClick={() => { onClone(scenario); handleClose(); }}
-                disabled={isSaving}
-                className="flex items-center gap-1.5 px-4 py-2 bg-wpBlue text-sm font-medium text-white hover:bg-wpBlue/70 rounded-lg transition-colors disabled:opacity-50"
-              >
-                <Copy size={15} />
-                Clone scenario
-              </button>
-            )}
-          </div>
+        <div className="flex items-center justify-end pt-4 border-t border-gray-200">
           <div className="flex gap-3">
             <button
               onClick={handleClose}

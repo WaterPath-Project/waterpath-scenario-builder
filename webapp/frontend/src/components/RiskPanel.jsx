@@ -21,6 +21,7 @@ import OpenFreeMapLayer from './OpenFreeMapLayer';
 import { printMapContainer } from './printUtils';
 import useSettingsStore from '../store/settingsStore';
 import { blendRasterForDisplay } from './rasterInterpolation';
+import { configureRasterTileRendering } from './rasterTileClip';
 import Spinner from './loading/Spinner';
 import { MapLoadingFrame, useMapLoadingTracker, addLayerTracked } from './loading/MapLoading';
 
@@ -195,9 +196,9 @@ function RiskLegendTooltip({ hlNorm, isComparison }) {
 }
 
 // --- Overview map layer ------------------------------------------------------
-function RiskRasterLayer({ tifUrl, isCases, hlCtx, bandIndex = 1 }) {
+function RiskRasterLayer({ tifUrl, isCases, hlCtx, bandIndex = 1, geojson }) {
   const map = useMap();
-  const rasterInterpolation = useSettingsStore(state => state.rasterInterpolation);
+  const { rasterInterpolation, clipRastersToAreas } = useSettingsStore();
   const bandRef  = useRef(bandIndex);
   const layerRef = useRef(null);
   const loadingTracker = useMapLoadingTracker();
@@ -246,11 +247,12 @@ function RiskRasterLayer({ tifUrl, isCases, hlCtx, bandIndex = 1 }) {
             return `rgb(${r},${g},${b})`;
           },
         });
-        if (rasterInterpolation !== 'none') {
-          layer.on('tileload', (event) => {
-            if (event.tile) event.tile.style.imageRendering = rasterInterpolation === 'bilinear' ? 'auto' : 'pixelated';
-          });
-        }
+        configureRasterTileRendering(layer, {
+          map,
+          geojson,
+          clipToAreas: clipRastersToAreas,
+          imageRendering: rasterInterpolation === 'bilinear' ? 'auto' : 'pixelated',
+        });
         addLayerTracked(map, layer, endLoading);
         layerRef.current = layer;
         if (hlCtx) {
@@ -270,7 +272,7 @@ function RiskRasterLayer({ tifUrl, isCases, hlCtx, bandIndex = 1 }) {
       layerRef.current = null;
       if (layer && map) try { map.removeLayer(layer); } catch {};
     };
-  }, [tifUrl, map, rasterInterpolation]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tifUrl, map, rasterInterpolation, clipRastersToAreas, geojson]); // eslint-disable-line react-hooks/exhaustive-deps
   return null;
 }
 
@@ -497,9 +499,9 @@ function diffColor(pct, scale = 100) {
   }
 }
 
-function RiskDiffRasterLayer({ diffUrl, hlCtx }) {
+function RiskDiffRasterLayer({ diffUrl, hlCtx, geojson }) {
   const map = useMap();
-  const rasterInterpolation = useSettingsStore(state => state.rasterInterpolation);
+  const { rasterInterpolation, clipRastersToAreas } = useSettingsStore();
   const loadingTracker = useMapLoadingTracker();
   useEffect(() => {
     if (!diffUrl || !map) return;
@@ -542,11 +544,12 @@ function RiskDiffRasterLayer({ diffUrl, hlCtx }) {
             return color;
           },
         });
-        if (rasterInterpolation !== 'none') {
-          layer.on('tileload', (event) => {
-            if (event.tile) event.tile.style.imageRendering = rasterInterpolation === 'bilinear' ? 'auto' : 'pixelated';
-          });
-        }
+        configureRasterTileRendering(layer, {
+          map,
+          geojson,
+          clipToAreas: clipRastersToAreas,
+          imageRendering: rasterInterpolation === 'bilinear' ? 'auto' : 'pixelated',
+        });
         addLayerTracked(map, layer, endLoading);
         if (hlCtx) {
           hlCtx.current.redraw = () => {
@@ -564,7 +567,7 @@ function RiskDiffRasterLayer({ diffUrl, hlCtx }) {
       if (hlCtx) hlCtx.current.redraw = null;
       if (layer && map) try { map.removeLayer(layer); } catch {};
     };
-  }, [diffUrl, map, rasterInterpolation]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [diffUrl, map, rasterInterpolation, clipRastersToAreas, geojson]); // eslint-disable-line react-hooks/exhaustive-deps
   return null;
 }
 
@@ -581,7 +584,7 @@ function RiskLegend({ isComparison, hlCtx, hlNorm, onHlChange }) {
 
   if (isComparison) {
     return (
-      <div className="mt-2">
+      <div className="mt-2" data-map-export-legend>
         <div className="relative">
           <div
             className="h-4 rounded-sm w-full cursor-crosshair"
@@ -606,7 +609,7 @@ function RiskLegend({ isComparison, hlCtx, hlNorm, onHlChange }) {
     );
   }
   return (
-    <div className="mt-2">
+    <div className="mt-2" data-map-export-legend>
       <div className="relative">
         <div
           className="h-4 rounded-sm w-full cursor-crosshair"
@@ -1173,7 +1176,7 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
         ) : (
           <div className="flex gap-3" style={{ height: 480 }}>
             {/* Map */}
-            <div className="flex flex-col min-w-0" style={{ flex: 2 }}>
+            <div className="flex flex-col min-w-0" style={{ flex: 2 }} data-map-export-column>
               <MapLoadingFrame
                 className="rounded overflow-hidden border border-gray-100 flex-1"
                 loading={loading || dataLoading}
@@ -1186,8 +1189,8 @@ export default function RiskPanel({ scenarioId, scenarioName, pathogen = null, s
                 >
                   <OpenFreeMapLayer exportable />
                   {isComparison && diffTifUrl
-                    ? <RiskDiffRasterLayer key={diffTifUrl} diffUrl={diffTifUrl} hlCtx={hlCtx} />
-                    : tifUrl && <RiskRasterLayer key={tifUrl} tifUrl={tifUrl} isCases={selectedFile === 'expected_cases.tif'} hlCtx={hlCtx} bandIndex={mapBandIndex} />
+                    ? <RiskDiffRasterLayer key={diffTifUrl} diffUrl={diffTifUrl} hlCtx={hlCtx} geojson={geojson} />
+                    : tifUrl && <RiskRasterLayer key={tifUrl} tifUrl={tifUrl} isCases={selectedFile === 'expected_cases.tif'} hlCtx={hlCtx} bandIndex={mapBandIndex} geojson={geojson} />
                   }
                   {geojson && (
                     <LeafletGeoJSON

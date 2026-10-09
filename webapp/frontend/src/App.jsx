@@ -142,6 +142,9 @@ function AnalyticsRouteWrapper({ caseStudies, fallbackCaseStudyId, fallbackScena
 
   const initialEmissionType = searchParams.get('emissionType') === 'land' ? 'land' : 'water';
   const initialArea = searchParams.get('area') || '';
+  const initialComparisonMode = ['concentrations', 'risk'].includes(searchParams.get('view'))
+    ? searchParams.get('view')
+    : 'emissions';
 
   return (
     <ResultsView
@@ -151,6 +154,7 @@ function AnalyticsRouteWrapper({ caseStudies, fallbackCaseStudyId, fallbackScena
       initialScenarioIds={initialScenarioIds}
       initialEmissionType={initialEmissionType}
       initialArea={initialArea}
+      initialComparisonMode={initialComparisonMode}
       onCaseStudyChange={onCaseStudyChange}
     />
   );
@@ -233,7 +237,7 @@ function Dashboard() {
     setScenarioDirty,
   } = useScenarioStore();
 
-  const { heatmapView, setHeatmapView, rasterInterpolation, setRasterInterpolation, basemapStyle, setBasemapStyle, fixedColorScale, setFixedColorScale, choroplethPixelThreshold, setChoroplethPixelThreshold, debugMode, setDebugMode } = useSettingsStore();
+  const { heatmapView, setHeatmapView, rasterInterpolation, setRasterInterpolation, clipRastersToAreas, setClipRastersToAreas, basemapStyle, setBasemapStyle, fixedColorScale, setFixedColorScale, choroplethPixelThreshold, setChoroplethPixelThreshold, debugMode, setDebugMode } = useSettingsStore();
 
   // Effect to sync activeSection with URL changes
   useEffect(() => {
@@ -426,6 +430,23 @@ function Dashboard() {
 
   const handleSSPScenarioSubmit = async (formData) => {
     console.log('SSP form submitted:', formData);
+    if (pendingSSPData?._cloneFromId) {
+      const response = await axios.post(
+        `/api/scenarios/${pendingSSPData._cloneFromId}/clone`,
+        {
+          name: formData.scenarioName,
+          ssp: `SSP${formData.sspScenario}`,
+          pathogen: formData.pathogen,
+          year: formData.year,
+        },
+      );
+      await fetchScenarios(selectedCaseStudy.id);
+      setActiveTab(response.data.id);
+      setPendingSSPData(null);
+      setIsSSPDialogOpen(false);
+      return;
+    }
+
     // Create the scenario with SSP data
     const scenarioId = createTempScenario(selectedCaseStudy.id, formData);
     console.log('Created new SSP-based temp scenario:', scenarioId, 'with data:', formData);
@@ -514,7 +535,7 @@ function Dashboard() {
       const name  = response.data.case_study?.name ?? file.name;
       setUploadStatus({
         ok: true,
-        message: `Imported "${name}" — ${count} scenario${count !== 1 ? 's' : ''} found`,
+        message: `Imported "${name}" - ${count} scenario${count !== 1 ? 's' : ''} found`,
       });
       return response.data;
     } catch (error) {
@@ -932,6 +953,29 @@ function Dashboard() {
                       <option value="none">None (original)</option>
                       <option value="bilinear">Bilinear boundary blend</option>
                     </select>
+                  </div>
+                  <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
+                    <div>
+                      <p className="text-sm font-medium text-gray-800">Clip concentration and risk rasters to area borders</p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Hide raster cells outside the case-study area polygons. This is useful when the hydrology grid is coarser than the area boundary raster.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setClipRastersToAreas(!clipRastersToAreas)}
+                      className={`ml-6 relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-wpBlue focus:ring-offset-2 ${
+                        clipRastersToAreas ? 'bg-wpBlue' : 'bg-gray-300'
+                      }`}
+                      role="switch"
+                      aria-checked={clipRastersToAreas}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                          clipRastersToAreas ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
                   </div>
                   <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
                     <div className="flex-1">
@@ -1417,7 +1461,10 @@ function Dashboard() {
                   setAnalyticsCaseStudy(cs);
                   setResultsState({ caseStudyId: cs.id, scenarioId: null });
                   if (activeSection === 'scenarios') navigate(paths.scenarios(cs));
-                  else if (activeSection === 'analytics') navigate(paths.analytics(cs));
+                  else if (activeSection === 'analytics') {
+                    const view = new URLSearchParams(location.search).get('view');
+                    navigate(paths.analytics(cs, { view }));
+                  }
                   else if (activeSection === 'summary')   navigate(paths.summary(cs));
                   else if (activeSection === 'narratives') navigate(paths.narratives(cs));
                   else if (activeSection === 'case-studies') navigate(paths.caseStudy(cs));

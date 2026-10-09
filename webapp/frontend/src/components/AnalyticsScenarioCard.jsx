@@ -97,8 +97,10 @@ function RunStatusBadge({ status }) {
     idle:    { label: 'Idle',  cls: 'bg-gray-100 text-gray-500' },
     pending: { label: 'Queued',   cls: 'bg-yellow-100 text-yellow-700' },
     running: { label: 'Running…', cls: 'bg-blue-100 text-blue-700' },
+    coupling: { label: 'Aggregating emissions…', cls: 'bg-blue-100 text-blue-700' },
+    hydrology_running: { label: 'Routing and calculating concentrations…', cls: 'bg-blue-100 text-blue-700' },
     risk_running: { label: 'Estimating risk…', cls: 'bg-blue-100 text-blue-700' },
-    success: { label: 'Done ✓',   cls: 'bg-green-100 text-green-700' },
+    success: { label: 'Done ✓',   cls: 'bg-wpGreen text-white' },
     error:   { label: 'Error',    cls: 'bg-red-100 text-red-700' },
     timeout: { label: 'Timeout',  cls: 'bg-orange-100 text-orange-700' },
   };
@@ -188,11 +190,11 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
   };
 
   const handleRunModel = () => {
-    if (scenario.qmra_available && !scenario.has_qmra_output) {
+    if (scenario.qmra_available) {
       setShowRiskRunDialog(true);
       return;
     }
-    startModelRun(!!scenario.qmra_available);
+    startModelRun(false);
   };
 
   const startRiskOnlyRun = async () => {
@@ -409,12 +411,16 @@ export default function AnalyticsScenarioCard({ scenario, onRunComplete, onViewR
         onClose={() => setShowRiskRunDialog(false)}
         onConfirm={() => { setShowRiskRunDialog(false); return startModelRun(true); }}
         onCancel={() => { setShowRiskRunDialog(false); return startModelRun(false); }}
-        onAlternate={() => { setShowRiskRunDialog(false); return startRiskOnlyRun(); }}
+        onAlternate={scenario.has_hydrology
+          ? () => { setShowRiskRunDialog(false); return startRiskOnlyRun(); }
+          : undefined}
         title="Run scenario"
-        message="Concentration outputs are available. Run the full model again, with or without risk estimation, or use the existing concentrations to estimate risk only."
+        message={scenario.has_hydrology
+          ? 'Choose whether to run the model with risk estimation, without it, or estimate risk from the existing concentrations.'
+          : 'Choose whether to run the model with or without risk estimation.'}
         confirmText="Run model + risk"
         cancelText="Run model only"
-        alternateText="Run risk only"
+        alternateText={scenario.has_hydrology ? 'Run risk only' : undefined}
         confirmVariant="primary"
       />
     </div>

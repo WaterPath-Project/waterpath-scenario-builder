@@ -230,9 +230,28 @@ input[type="range"].split-slider::-moz-range-thumb {
     inset: 0 !important;
     width: 100vw !important;
     height: 100vh !important;
+    display: flex !important;
+    flex-direction: column !important;
     overflow: hidden !important;
     print-color-adjust: exact !important;
     -webkit-print-color-adjust: exact !important;
+  }
+
+  body.print-map-only .print-map-target > .flex-1 {
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    height: auto !important;
+    overflow: hidden !important;
+  }
+
+  body.print-map-only .print-map-target .leaflet-container {
+    height: 100% !important;
+    min-height: 0 !important;
+  }
+
+  body.print-map-only .print-map-target [data-map-export-legend] {
+    flex: 0 0 auto !important;
+    break-inside: avoid !important;
   }
 
   body.print-map-only .print-map-target *,

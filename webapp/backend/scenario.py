@@ -444,6 +444,10 @@ def clone_scenario(scenario_id):
         data = request.get_json(silent=True) or {}
         src_name = target_row.get('name', 'Scenario')
         clone_name = data.get('name') or f"{src_name} (clone)"
+        clone_ssp = data.get('ssp', target_row.get('ssp', ''))
+        clone_pathogen = data.get('pathogen', target_row.get('pathogen', ''))
+        clone_year = data.get('year', target_row.get('year', ''))
+        clone_notes = data.get('notes', data.get('description', target_row.get('notes', '')))
 
         reserved_err = _reserved_name_error(clone_name)
         if reserved_err:
@@ -474,11 +478,11 @@ def clone_scenario(scenario_id):
             'scenario_id': new_id,
             'name':        clone_name,
             'folder':      dest_folder,
-            'ssp':         target_row.get('ssp', ''),
-            'pathogen':    target_row.get('pathogen', ''),
-            'year':        target_row.get('year', ''),
+            'ssp':         clone_ssp,
+            'pathogen':    clone_pathogen,
+            'year':        str(clone_year),
             'is_baseline': 'False',
-            'notes':       target_row.get('notes', ''),
+            'notes':       clone_notes,
             'created_at':  now,
             'updated_at':  now,
         }
@@ -491,11 +495,11 @@ def clone_scenario(scenario_id):
             'name':          clone_name,
             'case_study_id': target_case_study['id'],
             'folder':        dest_folder,
-            'ssp':           target_row.get('ssp', ''),
-            'pathogen':      target_row.get('pathogen', ''),
-            'year':          target_row.get('year', ''),
-            'notes':         target_row.get('notes', ''),
-            'description':   target_row.get('notes', ''),
+            'ssp':           clone_ssp,
+            'pathogen':      clone_pathogen,
+            'year':          clone_year,
+            'notes':         clone_notes,
+            'description':   clone_notes,
             'is_baseline':   False,
             'created_at':    now,
             'updated_at':    now,

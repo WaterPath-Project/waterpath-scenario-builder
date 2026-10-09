@@ -32,6 +32,7 @@ import hashlib
 import json
 import os
 import re
+import csv
 import threading
 import traceback
 import uuid
@@ -207,10 +208,29 @@ def _pop_rasters(cs_path, folder):
     """Return (poprural_path, popurban_path) for the scenario, or (None, None).
 
     Search order:
-      1. input/<folder>/human_emissions/  — baseline layout
-      2. input/<folder>/                  — projection layout (SSP scenarios)
-      3. input/baseline/human_emissions/  — fallback to baseline population
+      1. Completed coupling outputs on the native hydrology grid, when present
+      2. input/<folder>/human_emissions/  — baseline layout
+      3. input/<folder>/                  — projection layout (SSP scenarios)
+      4. input/baseline/human_emissions/  — fallback to baseline population
     """
+    candidates = [
+        os.path.join(cs_path, 'input', folder, 'human_emissions'),
+        os.path.join(cs_path, 'input', folder),
+        os.path.join(cs_path, 'input', 'baseline', 'human_emissions'),
+    ]
+    coupling_dir = os.path.join(cs_path, 'output', folder, 'hydrology', 'coupling')
+    if os.path.isfile(os.path.join(coupling_dir, 'complete.json')):
+        candidates.insert(0, coupling_dir)
+    for base in candidates:
+        rural = os.path.join(base, 'poprural.tif')
+        urban = os.path.join(base, 'popurban.tif')
+        if os.path.exists(rural) and os.path.exists(urban):
+            return rural, urban
+    return None, None
+
+
+def _source_pop_rasters(cs_path, folder):
+    """Return the original scenario population rasters, never coupled copies."""
     candidates = [
         os.path.join(cs_path, 'input', folder, 'human_emissions'),
         os.path.join(cs_path, 'input', folder),
@@ -222,6 +242,132 @@ def _pop_rasters(cs_path, folder):
         if os.path.exists(rural) and os.path.exists(urban):
             return rural, urban
     return None, None
+
+
+def _source_population_grid(cs_path, folder):
+    """Return original-grid population, area zones, and raster geometry."""
+    import numpy as np
+    import rasterio
+
+    rural, urban = _source_pop_rasters(cs_path, folder)
+    if not (rural and urban):
+        return None
+    zone_candidates = [
+        os.path.join(os.path.dirname(rural), 'isoraster.tif'),
+        os.path.join(cs_path, 'input', folder, 'isoraster.tif'),
+        os.path.join(cs_path, 'input', 'baseline', 'human_emissions', 'isoraster.tif'),
+    ]
+    zone_path = next((path for path in zone_candidates if os.path.exists(path)), None)
+    with rasterio.open(rural) as rural_src, rasterio.open(urban) as urban_src:
+        if (
+            rural_src.shape != urban_src.shape
+            or rural_src.transform != urban_src.transform
+            or rural_src.crs != urban_src.crs
+        ):
+            raise ValueError('Rural and urban population rasters must share one grid.')
+        rural_values = rural_src.read(1, masked=True).filled(0).astype('float64')
+        urban_values = urban_src.read(1, masked=True).filled(0).astype('float64')
+        population = rural_values + urban_values
+        population[~np.isfinite(population) | (population < 0)] = 0
+        zones = None
+        if zone_path:
+            with rasterio.open(zone_path) as zone_src:
+                if (
+                    zone_src.shape != rural_src.shape
+                    or zone_src.transform != rural_src.transform
+                    or zone_src.crs != rural_src.crs
+                ):
+                    raise ValueError('Population and area-zone rasters must share one grid.')
+                zones = zone_src.read(1, masked=True).astype('float64').filled(np.nan)
+        return population, zones, rural_src.transform, rural_src.crs
+
+
+def _declared_area_populations(cs_path, folder):
+    """Return case-study population by integer isoraster zone."""
+    candidates = [
+        os.path.join(cs_path, 'input', folder, 'human_emissions', 'isodata.csv'),
+        os.path.join(cs_path, 'input', folder, 'isodata.csv'),
+        os.path.join(cs_path, 'input', 'baseline', 'human_emissions', 'isodata.csv'),
+    ]
+    path = next((candidate for candidate in candidates if os.path.exists(candidate)), None)
+    if not path:
+        return {}
+    populations = {}
+    with open(path, 'r', newline='', encoding='utf-8-sig') as source:
+        for row in csv.DictReader(source):
+            try:
+                zone = int(float(row['iso']))
+                population = float(row['population'])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if population < 0:
+                raise ValueError(f'Population must be non-negative for area {zone}.')
+            populations[zone] = population
+    return populations
+
+
+def _probability_band_on_grid(path, band_index, shape, transform, crs):
+    """Read a probability band and sample it onto an analysis grid."""
+    import numpy as np
+    import rasterio
+    from rasterio.warp import reproject, Resampling
+
+    result = np.full(shape, np.nan, dtype='float64')
+    with rasterio.open(path) as src:
+        reproject(
+            source=rasterio.band(src, band_index),
+            destination=result,
+            src_transform=src.transform,
+            src_crs=src.crs,
+            src_nodata=src.nodata,
+            dst_transform=transform,
+            dst_crs=crs,
+            dst_nodata=np.nan,
+            resampling=Resampling.nearest,
+        )
+    result[(result < 0) | (result > 1)] = np.nan
+    return result
+
+
+def _declared_population_risk(cs_path, folder, path, band_index):
+    """Aggregate one probability band using declared area populations."""
+    import numpy as np
+
+    source_population = _source_population_grid(cs_path, folder)
+    declared = _declared_area_populations(cs_path, folder)
+    if source_population is None or not declared:
+        return None
+    population, zones, transform, crs = source_population
+    if zones is None:
+        return None
+    band = _probability_band_on_grid(
+        path, band_index, population.shape, transform, crs,
+    )
+    cases = 0.0
+    population_total = 0.0
+    area_count = 0
+    for zone, declared_population in declared.items():
+        mask = (
+            (zones == zone)
+            & np.isfinite(band)
+            & np.isfinite(population)
+            & (population > 0)
+        )
+        spatial_population = float(np.sum(population[mask]))
+        if spatial_population <= 0:
+            continue
+        area_risk = float(np.sum(band[mask] * population[mask]) / spatial_population)
+        cases += area_risk * declared_population
+        population_total += declared_population
+        area_count += 1
+    if population_total <= 0:
+        return None
+    return {
+        'cases': cases,
+        'population': population_total,
+        'risk': cases / population_total,
+        'area_count': area_count,
+    }
 
 
 def _pop_grid_for(cs_path, folder, ref_path):
@@ -862,6 +1008,9 @@ def _build_qmra_r_script(*,
 
     helper_fn = f"""\
 qmra_run_helper <- function(conc, eg, treat, routes, boiling, out_dir, otype, rname) {{
+  if (!is.null(treat) && !terra::compareGeom(treat, conc[[1]], stopOnError = FALSE)) {{
+    treat <- terra::project(treat, conc[[1]], method = 'near')
+  }}
   GloWPaQMRA::qmra_ras_batch_fast(
     conc.list             = conc,
     pathogen              = {_r_literal(pathogen)},
@@ -1426,6 +1575,24 @@ def _parse_band(desc):
     return None, None
 
 
+def _combined_source_route(descs):
+    """Return the route representing the combined run in a QMRA raster.
+
+    GloWPaQMRA labels a combined run with the route name when only one route is
+    enabled. Treat that sole route as both the route result and the combined
+    result so the API and map retain their normal combined-layer contract.
+    """
+    routes = {
+        route for route, _ in (_parse_band(desc) for desc in descs)
+        if route is not None
+    }
+    if 'combined' in routes:
+        return 'combined'
+    if len(routes) == 1:
+        return next(iter(routes))
+    return None
+
+
 def _select_band_index(descs, route, target_q):
     """Return the 1-based band index for `route` at quantile `target_q`, or None.
 
@@ -1436,10 +1603,13 @@ def _select_band_index(descs, route, target_q):
     scenario first and the treated/boiled variants after), so we keep the
     last match -- this mirrors the pre-existing "prefer treated" behaviour.
     """
+    source_route = _combined_source_route(descs) if route == 'combined' else route
+    if source_route is None:
+        return None
     idx = None
     for i, d in enumerate(descs):
         r, q = _parse_band(d)
-        if r != route or q is None or abs(q - target_q) > 0.001:
+        if r != source_route or q is None or abs(q - target_q) > 0.001:
             continue
         idx = i + 1
     return idx
@@ -1493,6 +1663,7 @@ def compute_qmra_summary(cs, folder, output_type='monthly',
     if os.path.exists(ar_path):
         with rio.open(ar_path) as src:
             descs = src.descriptions or []
+            combined_source = _combined_source_route(descs)
             nd    = src.nodata
             for i, desc in enumerate(descs):
                 route, q = _parse_band(desc)
@@ -1506,6 +1677,10 @@ def compute_qmra_summary(cs, folder, output_type='monthly',
                     combined_risk[q_key] = st
                 else:
                     routes_risk.setdefault(route, {})[q_key] = st
+                    if route == combined_source:
+                        combined_risk[q_key] = st
+                if route == combined_source and abs(q - target_q) <= 0.001:
+                    band_index['combined'] = i + 1
 
     # ── Population-weighted ("average person's") risk, per route + combined ────
     # Weight each cell's `quantile` risk by its population, so the headline
@@ -1517,6 +1692,7 @@ def compute_qmra_summary(cs, folder, output_type='monthly',
     if pop_grid is not None:
         with rio.open(ar_path) as src:
             descs = src.descriptions or []
+            combined_source = _combined_source_route(descs)
             nd    = src.nodata
             for i, desc in enumerate(descs):
                 route, q = _parse_band(desc)
@@ -1542,6 +1718,9 @@ def compute_qmra_summary(cs, folder, output_type='monthly',
                     pop_total = tp
                 if route == 'combined':
                     combined_band_at_q = band
+                elif route == combined_source:
+                    pop_weighted['combined'] = pop_weighted[route]
+                    combined_band_at_q = band
 
     # ── Expected infections: combined risk *at the selected quantile* × ────────
     # population, summed over all valid cells. Recomputed dynamically here
@@ -1550,14 +1729,21 @@ def compute_qmra_summary(cs, folder, output_type='monthly',
     # breakdown returned by qmra_area_stats.
     combined_cases = None
     if file_name == 'annual_risk.tif' and output_type == 'monthly' and combined_band_at_q is not None:
-        product = combined_band_at_q * pop_grid
-        valid = product[np.isfinite(product) & (product > 0)]
-        if len(valid) > 0:
+        combined_idx = band_index.get('combined')
+        declared_stats = (
+            _declared_population_risk(
+                cs['folder_path'], folder, ar_path, combined_idx,
+            )
+            if combined_idx is not None else None
+        )
+        if declared_stats is not None:
             combined_cases = {
-                'sum':   float(np.sum(valid)),
-                'mean':  float(np.mean(valid)),
-                'count': int(len(valid)),
+                'sum': declared_stats['cases'],
+                'mean': declared_stats['cases'] / declared_stats['area_count'],
+                'count': declared_stats['area_count'],
             }
+            pop_weighted['combined'] = declared_stats['risk']
+            pop_total = declared_stats['population']
 
     # ── Monthly variation at `quantile` (only for annual_risk.tif) ─────────────
     # Each per-month TIF can hold several scenario variants of the *same*
@@ -1584,6 +1770,7 @@ def compute_qmra_summary(cs, folder, output_type='monthly',
             try:
                 with rio.open(month_file) as src:
                     descs = src.descriptions or []
+                    combined_source = _combined_source_route(descs)
                     nd    = src.nodata
                     month_vals     = {}   # route -> last-matching q0.5 mean this month
                     month_pop_vals = {}   # route -> last-matching q0.5 pop-weighted this month
@@ -1609,6 +1796,11 @@ def compute_qmra_summary(cs, folder, output_type='monthly',
                                 tp   = float(np.sum(w))
                                 if tp > 0:
                                     month_pop_vals[route] = float(np.sum(band[mask] * w) / tp)
+                    if combined_source and combined_source != 'combined':
+                        if combined_source in month_vals:
+                            month_vals['combined'] = month_vals[combined_source]
+                        if combined_source in month_pop_vals:
+                            month_pop_vals['combined'] = month_pop_vals[combined_source]
                     for route, val in month_vals.items():
                         monthly_by_route.setdefault(route, [None] * len(MONTHS))[m_idx] = val
                     for route, val in month_pop_vals.items():
@@ -2052,7 +2244,11 @@ def compute_qmra_area_stats(cs, folder, output_type='monthly',
     """Per-polygon QMRA risk for one scenario.
 
     Pure function (no Flask request access) so it can be reused by the report
-    builder.  Returns `{iso: {risk, count, routes, cases[, name]}}`.
+    builder. Returns `{iso: {risk, count, routes, cases, population[, name]}}`.
+    Coarse risk probabilities are sampled onto the original population grid;
+    the fine isoraster assigns cells to districts. District risk is weighted
+    by the fine population distribution, then multiplied by the population
+    declared for that district in isodata.csv.
     Raises ImportError (missing deps) or FileNotFoundError (missing raster /
     geodata).  When *with_labels* is true each entry also carries a human
     readable `name` taken from the shapefile attributes.
@@ -2093,26 +2289,28 @@ def compute_qmra_area_stats(cs, folder, output_type='monthly',
                 if os.path.isfile(route_path):
                     route_paths[route] = route_path
 
-        # Full-grid combined band + resampled population, used to derive
-        # per-area *expected infections* (risk_cell × population_cell,
-        # summed within each polygon) that track the selected quantile --
-        # unlike the fixed expected_cases.tif (always baked at q0.5).
-        pop_grid = None
-        combined_band_full = None
-        if file_name == 'annual_risk.tif' and output_type == 'monthly':
-            pop_grid = _pop_grid_for(cs['folder_path'], folder, tif_path)
-            if pop_grid is not None:
-                combined_band_full = src.read(combined_idx).astype('float64')
-                if nodata is not None:
-                    try:
-                        ndv = float(nodata)
-                        if not np.isnan(ndv):
-                            combined_band_full[combined_band_full == ndv] = np.nan
-                    except (TypeError, ValueError):
-                        pass
-                combined_band_full[(combined_band_full < 0) | (combined_band_full > 1.0)] = np.nan
-                if combined_band_full.shape != pop_grid.shape:
-                    combined_band_full = None
+        # Districts are much finer than the hydrology grid. Analyse risk on the
+        # original population grid so a coarse cell's population is divided
+        # among its actual districts instead of assigned wholesale to every
+        # polygon containing that cell's centre.
+        source_population = _source_population_grid(cs['folder_path'], folder)
+        declared_populations = _declared_area_populations(cs['folder_path'], folder)
+        population = zones = pop_transform = pop_crs = None
+        combined_band_fine = None
+        route_bands_fine = {}
+        if source_population is not None:
+            population, zones, pop_transform, pop_crs = source_population
+            combined_band_fine = _probability_band_on_grid(
+                tif_path, combined_idx, population.shape, pop_transform, pop_crs,
+            )
+            for route, route_path in route_paths.items():
+                with rasterio.open(route_path) as route_src:
+                    route_idx = _select_band_index(
+                        route_src.descriptions or [], route, target_q,
+                    ) or 1
+                route_bands_fine[route] = _probability_band_on_grid(
+                    route_path, route_idx, population.shape, pop_transform, pop_crs,
+                )
 
         with fiona.open(shp_path) as shp:
             shp_crs_str = shp.crs_wkt or wgs84
@@ -2124,6 +2322,63 @@ def compute_qmra_area_stats(cs, folder, output_type='monthly',
                 except Exception:
                     geom_r = geom
                 try:
+                    if combined_band_fine is not None:
+                        feat_mask = (
+                            zones == idx + 1
+                            if zones is not None
+                            else geometry_mask(
+                                [geom_r], out_shape=population.shape,
+                                transform=pop_transform, invert=True,
+                                all_touched=False,
+                            )
+                        )
+                        valid_population = (
+                            feat_mask
+                            & np.isfinite(combined_band_fine)
+                            & np.isfinite(population)
+                            & (population > 0)
+                        )
+                        area_population = float(np.sum(population[valid_population]))
+                        if area_population <= 0:
+                            continue
+                        area_risk = float(np.sum(
+                            combined_band_fine[valid_population]
+                            * population[valid_population]
+                        ) / area_population)
+                        declared_population = declared_populations.get(
+                            idx + 1, area_population,
+                        )
+                        cases_val = area_risk * declared_population
+                        routes_out = {}
+                        for route, route_band in route_bands_fine.items():
+                            route_valid = (
+                                feat_mask
+                                & np.isfinite(route_band)
+                                & np.isfinite(population)
+                                & (population > 0)
+                            )
+                            route_population = float(np.sum(population[route_valid]))
+                            if route_population > 0:
+                                routes_out[route] = float(np.sum(
+                                    route_band[route_valid] * population[route_valid]
+                                ) / route_population)
+                        entry = {
+                            'risk': area_risk,
+                            'count': int(np.count_nonzero(valid_population)),
+                            'routes': routes_out,
+                            'cases': cases_val if (
+                                file_name == 'annual_risk.tif'
+                                and output_type == 'monthly'
+                            ) else None,
+                            'population': declared_population,
+                        }
+                        if with_labels:
+                            entry['name'] = area_label(
+                                feat.get('properties') or {},
+                            ) or f'Area {iso}'
+                        result[iso] = entry
+                        continue
+
                     out, _ = rio_mask(src, [geom_r], crop=True, all_touched=False,
                                       filled=True, nodata=np.nan, indexes=[combined_idx])
                     combined_val   = None
@@ -2163,23 +2418,6 @@ def compute_qmra_area_stats(cs, folder, output_type='monthly',
                                 routes_out[route] = float(np.mean(route_valid))
                     if combined_val is not None:
                         cases_val = None
-                        if combined_band_full is not None and pop_grid is not None:
-                            try:
-                                feat_mask = geometry_mask(
-                                    [geom_r], out_shape=combined_band_full.shape,
-                                    transform=src.transform, invert=True,
-                                )
-                                valid_c = (
-                                    feat_mask
-                                    & np.isfinite(combined_band_full) & (combined_band_full > 0)
-                                    & np.isfinite(pop_grid)
-                                )
-                                if np.any(valid_c):
-                                    cases_val = float(np.sum(
-                                        combined_band_full[valid_c] * pop_grid[valid_c]
-                                    ))
-                            except Exception:
-                                cases_val = None
                         entry = {
                             'risk':   combined_val,
                             'count':  combined_count,
@@ -2204,13 +2442,14 @@ def qmra_area_stats(scenario_id):
       quantile     which quantile ('0.025', '0.5', '0.975', ...) to read (default '0.5')
 
     Returns:
-      { iso: { risk: float, count: int, routes: { route: float, ... }, cases: float|None } }
+      { iso: { risk: float, count: int, routes: { route: float, ... },
+               cases: float|None, population: float } }
     where `risk` is the requested-quantile combined probability value per
     polygon, `routes` gives the same for each individual exposure pathway
     present in the file (used by the region-click risk breakdown), and
-    `cases` is the expected annual infections for that polygon (combined
-    risk at `quantile` × population, summed per-cell) -- only populated when
-    `file == 'annual_risk.tif'` and population rasters are available.
+    `cases` is expected annual infections for that polygon: its fine-grid,
+    population-weighted risk at `quantile` multiplied by its population from
+    isodata.csv. It is only populated for monthly `annual_risk.tif`.
     """
     output_type = request.args.get('output_type', 'monthly')
     file_name   = request.args.get('file', 'annual_risk.tif')

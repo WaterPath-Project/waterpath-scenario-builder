@@ -24,6 +24,9 @@ const useSettingsStore = create(
       /** Presentation-only sampling for concentration and risk rasters. */
       rasterInterpolation: 'none',
 
+      /** Clip concentration and risk rasters to the case-study area polygons. */
+      clipRastersToAreas: false,
+
       /** OpenFreeMap vector style used by every map in the app. */
       basemapStyle: 'bright',
 
@@ -59,6 +62,7 @@ const useSettingsStore = create(
 
       setHeatmapView:                (value) => set({ heatmapView: value }),
       setRasterInterpolation:        (value) => set({ rasterInterpolation: value === 'bilinear' ? 'bilinear' : 'none' }),
+      setClipRastersToAreas:         (value) => set({ clipRastersToAreas: !!value }),
       setBasemapStyle:               (value) => set({ basemapStyle: value }),
       setFixedColorScale:            (value) => set({ fixedColorScale: value }),
       setDynamicLogMax:              (value) => set({ dynamicLogMax: value }),
@@ -71,6 +75,7 @@ const useSettingsStore = create(
       partialize: (state) => ({
         heatmapView:               state.heatmapView,
         rasterInterpolation:       state.rasterInterpolation,
+        clipRastersToAreas:        state.clipRastersToAreas,
         basemapStyle:              state.basemapStyle,
         fixedColorScale:           state.fixedColorScale,
         choroplethPixelThreshold:  state.choroplethPixelThreshold,

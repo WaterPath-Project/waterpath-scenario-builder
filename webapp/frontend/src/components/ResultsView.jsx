@@ -32,6 +32,7 @@ import useSettingsStore      from '../store/settingsStore';
 import OpenFreeMapLayer from './OpenFreeMapLayer';
 import { printAnalyticsPage, printMapContainer } from './printUtils';
 import { blendRasterForDisplay } from './rasterInterpolation';
+import { configureRasterTileRendering } from './rasterTileClip';
 import Spinner, { LoadingState } from './loading/Spinner';
 import { MapLoadingFrame, MapLoadingPlaceholder, useMapLoadingTracker, addLayerTracked } from './loading/MapLoading';
 
@@ -285,12 +286,29 @@ function fmtPct(v) {
   return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
 }
 
-// Adaptive decimal places: enough digits so the value isn't shown as zero.
-function fmtBarPct(v) {
-  if (v === 0) return '0';
-  if (v >= 1) return v.toFixed(1);
-  const decimals = Math.max(1, Math.ceil(-Math.log10(v)) + 1);
-  return v.toFixed(decimals);
+function roundedPercentages(values) {
+  const total = values.reduce((sum, value) => sum + value, 0);
+  if (!(total > 0)) return { values: values.map(() => 0), decimals: 0 };
+
+  const raw = values.map(value => (value / total) * 100);
+  const smallestPositive = Math.min(...raw.filter(value => value > 0));
+  const decimals = smallestPositive >= 1
+    ? 1
+    : Math.min(4, Math.max(1, Math.ceil(-Math.log10(smallestPositive)) + 1));
+  const factor = 10 ** decimals;
+  const target = 100 * factor;
+  const scaled = raw.map(value => value * factor);
+  const units = scaled.map(Math.floor);
+  const remainder = target - units.reduce((sum, value) => sum + value, 0);
+  const order = scaled
+    .map((value, index) => ({ index, fraction: value - units[index] }))
+    .sort((a, b) => b.fraction - a.fraction);
+
+  for (let index = 0; index < remainder; index += 1) {
+    units[order[index % order.length].index] += 1;
+  }
+
+  return { values: units.map(value => value / factor), decimals };
 }
 
 // ─── Legend ────────────────────────────────────────────────────────────────────────────────────
@@ -837,7 +855,7 @@ function EmissionMapPanel({
   geojson, primaryIsoTotals, secondaryIsoTotals,
   rasterFile, secondaryRasterFile, rasterVersion,
   scenarioId, secondaryScenarioId,
-  isComparison,
+  isComparison, comparisonScale,
   onAreaClick, loading,
   emissionType, onChangeEmissionType,
   areaNames, selectedAreas, onAreaSelect,
@@ -879,14 +897,8 @@ function EmissionMapPanel({
     return () => { hlCtx.current.redraw = null; };
   }, [choroplethMode]); // eslint-disable-line
 
-  // Scale for the diverging diff colour map, derived from annual total emissions change.
-  // Computed from per-area totals so it's available before the diff TIF loads.
-  const emScale = useMemo(() => {
-    if (!isComparison) return 100;
-    const totalA = Object.values(primaryIsoTotals || {}).reduce((s, v) => s + v, 0);
-    const totalB = Object.values(secondaryIsoTotals || {}).reduce((s, v) => s + v, 0);
-    return totalA > 0 ? diffScale((totalB - totalA) / totalA * 100) : 100;
-  }, [isComparison, primaryIsoTotals, secondaryIsoTotals]); // eslint-disable-line
+  // Surface-water and land comparisons share this range so their colours are directly comparable.
+  const emScale = isComparison ? comparisonScale : 100;
 
   // Kept in a ref so stale useCallback closures (getStyle) always read the latest value.
   const emScaleRef = useRef(100);
@@ -1423,6 +1435,8 @@ function StatsSection({ primaryData, secondaryData, isComparison, selectedAreas,
   const activeBarSegs = BAR_DEFS.filter(s => s.priV > 0 || s.secV > 0);
   const priBarTotal = activeBarSegs.reduce((s, seg) => s + seg.priV, 0) || 1;
   const secBarTotal = activeBarSegs.reduce((s, seg) => s + seg.secV, 0) || 1;
+  const priDisplayPcts = roundedPercentages(activeBarSegs.map(seg => seg.priV));
+  const secDisplayPcts = roundedPercentages(activeBarSegs.map(seg => seg.secV));
 
   const distributionBar = activeBarSegs.length > 1 && (
     <div className="space-y-1.5">
@@ -1443,15 +1457,13 @@ function StatsSection({ primaryData, secondaryData, isComparison, selectedAreas,
         </div>
       )}
       <div className="flex gap-4 flex-wrap">
-        {activeBarSegs.map(seg => {
-          const pct = (seg.priV / priBarTotal) * 100;
-          const secPct = (seg.secV / secBarTotal) * 100;
+        {activeBarSegs.map((seg, index) => {
           return (
             <div key={seg.key} className="flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-sm flex-shrink-0" style={{ backgroundColor: seg.color }} />
               <span className="text-xs text-gray-500">{seg.label}</span>
-              <span className={`text-xs font-semibold tabular-nums ${isComparison ? 'opacity-50 text-gray-600' : 'text-gray-600'}`}>{fmtBarPct(pct)}%</span>
-              {isComparison && <span className="text-xs font-semibold tabular-nums text-wpBlue">{fmtBarPct(secPct)}%</span>}
+              <span className={`text-xs font-semibold tabular-nums ${isComparison ? 'opacity-50 text-gray-600' : 'text-gray-600'}`}>{priDisplayPcts.values[index].toFixed(priDisplayPcts.decimals)}%</span>
+              {isComparison && <span className="text-xs font-semibold tabular-nums text-wpBlue">{secDisplayPcts.values[index].toFixed(secDisplayPcts.decimals)}%</span>}
             </div>
           );
         })}
@@ -1576,9 +1588,9 @@ const MONTH_LABELS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct
 // Like GeoTiffLayer but always auto-ranges from the raster's own maximum and never
 // writes to the global settingsStore (avoids corrupting the emissions map's legend scale).
 
-function HydrologyGeoTiffLayer({ url, hlCtx }) {
+function HydrologyGeoTiffLayer({ url, hlCtx, geojson }) {
   const map = useMap();
-  const rasterInterpolation = useSettingsStore(state => state.rasterInterpolation);
+  const { rasterInterpolation, clipRastersToAreas } = useSettingsStore();
   const loadingTracker = useMapLoadingTracker();
 
   useEffect(() => {
@@ -1627,8 +1639,11 @@ function HydrologyGeoTiffLayer({ url, hlCtx }) {
           },
         });
 
-        layer.on('tileload', (e) => {
-          if (e.tile) e.tile.style.imageRendering = rasterInterpolation === 'bilinear' ? 'auto' : 'pixelated';
+        configureRasterTileRendering(layer, {
+          map,
+          geojson,
+          clipToAreas: clipRastersToAreas,
+          imageRendering: rasterInterpolation === 'bilinear' ? 'auto' : 'pixelated',
         });
 
         addLayerTracked(map, layer, endLoading);
@@ -1651,7 +1666,7 @@ function HydrologyGeoTiffLayer({ url, hlCtx }) {
       if (layer) map.removeLayer(layer);
       if (hlCtx) hlCtx.current.redraw = null;
     };
-  }, [url, map, rasterInterpolation]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [url, map, rasterInterpolation, clipRastersToAreas, geojson]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return null;
 }
@@ -1675,9 +1690,9 @@ function hydroDiffColor(pct, scale = 100) {
   }
 }
 
-function HydrologyDiffGeoTiffLayer({ url, hlCtx, onError, onStats, scale: scaleProp, colorFn }) {
+function HydrologyDiffGeoTiffLayer({ url, hlCtx, onError, onStats, scale: scaleProp, colorFn, geojson }) {
   const map = useMap();
-  const rasterInterpolation = useSettingsStore(state => state.rasterInterpolation);
+  const { rasterInterpolation, clipRastersToAreas } = useSettingsStore();
   const loadingTracker = useMapLoadingTracker();
 
   useEffect(() => {
@@ -1734,8 +1749,11 @@ function HydrologyDiffGeoTiffLayer({ url, hlCtx, onError, onStats, scale: scaleP
           },
         });
 
-        layer.on('tileload', (e) => {
-          if (e.tile) e.tile.style.imageRendering = rasterInterpolation === 'bilinear' ? 'auto' : 'pixelated';
+        configureRasterTileRendering(layer, {
+          map,
+          geojson,
+          clipToAreas: clipRastersToAreas,
+          imageRendering: rasterInterpolation === 'bilinear' ? 'auto' : 'pixelated',
         });
 
         addLayerTracked(map, layer, endLoading);
@@ -1759,7 +1777,7 @@ function HydrologyDiffGeoTiffLayer({ url, hlCtx, onError, onStats, scale: scaleP
       if (layer) map.removeLayer(layer);
       if (hlCtx) hlCtx.current.redraw = null;
     };
-  }, [url, map, rasterInterpolation]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [url, map, rasterInterpolation, clipRastersToAreas, geojson]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return null;
 }
@@ -1808,7 +1826,11 @@ function HydroInputRasterLayer({ url, colorFn, opacity = 0.75, onStats }) {
             return colorFn(norm);
           },
         });
-        layer.on('tileload', (e) => { if (e.tile) e.tile.style.imageRendering = 'pixelated'; });
+        configureRasterTileRendering(layer, {
+          map,
+          clipToAreas: false,
+          imageRendering: 'pixelated',
+        });
         addLayerTracked(map, layer, endLoading);
       } catch (e) {
         console.error('HydroInputRasterLayer error:', e);
@@ -2134,7 +2156,7 @@ function HydroMapControls({ activeOverlay, setActiveOverlay, minAccPct, setMinAc
               <div className="h-3.5 w-full rounded" style={{ background: SSRD_LEGEND_GRADIENT }} />
               <div className="flex justify-between text-[8px] text-gray-400 mt-0.5">
                 {ssrdStats
-                  ? <><span>{(ssrdStats.min / 1e6).toFixed(1)} MJ m⁻²</span><span>{(ssrdStats.max / 1e6).toFixed(1)} MJ m⁻²</span></>
+                  ? <><span>{(ssrdStats.min / 1e6).toPrecision(3)} MJ m⁻²</span><span>{(ssrdStats.max / 1e6).toPrecision(3)} MJ m⁻²</span></>
                   : <><span>low</span><span>high (MJ m⁻²)</span></>}
               </div>
             </div>
@@ -2620,18 +2642,20 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
         !diffError ? (
           <div className="flex items-center gap-2">
             <div className="flex-1">
-              <div className="h-4 rounded w-full"
-                style={{ background: 'linear-gradient(to right, rgb(33,102,172), rgb(140,178,220), #f5f5f5, rgb(220,150,120), rgb(178,24,43))', cursor: 'crosshair' }}
-                onMouseMove={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  const norm = (e.clientX - rect.left) / rect.width;
-                  hlCtx.current.band = [norm - 0.07, norm + 0.07];
-                  hlCtx.current.redraw?.();
-                  setHlNorm(norm);
-                }}
-                onMouseLeave={() => { hlCtx.current.band = null; hlCtx.current.redraw?.(); setHlNorm(null); }}
-              />
-              <BandOverlay norm={hlNorm} />
+              <div className="relative">
+                <div className="h-4 rounded w-full"
+                  style={{ background: 'linear-gradient(to right, rgb(33,102,172), rgb(140,178,220), #f5f5f5, rgb(220,150,120), rgb(178,24,43))', cursor: 'crosshair' }}
+                  onMouseMove={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const norm = (e.clientX - rect.left) / rect.width;
+                    hlCtx.current.band = [norm - 0.07, norm + 0.07];
+                    hlCtx.current.redraw?.();
+                    setHlNorm(norm);
+                  }}
+                  onMouseLeave={() => { hlCtx.current.band = null; hlCtx.current.redraw?.(); setHlNorm(null); }}
+                />
+                <BandOverlay norm={hlNorm} />
+              </div>
               {(() => {
                 const sc = hydroScale ?? diffStats?.scale ?? 100;
                 const half = Math.round(sc / 2);
@@ -2652,18 +2676,20 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
         )
       ) : diffUrl ? (
         <div>
-          <div className="h-4 rounded w-full"
-            style={{ background: 'linear-gradient(to right, rgb(33,102,172), rgb(140,178,220), #f5f5f5, rgb(220,150,120), rgb(178,24,43))', cursor: 'crosshair' }}
-            onMouseMove={(e) => {
-              const rect = e.currentTarget.getBoundingClientRect();
-              const norm = (e.clientX - rect.left) / rect.width;
-              hlCtx.current.band = [norm - 0.07, norm + 0.07];
-              hlCtx.current.redraw?.();
-              setHlNorm(norm);
-            }}
-            onMouseLeave={() => { hlCtx.current.band = null; hlCtx.current.redraw?.(); setHlNorm(null); }}
-          />
-          <BandOverlay norm={hlNorm} />
+          <div className="relative">
+            <div className="h-4 rounded w-full"
+              style={{ background: 'linear-gradient(to right, rgb(33,102,172), rgb(140,178,220), #f5f5f5, rgb(220,150,120), rgb(178,24,43))', cursor: 'crosshair' }}
+              onMouseMove={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                const norm = (e.clientX - rect.left) / rect.width;
+                hlCtx.current.band = [norm - 0.07, norm + 0.07];
+                hlCtx.current.redraw?.();
+                setHlNorm(norm);
+              }}
+              onMouseLeave={() => { hlCtx.current.band = null; hlCtx.current.redraw?.(); setHlNorm(null); }}
+            />
+            <BandOverlay norm={hlNorm} />
+          </div>
           <div className="flex justify-between mt-0.5">
             {['-100%', '-50%', '0%', '+50%', '+100%'].map(v => (
               <span key={v} className="text-xs text-gray-400 font-inter">{v}</span>
@@ -2892,10 +2918,10 @@ function HydrologyMapSection({ scenarioId, geojson, hydrologyFiles, secondarySce
         <MapContainer center={[0, 0]} zoom={2} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
           <OpenFreeMapLayer exportable />
           <CreateBlendPane />
-          {(!isComparison || !showDiff) && rasterUrl && <HydrologyGeoTiffLayer key={rasterUrl} url={rasterUrl} hlCtx={hlCtx} />}
-          {diffUrl && <HydrologyDiffGeoTiffLayer key={`${diffUrl}-${hydroScale ?? 'auto'}`} url={diffUrl} scale={hydroScale} hlCtx={hlCtx} onError={() => setDiffError(true)} onStats={setDiffStats} />}
+          {!diffUrl && rasterUrl && <HydrologyGeoTiffLayer key={rasterUrl} url={rasterUrl} hlCtx={hlCtx} geojson={geojson} />}
+          {diffUrl && <HydrologyDiffGeoTiffLayer key={`${diffUrl}-${hydroScale ?? 'auto'}`} url={diffUrl} scale={hydroScale} hlCtx={hlCtx} onError={() => setDiffError(true)} onStats={setDiffStats} geojson={geojson} />}
           {!isComparison && showTemp && tempUrl && <HydroInputRasterLayer key={`temp-${tempUrl}`} url={tempUrl} colorFn={tempColorFn} opacity={0.75} onStats={setTempStats} />}
-          {!isComparison && showSsrd   && ssrdUrl   && <HydroInputRasterLayer key={`ssrd-${ssrdUrl}`}     url={ssrdUrl}   colorFn={ssrdColorFn}   opacity={0.75} onStats={setSsrdStats}   />}
+          {!isComparison && showSsrd   && ssrdUrl   && <HydroInputRasterLayer key={`ssrd-${ssrdUrl}`} url={ssrdUrl} colorFn={ssrdColorFn} opacity={0.75} onStats={setSsrdStats} />}
           {!isComparison && showRunoff && runoffUrl && <HydroInputRasterLayer key={`runoff-${runoffUrl}`} url={runoffUrl} colorFn={runoffColorFn} opacity={0.75} onStats={setRunoffStats} />}
           <LeafletGeoJSON
             key={`hydro-${scenarioId}-${geojson?.features?.length}`}
@@ -3075,7 +3101,7 @@ async function loadScenarioOutputs(scId) {
 
 // ─── Main component ────────────────────────────────────────────────────────────────────────────────
 
-export default function ResultsView({ caseStudies, initialCaseStudyId, initialScenarioIds, initialEmissionType, initialArea, onCaseStudyChange }) {
+export default function ResultsView({ caseStudies, initialCaseStudyId, initialScenarioIds, initialEmissionType, initialArea, initialComparisonMode = 'emissions', onCaseStudyChange }) {
   const { choroplethPixelThreshold } = useSettingsStore();
   const navigate = useNavigate();
   const location = useLocation();
@@ -3094,7 +3120,7 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
   // Area filter: null = all, Set<string iso> = specific
   const [selectedAreas, setSelectedAreas] = useState(() => (initialArea ? new Set([initialArea]) : null));
   const [clickedArea,   setClickedArea]   = useState(null);
-  const [activeTab,     setActiveTab]     = useState('emissions');
+  const [activeTab,     setActiveTab]     = useState(initialComparisonMode);
   const [driverData] = useState(null);
 
   // ── Sync externally supplied IDs (e.g. resolved from the URL on deep-link / case-study switch)
@@ -3126,10 +3152,10 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
       .map(id => availableScenarios.find(s => s.id === id)?.name)
       .filter(Boolean);
     const area = (selectedAreas && selectedAreas.size) ? [...selectedAreas][0] : '';
-    const target = paths.analytics(cs, { scenarios: scenarioNames, emissionType, area });
+    const target = paths.analytics(cs, { scenarios: scenarioNames, emissionType, area, view: activeTab });
     const current = `${location.pathname}${location.search}`;
     if (target !== current) navigate(target, { replace: true });
-  }, [selectedCsId, selectedScIds, emissionType, selectedAreas, availableScenarios, scenariosLoading, caseStudies, location.pathname, location.search]); // eslint-disable-line
+  }, [selectedCsId, selectedScIds, emissionType, selectedAreas, activeTab, availableScenarios, scenariosLoading, caseStudies, location.pathname, location.search]); // eslint-disable-line
 
   // ── Load scenario list
   useEffect(() => {
@@ -3196,6 +3222,27 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
 
   const currentPriTotals = emissionType === 'water' ? primaryWaterTotals   : primaryLandTotals;
   const currentSecTotals = emissionType === 'water' ? secondaryWaterTotals : secondaryLandTotals;
+
+  const emissionComparisonScale = useMemo(() => {
+    if (!isComparison) return 100;
+    const scaleFor = (primaryTotals, secondaryTotals) => {
+      const primaryTotal = Object.values(primaryTotals || {}).reduce((sum, value) => sum + value, 0);
+      const secondaryTotal = Object.values(secondaryTotals || {}).reduce((sum, value) => sum + value, 0);
+      return primaryTotal > 0
+        ? diffScale((secondaryTotal - primaryTotal) / primaryTotal * 100)
+        : 100;
+    };
+    return Math.max(
+      scaleFor(primaryWaterTotals, secondaryWaterTotals),
+      scaleFor(primaryLandTotals, secondaryLandTotals),
+    );
+  }, [
+    isComparison,
+    primaryWaterTotals,
+    secondaryWaterTotals,
+    primaryLandTotals,
+    secondaryLandTotals,
+  ]);
 
   const areaNames = useMemo(() => {
     const m = {};
@@ -3382,6 +3429,7 @@ export default function ResultsView({ caseStudies, initialCaseStudyId, initialSc
             scenarioId={primaryScId}
             secondaryScenarioId={isComparison ? secondaryScId : null}
             isComparison={isComparison}
+            comparisonScale={emissionComparisonScale}
             onAreaClick={setClickedArea}
             loading={isLoading}
             areaNames={areaNames}

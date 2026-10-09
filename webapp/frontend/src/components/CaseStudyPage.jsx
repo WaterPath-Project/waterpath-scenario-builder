@@ -484,11 +484,11 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
   const handleFlowRun = useCallback((scenarioId) => {
     if (modelRunActive || runningScenarios[scenarioId]) return;
     const scenario = scenarios.find(item => item.id === scenarioId);
-    if (scenario?.qmra_available && !scenario.has_qmra_output) {
+    if (scenario?.qmra_available) {
       setRiskRunScenarioId(scenarioId);
       return;
     }
-    startFlowRun(scenarioId, !!scenario?.qmra_available);
+    startFlowRun(scenarioId, false);
   }, [modelRunActive, runningScenarios, scenarios, startFlowRun]);
 
   // Poll active run statuses every 2 s
@@ -505,6 +505,11 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
           if (['success', 'error', 'timeout'].includes(data.status)) {
             setRunningScenarios(prev => { const n = { ...prev }; delete n[scenarioId]; return n; });
             if (data.status === 'success') setScenariosVersion(v => v + 1);
+          } else {
+            setRunningScenarios(prev => ({
+              ...prev,
+              [scenarioId]: { ...prev[scenarioId], status: data.status },
+            }));
           }
         } catch { /* transient — ignore */ }
       }
@@ -765,6 +770,21 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
               <p className="text-sm text-gray-400 mt-0.5">
                 Click <span className="font-semibold">+</span> to add a scenario · Click <span className="font-semibold">▶</span> to run an unexecuted scenario
               </p>
+              {Object.entries(runningScenarios).map(([scenarioId, run]) => (
+                <p key={scenarioId} role="status" className="text-sm text-wpBlue mt-1">
+                  {scenarios.find(s => s.id === scenarioId)?.name}:{' '}
+                  {run.mode === 'risk_only'
+                    ? (run.status === 'pending'
+                      ? 'Risk run queued — waiting to start…'
+                      : 'Calculating exposure and health risk…')
+                    : run.status === 'pending' ? 'Queued, waiting to start…'
+                      : run.status === 'running' ? 'Calculating emissions…'
+                        : run.status === 'coupling' ? 'Aggregating emissions onto the hydrology grid…'
+                          : run.status === 'hydrology_running' ? 'Calculating monthly concentrations…'
+                            : run.status === 'risk_running' ? 'Calculating exposure and health risk…'
+                              : 'Running model…'}
+                </p>
+              ))}
             </div>
             <div className="flex items-center gap-1 flex-shrink-0">
               <button
@@ -836,16 +856,20 @@ export default function CaseStudyPage({ csId, csSlug, onGoToScenarios, onGoToAna
           setRiskRunScenarioId(null);
           return startFlowRun(scenarioId, false);
         }}
-        onAlternate={() => {
-          const scenarioId = riskRunScenarioId;
-          setRiskRunScenarioId(null);
-          return startRiskOnlyRun(scenarioId);
-        }}
+        onAlternate={scenarios.find(item => item.id === riskRunScenarioId)?.has_hydrology
+          ? () => {
+              const scenarioId = riskRunScenarioId;
+              setRiskRunScenarioId(null);
+              return startRiskOnlyRun(scenarioId);
+            }
+          : undefined}
         title="Run scenario"
-        message="Concentration outputs are available. Run the full model again, with or without risk estimation, or use the existing concentrations to estimate risk only."
+        message={scenarios.find(item => item.id === riskRunScenarioId)?.has_hydrology
+          ? 'Choose whether to run the model with risk estimation, without it, or estimate risk from the existing concentrations.'
+          : 'Choose whether to run the model with or without risk estimation.'}
         confirmText="Run model + risk"
         cancelText="Run model only"
-        alternateText="Run risk only"
+        alternateText={scenarios.find(item => item.id === riskRunScenarioId)?.has_hydrology ? 'Run risk only' : undefined}
         confirmVariant="primary"
       />
     </div>
