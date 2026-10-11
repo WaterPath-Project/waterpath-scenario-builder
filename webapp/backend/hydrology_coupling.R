@@ -90,6 +90,63 @@ wp_fraction_to_grid <- function(fraction, target) {
   terra::rast(target, vals = as.vector(t(result)))
 }
 
+wp_nearest_cells <- function(grid, from_cells, to_cells) {
+  if (!length(to_cells)) stop("No valid destination cells.")
+  from <- terra::vect(terra::xyFromCell(grid, from_cells),
+                      type = "points", crs = terra::crs(grid))
+  to <- terra::vect(terra::xyFromCell(grid, to_cells),
+                    type = "points", crs = terra::crs(grid))
+  nearest <- as.data.frame(terra::nearest(from, to))
+  nearest <- nearest[match(seq_along(from_cells), nearest$from_id), , drop = FALSE]
+  if (anyNA(nearest$to_id) || anyNA(nearest$distance)) {
+    stop("Could not find a destination for all unsupported cells.")
+  }
+  list(cells = to_cells[nearest$to_id], distance = nearest$distance)
+}
+
+wp_fill_runoff <- function(runoff, land) {
+  if (terra::nlyr(runoff) != 12L || terra::nlyr(land) != 1L ||
+      !terra::compareGeom(runoff[[1]], land, stopOnError = FALSE)) {
+    stop("Runoff gap filling requires 12 months and land loads on the hydrology grid.")
+  }
+  values <- terra::values(runoff, mat = TRUE)
+  land_values <- terra::values(land, mat = FALSE)
+  if (any(is.infinite(values)) || any(values < 0, na.rm = TRUE)) {
+    stop("Monthly runoff must be finite and non-negative (NoData is allowed).")
+  }
+  if (any(is.infinite(land_values)) || any(land_values < 0, na.rm = TRUE)) {
+    stop("Land loads must be finite and non-negative (NoData is allowed).")
+  }
+  missing_months <- rowSums(is.na(values))
+  unsupported <- which(!is.na(land_values) & land_values > 0 & missing_months > 0)
+  report <- data.frame(cell = integer(), source_cell = integer(),
+                       x = numeric(), y = numeric(), source_x = numeric(),
+                       source_y = numeric(), distance = numeric(),
+                       missing_months = integer())
+  if (!length(unsupported)) {
+    return(list(runoff = runoff, cells = 0L, maximum_distance = 0, report = report))
+  }
+  supported <- which(missing_months == 0)
+  if (!length(supported)) {
+    stop("Monthly runoff has no cell with a complete valid 12-month series.")
+  }
+  nearest <- wp_nearest_cells(runoff, unsupported, supported)
+  # Replace the whole series, not individual months from different donors.
+  values[unsupported, ] <- values[nearest$cells, , drop = FALSE]
+  xy <- terra::xyFromCell(runoff, unsupported)
+  source_xy <- terra::xyFromCell(runoff, nearest$cells)
+  report <- data.frame(cell = unsupported, source_cell = nearest$cells,
+                       x = xy[, 1], y = xy[, 2], source_x = source_xy[, 1],
+                       source_y = source_xy[, 2], distance = nearest$distance,
+                       missing_months = missing_months[unsupported])
+  message(sprintf(
+    "Filled monthly runoff in %d land-loaded cells from nearest complete series (maximum distance %.3f %s).",
+    length(unsupported), max(nearest$distance),
+    if (terra::is.lonlat(runoff)) "metres" else "map units"))
+  list(runoff = terra::setValues(runoff, values), cells = length(unsupported),
+       maximum_distance = max(nearest$distance), report = report)
+}
+
 wp_relocate_to_domain <- function(loads, domain) {
   if (!terra::compareGeom(loads, domain, stopOnError = FALSE)) {
     stop("Routing relocation requires loads and routing domain on the same grid.")
@@ -111,16 +168,8 @@ wp_relocate_to_domain <- function(loads, domain) {
     stop("Routing network has no valid cells.")
   }
 
-  from <- terra::vect(terra::xyFromCell(loads, unsupported),
-                      type = "points", crs = terra::crs(loads))
-  to <- terra::vect(terra::xyFromCell(loads, supported),
-                    type = "points", crs = terra::crs(loads))
-  nearest <- as.data.frame(terra::nearest(from, to))
-  nearest <- nearest[match(seq_along(unsupported), nearest$from_id), , drop = FALSE]
-  if (anyNA(nearest$to_id) || anyNA(nearest$distance)) {
-    stop("Could not find a routing cell for all unsupported emissions.")
-  }
-  destinations <- supported[nearest$to_id]
+  nearest <- wp_nearest_cells(loads, unsupported, supported)
+  destinations <- nearest$cells
   layer_totals <- colSums(values[unsupported, , drop = FALSE])
   original_totals <- colSums(values)
   for (layer in seq_len(ncol(values))) {
@@ -179,7 +228,7 @@ wp_hydrology_grid <- function(settings) {
   reference
 }
 
-wp_fine_emissions <- function(annual_fraction) {
+wp_fine_emissions <- function(runoff) {
   run <- get("run", envir = asNamespace("glowpa"))
   humans <- glowpa:::human_emissions()
   glowpa:::pathways_humans(humans)
@@ -192,12 +241,20 @@ wp_fine_emissions <- function(annual_fraction) {
     glowpa:::pathways_livestock_df(livestock)
     to_land <- c(to_land, terra::sds(livestock[c("livestock2land", "storage2land")]))
   }
+  total_land <- Reduce(function(x, y) sum(x, y, na.rm = TRUE),
+                       lapply(to_land, function(pathway) sum(pathway, na.rm = TRUE)))
+  coarse_land <- wp_sum_to_grid(total_land, runoff[[1]], "land")
+  filling <- wp_fill_runoff(runoff, coarse_land)
+  fraction <- glowpa:::runoff_fraction(filling$runoff, run$pathogen$retention_lower,
+                                      run$pathogen$retention_upper)
+  annual_fraction <- terra::app(fraction, "mean", na.rm = FALSE)
+  fine_fraction <- wp_fraction_to_grid(annual_fraction, run$domain)
   land_to_water <- lapply(to_land, function(pathway) {
     missing <- terra::global((sum(pathway, na.rm = TRUE) > 0) &
-                              is.na(annual_fraction), "sum", na.rm = TRUE)[1, 1]
+                              is.na(fine_fraction), "sum", na.rm = TRUE)[1, 1]
     if (missing > 0) stop("Monthly runoff has incomplete coverage of fine land emissions.")
     layers <- lapply(seq_len(terra::nlyr(pathway)), function(i) {
-      result <- pathway[[i]] * annual_fraction
+      result <- pathway[[i]] * fine_fraction
       terra::time(result, tstep = "years") <- 1
       result
     })
@@ -208,6 +265,7 @@ wp_fine_emissions <- function(annual_fraction) {
   glowpa:::pathways_land(land_to_water)
   glowpa:::output_set_meta()
   glowpa:::output_write(run$emissions, run$settings$output)
+  list(fraction = fraction, annual_fraction = annual_fraction, filling = filling)
 }
 
 wp_phase <- function(output_dir, phase) {
@@ -251,10 +309,9 @@ wp_run_model <- function(config_path) {
   run$timing <- list(start = Sys.time())
   # Read native runoff without input_read_rast(), which crops to the fine domain.
   runoff <- terra::rast(wp_monthly_files(settings$input$hydrology$runoff, "runoff"))
-  fraction <- glowpa:::runoff_fraction(runoff, run$pathogen$retention_lower,
-                                      run$pathogen$retention_upper)
-  annual_fraction <- terra::app(fraction, "mean", na.rm = FALSE)
-  wp_fine_emissions(wp_fraction_to_grid(annual_fraction, run$domain))
+  emissions <- wp_fine_emissions(runoff)
+  fraction <- emissions$fraction
+  annual_fraction <- emissions$annual_fraction
 
   wp_phase(output_dir, "coupling")
   surface <- terra::rast(file.path(output_dir, settings$output$sinks$surface_water$grid))
@@ -282,6 +339,8 @@ wp_run_model <- function(config_path) {
                                 hydrology_grid, "popurban")
   coupling_dir <- file.path(output_dir, "hydrology", "coupling")
   dir.create(coupling_dir, recursive = TRUE, showWarnings = FALSE)
+  utils::write.csv(emissions$filling$report,
+                   file.path(coupling_dir, "runoff_gap_fill.csv"), row.names = FALSE)
   intermediates <- list(direct_water = coarse_direct, land = coarse_land,
                         poprural = coarse_rural, popurban = coarse_urban)
   balance <- lapply(intermediates, function(r) as.list(attr(r, "conservation")))
@@ -318,6 +377,11 @@ wp_run_model <- function(config_path) {
     nrow = terra::nrow(hydrology_grid), ncol = terra::ncol(hydrology_grid),
     resolution = terra::res(hydrology_grid)), runoff = list(
       fine_total = fine_runoff_total, coarse_total = coarse_runoff_total),
+    runoff_gap_fill = list(
+      cells = emissions$filling$cells,
+      maximum_distance = emissions$filling$maximum_distance,
+      distance_unit = if (terra::is.lonlat(runoff)) "metres" else "map_units",
+      report = "runoff_gap_fill.csv"),
     routing_relocation = list(
       cells = relocation$cells,
       monthly_loads = as.list(stats::setNames(relocation$layer_totals, month.abb)),

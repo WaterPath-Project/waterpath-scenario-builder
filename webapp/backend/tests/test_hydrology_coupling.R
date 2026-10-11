@@ -124,4 +124,63 @@ local({
   expect_error(wp_hydrology_grid(settings), "exactly one raster for each month")
 })
 
+local({
+  grid <- terra::rast(nrows = 1, ncols = 5, xmin = 0, xmax = 5,
+                      ymin = 0, ymax = 1, crs = "EPSG:3857")
+  monthly <- do.call(c, lapply(1:12, function(month) {
+    terra::rast(grid, vals = c(month, NA, month + 100, NA, 0))
+  }))
+  # One loaded cell has only one missing month: copy a whole donor series.
+  values <- terra::values(monthly, mat = TRUE)
+  values[2, 2:12] <- 999
+  monthly <- terra::setValues(monthly, values)
+  land <- terra::rast(grid, vals = c(1, 10, 1, 0, 1))
+  original <- terra::values(monthly, mat = TRUE)
+  filled <- wp_fill_runoff(monthly, land)
+  result <- terra::values(filled$runoff, mat = TRUE)
+  stopifnot(filled$cells == 1L, filled$maximum_distance == 1,
+            filled$report$cell == 2L, filled$report$missing_months == 1L,
+            filled$report$source_cell %in% c(1L, 3L),
+            identical(result[2, ], original[filled$report$source_cell, ]),
+            identical(result[-2, ], original[-2, ]),
+            identical(terra::values(monthly, mat = TRUE), original))
+  unchanged <- wp_fill_runoff(filled$runoff, land)
+  stopifnot(unchanged$cells == 0L, nrow(unchanged$report) == 0L,
+            identical(terra::values(unchanged$runoff, mat = TRUE), result))
+
+  # Zero runoff is valid; a partial series is never a donor.
+  values[1, 1] <- NA
+  values[3, 1] <- NA
+  monthly <- terra::setValues(monthly, values)
+  filled <- wp_fill_runoff(monthly, terra::rast(grid, vals = c(0, 1, 0, 1, 0)))
+  stopifnot(all(filled$report$source_cell == 5L),
+            all(terra::values(filled$runoff, mat = TRUE)[4, ] == 0))
+  expect_error(wp_fill_runoff(monthly[[1]], land), "12 months")
+  expect_error(wp_fill_runoff(monthly, fine), "hydrology grid")
+  empty <- terra::setValues(monthly, NA)
+  expect_error(wp_fill_runoff(empty, land), "complete valid 12-month series")
+  stopifnot(wp_fill_runoff(empty, terra::rast(grid, vals = 0))$cells == 0L)
+  values[3, 1] <- -1
+  monthly <- terra::setValues(monthly, values)
+  expect_error(wp_fill_runoff(monthly, land), "finite and non-negative")
+  values[3, 1] <- Inf
+  monthly <- terra::setValues(monthly, values)
+  expect_error(wp_fill_runoff(monthly, land), "finite and non-negative")
+})
+
+# Filling all coarse cells receiving fine loads keeps annual and monthly
+# conversions consistent, including a fine cell crossing a NoData boundary.
+local({
+  monthly <- do.call(c, lapply(1:12, function(month) {
+    terra::rast(split_grid, vals = c(month / 100, NA))
+  }))
+  land <- wp_sum_to_grid(straddling, split_grid, "land")
+  filled <- wp_fill_runoff(monthly, land)
+  annual <- terra::app(filled$runoff, "mean", na.rm = FALSE)
+  fine_total <- terra::global(
+    straddling * wp_fraction_to_grid(annual, straddling), "sum")[1, 1]
+  monthly_total <- sum(terra::global(land / 12 * filled$runoff, "sum")[, 1])
+  stopifnot(filled$cells == 1L, abs(fine_total - monthly_total) < 1e-12)
+})
+
 cat("Conservative coupling tests passed.\n")

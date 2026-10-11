@@ -18,6 +18,10 @@ When they differ, the wrapper in `webapp/backend/hydrology_coupling.R` performs:
    crosses hydrological boundaries. The standard surface-water and land TIFFs
    and source tables remain on the original emissions grid and describe actual
    hydrological runoff, not the fixed `constants.runoff_fraction` fallback.
+   Where a hydrology cell receiving land loads has missing runoff in any
+   month, copy the entire 12-month runoff series from the nearest cell with
+   valid data in all months before calculating runoff fractions. Complete
+   series, including zero runoff, remain unchanged; unloaded gaps stay NoData.
    Input rasters and the saved case-study YAML are not altered.
 2. **Conservative transfer:** obtain direct-water loads from the original human
    and WWTP pathways, avoiding subtraction of large totals. Sum direct-to-water
@@ -45,9 +49,11 @@ When they differ, the wrapper in `webapp/backend/hydrology_coupling.R` performs:
 All hydrology inputs must share one CRS, extent, resolution and origin, with
 one file per month for each monthly variable. Emissions and hydrology must use
 the same CRS; differing CRSs fail explicitly rather than silently reprojecting
-loads. Missing routing coverage or monthly runoff at cells carrying emissions
-fails explicitly only when no valid destination exists; monthly runoff gaps at
-cells carrying land emissions still fail explicitly. The wrapper uses the
+loads. Missing routing coverage fails when no valid routing destination exists.
+Monthly runoff gaps at cells carrying land emissions use the nearest complete
+series and fail if no valid donor exists. Land emissions beyond the hydrology
+extent still fail the load-conservation check; gap filling does not extend the
+grid. Negative or infinite runoff fails explicitly. The wrapper uses the
 installed GloWPa 0.2.1 internal hydrology interfaces; upgrades must revalidate
 this integration.
 
@@ -57,6 +63,10 @@ hydrology completion. Fine annual runoff and coarse annual runoff totals must
 agree within `max(1e-8, total * 1e-9)`; both totals are recorded in `complete.json`.
 The file also records the number of relocated routing cells, per-month moved
 loads, maximum relocation distance and its unit.
+Its `runoff_gap_fill` entry records the number of filled hydrology cells and
+maximum donor distance and unit. `runoff_gap_fill.csv` lists each filled cell,
+its donor, both coordinates, distance and original number of missing months.
+Gap filling is performed in memory; input rasters are never overwritten.
 The map serves the original fine emission TIFFs, never the coarse intermediates.
 Same-grid runs and runs without hydrology retain stock GloWPa behavior, including
 the fixed runoff fraction when hydrology is disabled.
