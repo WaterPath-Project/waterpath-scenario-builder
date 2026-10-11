@@ -280,7 +280,7 @@ def _model_results_snapshot(baseline, scenarios):
         concentration = outputs.get('concentration') or {}
         values = {
             'risk_combined': qmra.get('risk_annual_combined'),
-            'concentration': concentration.get('avg_sum'),
+            'concentration': concentration.get('mean'),
             'water_emissions': emissions.get('total'),
             'land_emissions': emissions.get('land_total'),
         }

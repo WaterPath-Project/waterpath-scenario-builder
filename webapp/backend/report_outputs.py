@@ -394,6 +394,7 @@ def compute_concentration_stats(cs_path, folder, top_areas=5):
             arr, tr, arr_crs = _read_masked(path)
         except Exception:
             continue
+        arr = arr / _CONCENTRATION_M3_TO_L
         if transform is None:
             transform, crs = tr, arr_crs
         if arrays and arr.shape != arrays[0].shape:

@@ -15,6 +15,7 @@ import { LoadingState } from './loading/Spinner';
 // ── Model outcome helpers ────────────────────────────────────────────────────
 
 const RISK_ROUTE_ORDER = ['drinking', 'swimming', 'flooding', 'open_drain', 'playing', 'washing_clothes'];
+const CONCENTRATION_M3_TO_L = 1000;
 const RISK_ROUTE_LABELS = {
   drinking: 'Drinking water',
   swimming: 'Swimming',
@@ -196,7 +197,11 @@ export default function ScenarioSummaryView({ caseStudyId }) {
       setConcentrationTotals(prev => ({ ...prev, [s.id]: null })); // mark in-flight
       axios.get(`/api/scenarios/${s.id}/hydrology-monthly-stats?metric=concentration`)
         .then(({ data }) => {
-          setConcentrationTotals(prev => ({ ...prev, [s.id]: data?.avg_sum ?? null }));
+          const meanPerM3 = data?.avg_mean;
+          setConcentrationTotals(prev => ({
+            ...prev,
+            [s.id]: meanPerM3 == null ? null : meanPerM3 / CONCENTRATION_M3_TO_L,
+          }));
         })
         .catch(() => { /* leave as null — no hydrology output */ });
     });
