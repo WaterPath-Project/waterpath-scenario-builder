@@ -10,6 +10,7 @@ import createMinimalStyle from '../mapStyles/minimalStyle';
 setWorkerUrl(maplibreWorkerUrl);
 
 export const BASEMAP_STYLES = [
+  { id: 'none', label: 'None' },
   { id: 'bright', label: 'Bright' },
   { id: 'positron', label: 'Positron' },
   { id: 'liberty', label: 'Liberty' },
@@ -68,6 +69,8 @@ export default function OpenFreeMapLayer({ exportable = false }) {
   const basemapStyle = useSettingsStore(state => state.basemapStyle);
 
   useEffect(() => {
+    if (basemapStyle === 'none') return undefined;
+
     const controller = new AbortController();
 
     let active = true;

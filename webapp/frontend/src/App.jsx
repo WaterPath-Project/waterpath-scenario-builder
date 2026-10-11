@@ -901,7 +901,7 @@ function Dashboard() {
                   <div className="flex items-center justify-between p-4 bg-wpGray-100 rounded-xl">
                     <div className="flex-1">
                       <label htmlFor="basemap-style" className="text-sm font-medium text-gray-800">Basemap style</label>
-                      <p className="text-xs text-gray-500 mt-0.5">Choose the OpenFreeMap vector style used throughout the application.</p>
+                      <p className="text-xs text-gray-500 mt-0.5">Choose the OpenFreeMap vector style used throughout the application, or hide the basemap.</p>
                     </div>
                     <select
                       id="basemap-style"
@@ -998,7 +998,7 @@ function Dashboard() {
                     <div>
                       <p className="text-sm font-medium text-gray-800">Consistent colour scale across case studies</p>
                       <p className="text-xs text-gray-500 mt-0.5">
-                        When on (default), the map colour scale maximum is fixed at log₁₀ = 17 so that maps from different case studies are directly comparable. When off, the maximum is derived from the loaded raster file, using the full colour range for each map individually.
+                        When on, the map colour scale maximum is fixed at log₁₀ = 17 so that maps from different case studies are directly comparable. When off (default), the maximum is derived from the loaded raster file, using the full colour range for each map individually.
                       </p>
                     </div>
                     <button
@@ -1251,8 +1251,8 @@ function Dashboard() {
 
         /* Main tab: scrollable card grid */
         return (
-          <div className="flex flex-col h-full p-6">
-            <div className="flex-1 overflow-auto">
+          <div className="flex flex-col h-full min-h-0 p-6">
+            <div className="flex-1 min-h-0 overflow-y-auto">
               <DashboardCard>
             {selectedCaseStudy && (
               <div className="mb-12 px-4 py-3 rounded-xl bg-wpBrown/40 text-sm text-wpBlue space-y-1.5">
@@ -1540,8 +1540,8 @@ function Dashboard() {
         <div className={activeSection === 'narratives'
           ? 'flex-1 min-h-0 overflow-y-auto'
           : (activeSection === 'scenarios' || activeSection === 'analytics' || activeSection === 'case-studies' || activeSection === 'summary')
-            ? 'flex-1 overflow-hidden'
-            : 'flex-1 p-6'}>
+            ? 'flex-1 min-h-0 overflow-hidden'
+            : 'flex-1 min-h-0 overflow-y-auto p-6'}>
           {renderContent()}
         </div>
       </div>

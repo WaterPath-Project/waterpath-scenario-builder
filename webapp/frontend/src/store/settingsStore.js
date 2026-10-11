@@ -25,17 +25,17 @@ const useSettingsStore = create(
       rasterInterpolation: 'none',
 
       /** Clip concentration and risk rasters to the case-study area polygons. */
-      clipRastersToAreas: false,
+      clipRastersToAreas: true,
 
-      /** OpenFreeMap vector style used by every map in the app. */
+      /** OpenFreeMap vector style used by every map in the app, or "none". */
       basemapStyle: 'bright',
 
       /**
-       * When true (default): clamp the colour-scale maximum at log₁₀ = 17 so maps from
-       * different case studies are always visually comparable.
-       * When false: derive the maximum from the loaded TIF file (dynamic per-map range).
+       * When true: clamp the colour-scale maximum at log₁₀ = 17 so maps from different
+       * case studies are always visually comparable.
+       * When false (default): derive the maximum from the loaded TIF file.
        */
-      fixedColorScale: true,
+      fixedColorScale: false,
 
       /**
        * Non-persisted: the log₁₀ max derived from the current TIF when fixedColorScale=false.
